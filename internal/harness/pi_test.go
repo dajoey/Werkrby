@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -325,5 +326,128 @@ done:
 	}
 	if !foundAbort {
 		t.Fatal("Pi fixture did not receive abort")
+	}
+}
+
+func TestPiLoadsOrdinaryUserResourcesWithoutSuppressionFlags(t *testing.T) {
+	command, root, logPath := portableHarnessFixture(t, "pi-lifecycle")
+	pi, err := NewPi(HarnessConfig{Command: command, Cwd: root, Sandbox: "read-only", SessionsFile: filepath.Join(root, "sessions.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := pi.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer pi.Close()
+	done := make(chan struct{}, 1)
+	if _, _, err := pi.Send(ctx, "chat", "resource check", func(event core.Event) {
+		if event.Done {
+			done <- struct{}{}
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-done:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for Pi turn")
+	}
+	if _, err := pi.Models(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	forbidden := []string{"--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes", "--approve", "-a", "--no-approve", "-na"}
+	ordinary, ephemeral := 0, 0
+	for _, record := range readFixtureRecords(t, logPath) {
+		if record.Kind != "invocation" || containsArgument(record.Args, "--version") {
+			continue
+		}
+		if len(record.Args) < 2 || record.Args[0] != "--mode" || record.Args[1] != "rpc" {
+			t.Fatalf("Pi base arguments = %#v, want --mode rpc first", record.Args)
+		}
+		for _, flag := range forbidden {
+			if containsArgument(record.Args, flag) {
+				t.Fatalf("Pi invocation suppressed ordinary resources or approvals with %q: %#v", flag, record)
+			}
+		}
+		if !containsArgument(record.Args, "read,grep,find,ls") {
+			t.Fatalf("read-only Pi invocation omitted the strict tool allowlist: %#v", record)
+		}
+		if containsArgument(record.Args, "--no-session") {
+			ephemeral++
+		} else {
+			ordinary++
+		}
+	}
+	if ordinary != 1 || ephemeral != 2 {
+		t.Fatalf("Pi ordinary/ephemeral invocations = %d/%d, want 1/2", ordinary, ephemeral)
+	}
+}
+
+func TestPiExtensionUIDialogsCancelWithoutReceivingFireAndForgetResponses(t *testing.T) {
+	command, root, logPath := portableHarnessFixture(t, "pi-extension-ui")
+	pi, err := NewPi(HarnessConfig{Command: command, Cwd: root, SessionsFile: filepath.Join(root, "sessions.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := pi.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer pi.Close()
+	events := make(chan core.Event, 32)
+	done := make(chan core.Event, 1)
+	if _, _, err := pi.Send(ctx, "chat", "work", func(event core.Event) {
+		events <- event
+		if event.Done {
+			done <- event
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var final core.Event
+	select {
+	case final = <-done:
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for Pi turn blocked on an extension dialog")
+	}
+	if final.Kind != core.EventFinal || final.Text != "hello world" || pi.IsActive("chat") {
+		t.Fatalf("Pi extension-UI final = %#v, active %t", final, pi.IsActive("chat"))
+	}
+	cancelledEvent := false
+drain:
+	for {
+		select {
+		case event := <-events:
+			cancelledEvent = cancelledEvent || event.Kind == core.EventStatus && strings.Contains(event.Text, "cancelled")
+		default:
+			break drain
+		}
+	}
+	if !cancelledEvent {
+		t.Fatal("Pi did not surface a status event for the cancelled extension dialog")
+	}
+
+	var responses []fixtureRecord
+	for _, record := range readFixtureRecords(t, logPath) {
+		if record.Kind == "request" && record.Method == "extension_ui_response" {
+			responses = append(responses, record)
+		}
+	}
+	if len(responses) != 1 {
+		t.Fatalf("Pi extension UI responses = %d, want only the confirm cancellation: %#v", len(responses), responses)
+	}
+	var response struct {
+		ID        string `json:"id"`
+		Cancelled bool   `json:"cancelled"`
+	}
+	if err := json.Unmarshal(responses[0].Params, &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ID != "ui-1" || !response.Cancelled {
+		t.Fatalf("Pi extension UI response = %#v", response)
 	}
 }

@@ -167,9 +167,9 @@ func runHarnessFixture(mode string) int {
 	switch mode {
 	case "codex-lifecycle", "codex-interrupt", "codex-models", "codex-init-missing-method", "codex-resume-missing-method", "codex-resume-error", "codex-stream-overflow", "codex-thread-changed-field", "codex-terminal-changed-status":
 		return runCodexFixture(mode)
-	case "claude-stream", "claude-steer", "claude-text", "claude-interrupt", "claude-help-missing-flag", "claude-init-changed-event", "claude-terminal-error", "claude-result-nonzero":
+	case "claude-stream", "claude-steer", "claude-text", "claude-interrupt", "claude-help-missing-flag", "claude-init-changed-event", "claude-terminal-error", "claude-result-nonzero", "claude-hook-events-before-init":
 		return runClaudeFixture(mode)
-	case "pi-lifecycle", "pi-steer", "pi-interrupt", "pi-state-missing-session", "pi-model-capabilities", "pi-off-default":
+	case "pi-lifecycle", "pi-steer", "pi-interrupt", "pi-state-missing-session", "pi-model-capabilities", "pi-off-default", "pi-extension-ui":
 		return runPiFixture(mode)
 	case "acp-lifecycle", "acp-interrupt", "acp-version-mismatch", "acp-session-error":
 		return runACPFixture(mode)
@@ -266,7 +266,10 @@ func runPiFixture(mode string) int {
 		case "prompt":
 			respond(message, map[string]any{})
 			messageStart()
-			if mode == "pi-steer" {
+			if mode == "pi-extension-ui" {
+				write(map[string]any{"type": "extension_ui_request", "id": "ui-1", "method": "confirm", "title": "Run project-local agents?", "message": "Agents: demo"})
+				write(map[string]any{"type": "extension_ui_request", "id": "ui-2", "method": "notify", "message": "fire-and-forget"})
+			} else if mode == "pi-steer" {
 				delta("first")
 			} else if mode == "pi-interrupt" {
 				delta("working")
@@ -289,6 +292,18 @@ func runPiFixture(mode string) int {
 			respond(message, map[string]any{})
 			messageEnd("working", "aborted")
 			write(map[string]any{"type": "agent_settled"})
+		case "extension_ui_response":
+			if mode != "pi-extension-ui" || message.ID != "ui-1" {
+				break
+			}
+			delta("hello ")
+			delta("world")
+			messageEnd("hello world", "stop")
+			write(map[string]any{"type": "agent_end"})
+			go func() {
+				time.Sleep(80 * time.Millisecond)
+				write(map[string]any{"type": "agent_settled"})
+			}()
 		}
 	}
 	return 0
@@ -540,6 +555,13 @@ func runClaudeFixture(mode string) int {
 	}
 	if mode == "claude-init-changed-event" {
 		write(map[string]any{"type": "system", "subtype": "startup", "session_id": session})
+	} else if mode == "claude-hook-events-before-init" {
+		// Mirrors Claude Code 2.1.273 with SessionStart hooks configured:
+		// several non-init system events carrying the eventual session_id
+		// arrive before the literal system/init event.
+		write(map[string]any{"type": "system", "subtype": "hook_started", "hook_name": "SessionStart:startup", "session_id": session})
+		write(map[string]any{"type": "system", "subtype": "hook_response", "hook_name": "SessionStart:startup", "session_id": session})
+		write(map[string]any{"type": "system", "subtype": "init", "session_id": session})
 	} else {
 		write(map[string]any{"type": "system", "subtype": "init", "session_id": session})
 	}

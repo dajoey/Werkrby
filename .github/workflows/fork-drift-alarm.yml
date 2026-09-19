@@ -1,0 +1,56 @@
+name: fork-drift-alarm
+
+# Alarm only: red means agent0ai/spynel moved and this fork needs a deliberate
+# sync. Auto-merge is intentionally NOT enabled — dajoey/SpyJo carries local
+# commits, so merge-upstream would be unsafe. Companion to
+# scripts/check-upstream-impact.sh.
+#
+# Adapted from POWERFULMOVES/PMOVES-spynel weekly upstream-sync Action
+# (35046f5c552f17a1ae7d492a6cd28d737b4faaf8), without the merge step.
+
+on:
+  schedule:
+    - cron: "23 6 * * 1" # Mondays 06:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail when upstream main is ahead of this fork tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/agent0ai/spynel.git
+          git fetch --quiet upstream main
+          OUR="$(git rev-parse HEAD)"
+          UP="$(git rev-parse upstream/main)"
+          BASE="$(git merge-base HEAD upstream/main)"
+          echo "fork HEAD:     $OUR"
+          echo "upstream/main: $UP"
+          echo "merge-base:    $BASE"
+          if [ "$UP" = "$OUR" ]; then
+            echo "OK: fork tip equals upstream/main (no local divergence tracked as behind)."
+            exit 0
+          fi
+          if [ "$BASE" = "$UP" ]; then
+            echo "OK: fork is strictly ahead of upstream/main (local commits only)."
+            git rev-list --count upstream/main..HEAD | awk '{print "local commits ahead:", $1}'
+            exit 0
+          fi
+          # Upstream moved past our merge-base — sync needed.
+          AHEAD="$(git rev-list --count HEAD..upstream/main)"
+          LOCAL="$(git rev-list --count upstream/main..HEAD)"
+          echo "::error::upstream/main has $AHEAD commit(s) not in this fork (fork also has $LOCAL local commit(s)). Run scripts/check-upstream-impact.sh then rebase/sync."
+          git log --oneline "$BASE..upstream/main" | head -20
+          exit 1
+

@@ -1,0 +1,48 @@
+name: watch-rcanavides-router
+
+# Tracking only for rcanavides/spynel feature/multi-harness-router
+# (provider profiles + HarnessRouting). Do NOT port that branch here —
+# Joey 2026-09-19: "go on the tracking side" only. This job records the
+# remote tip SHA as a check annotation and fails when the tip moves from the
+# last recorded SHA in docs/tracking/rcanavides-router.sha so movement is
+# noticed on the next scheduled run after an update to that pin.
+
+on:
+  schedule:
+    - cron: "47 7 * * 1" # Mondays 07:47 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out fork
+        uses: actions/checkout@v4
+
+      - name: Compare remote tip to tracked SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PIN_FILE=docs/tracking/rcanavides-router.sha
+          TRACKED="$(tr -d '[:space:]' < "$PIN_FILE")"
+          # Resolve tip via GitHub API (no full clone of their fork required).
+          TIP="$(gh api repos/rcanavides/spynel/commits/feature/multi-harness-router --jq .sha)"
+          echo "tracked: $TRACKED"
+          echo "remote:  $TIP"
+          echo "::notice::rcanavides/spynel feature/multi-harness-router tip=$TIP"
+          if [ -z "$TIP" ] || [ "$TIP" = "null" ]; then
+            echo "::error::could not resolve remote tip"
+            exit 1
+          fi
+          if [ "$TIP" = "$TRACKED" ]; then
+            echo "OK: remote tip matches tracked SHA (no movement)."
+            exit 0
+          fi
+          echo "::error::rcanavides multi-harness-router moved. Update $PIN_FILE to $TIP after reviewing the delta (tracking only — do not port)."
+          echo "Compare: https://github.com/rcanavides/spynel/compare/${TRACKED}...${TIP}"
+          exit 1
+

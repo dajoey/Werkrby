@@ -528,7 +528,7 @@ func (p *Pi) startProcess(ctx context.Context, key string, session piSession, ep
 		return nil, errors.New("Pi harness is not running")
 	}
 	processContext, cancel := context.WithCancel(baseContext)
-	args := []string{"--mode", "rpc", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-themes"}
+	args := []string{"--mode", "rpc"}
 	if ephemeral {
 		args = append(args, "--no-session")
 	} else {
@@ -588,9 +588,11 @@ func (p *Pi) startProcess(ctx context.Context, key string, session piSession, ep
 		process.close()
 		return nil, fmt.Errorf("Pi executable %q returned an incompatible get_state result with missing sessionId or sessionFile", cfg.Command)
 	}
+	process.mu.Lock()
 	process.session = piSession{ID: state.SessionID, Path: state.SessionFile, Policy: piSessionPolicy(cfg)}
 	process.modelID = piCatalogModelID(state.Model.Provider, state.Model.ID)
 	process.thinkingLevel = state.ThinkingLevel
+	process.mu.Unlock()
 	if _, err := process.call(ctx, map[string]any{"type": "set_steering_mode", "mode": "all"}, nil); err != nil {
 		process.close()
 		return nil, fmt.Errorf("configure Pi steering queue: %w", err)
@@ -674,6 +676,10 @@ func (process *piProcess) readLoop(reader io.Reader) {
 			process.fail(fmt.Errorf("Pi RPC emitted incompatible non-JSON output: %w", err))
 			return
 		}
+		if envelope.Type == "extension_ui_request" {
+			process.answerExtensionUI(scanner.Bytes())
+			continue
+		}
 		if envelope.Type == "response" {
 			process.mu.Lock()
 			waiter := process.pending[envelope.ID]
@@ -694,6 +700,45 @@ func (process *piProcess) readLoop(reader io.Reader) {
 		}
 	}
 	process.fail(fmt.Errorf("Pi RPC stream closed: %v", scanner.Err()))
+}
+
+// answerExtensionUI fails closed on Pi extension dialogs so a headless turn
+// can never wait on interactive UI. Blocking dialogs receive an immediate
+// explicit cancellation; fire-and-forget methods expect no response. The
+// cancellation is surfaced through the active turn's provider-neutral status.
+func (process *piProcess) answerExtensionUI(raw []byte) {
+	var request struct {
+		ID     string `json:"id"`
+		Method string `json:"method"`
+	}
+	if err := json.Unmarshal(raw, &request); err != nil || request.ID == "" {
+		return
+	}
+	switch request.Method {
+	case "confirm", "select", "input", "editor":
+	default:
+		return
+	}
+	response, err := json.Marshal(map[string]any{"type": "extension_ui_response", "id": request.ID, "cancelled": true})
+	if err != nil {
+		return
+	}
+	process.writeMu.Lock()
+	process.mu.Lock()
+	stdin := process.stdin
+	closed := process.closed
+	process.mu.Unlock()
+	if !closed && stdin != nil {
+		_, _ = stdin.Write(append(response, '\n'))
+	}
+	process.writeMu.Unlock()
+	process.mu.Lock()
+	turn := process.active
+	threadID := process.session.ID
+	process.mu.Unlock()
+	if turn != nil {
+		turn.emitEvent(core.Event{Kind: core.EventStatus, Text: "Pi extension dialog cancelled: no interactive extension UI bridge", ThreadID: threadID})
+	}
 }
 
 func emptyPiError(value string) string {
