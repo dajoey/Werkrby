@@ -52,6 +52,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 STATE_DIR = os.environ.get("HELM_DISPATCHER_STATE",
                            os.path.join(ROOT, "data", "dispatcher"))
 RUNS_DIR = os.environ.get("HELM_RUNS_DIR", os.path.join(ROOT, "data", "runs"))
+# --selftest parses RECORDED run dirs — captured artifacts, never a live run —
+# so a checkout without them can point this at a tree it builds and deletes.
+# Unset, it is the deployment's own `runs/` beside the subsystem, as before.
+SELFTEST_RUNS_DIR = os.environ.get("HELM_SELFTEST_RUNS_DIR",
+                                   os.path.join(ROOT, "runs"))
 HEARTBEAT = os.path.join(STATE_DIR, "heartbeat.json")
 LOCK_PATH = os.path.join(STATE_DIR, "tick.lock")
 
@@ -1069,6 +1074,7 @@ def claude_auth_available() -> tuple[bool, str]:
     try:
         p = subprocess.run([binary, "auth", "status"], capture_output=True,
                            text=True, timeout=60,
+                           stdin=subprocess.DEVNULL,   # see the note below
                            cwd=tempfile.gettempdir())
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, "no credential env var and auth status unrunnable (%s)" % e
@@ -1094,6 +1100,13 @@ def auth_precheck() -> tuple[bool, str]:
     try:
         p = subprocess.run([binary, "auth", "status"], capture_output=True,
                            text=True, timeout=60,
+                           stdin=subprocess.DEVNULL,   # never the caller's: a
+                                                       # runtime that peeks at
+                                                       # stdin blocks the whole
+                                                       # 60s under any launcher
+                                                       # that holds it open, and
+                                                       # a stalled precheck reads
+                                                       # as a hung tick
                            cwd=tempfile.gettempdir())  # a precheck must never
                                                        # write into the repo
     except (OSError, subprocess.TimeoutExpired):
@@ -1261,16 +1274,16 @@ def selftest() -> int:
 
     # 2. adapter parse of recorded runs (real captured artifacts, zero calls)
     cap = caps_mod.CapSet(max_budget_usd=1.50)
-    r1 = adapters.from_claude(os.path.join(ROOT, "runs", "claude-1"),
+    r1 = adapters.from_claude(os.path.join(SELFTEST_RUNS_DIR, "claude-1"),
                               0, False, 7.1, cap, "selftest", "claude-1")
     if not (r1.ok and r1.num_turns == 3 and r1.cost_usd
             and r1.cost_basis == "reported" and "claude-sonnet" in (r1.model or "")):
         fails.append("claude parse: %s" % r1.to_payload())
-    esc = adapters.from_claude(os.path.join(ROOT, "runs", "claude-violation"),
+    esc = adapters.from_claude(os.path.join(SELFTEST_RUNS_DIR, "claude-violation"),
                                0, False, 10.0, cap, "selftest", "esc")
     if esc.ok and not esc.permission_denials:
         pass  # the recorded escape: rc 0, no denials — invisibility is the finding
-    r2 = adapters.from_hermes(os.path.join(ROOT, "runs", "hermes-4-in-flag"),
+    r2 = adapters.from_hermes(os.path.join(SELFTEST_RUNS_DIR, "hermes-4-in-flag"),
                              0, False, 13.9, cap, "selftest", "h4")
     if r2.cost_usd is not None or r2.cost_basis != "unknown/none":
         fails.append("hermes cost must stay unpriced-null, got %s/%s"

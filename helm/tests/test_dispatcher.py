@@ -12,6 +12,7 @@ Covers the P3 gates OFFLINE (what can be covered without a live E2E):
   distinct (usage-over vs usage-blind), heartbeat on no-op, retention sweep
   with faked mtimes, --dry writes nothing, jail refusal when degraded.
 """
+import atexit
 import json
 import os
 import sqlite3
@@ -53,6 +54,99 @@ os.environ["HELM_CLAUDE_BIN"] = STUB   # spec_claude honors it: the stub runs, c
 # P3b §1.5: the round-cap review (and the one-more-round switch) spawn the
 # OTHER runtime; without this the suite would invoke the real `hermes` CLI.
 os.environ["HELM_HERMES_BIN"] = STUB
+
+
+# --------------------------------------------- recorded-run fixtures (built here)
+#
+# The adapter readers are the one place a runtime's output format can drift
+# underneath the dispatcher, so they are parsed against real artifact shapes
+# rather than mocked out. The private deployment kept the captured run dirs
+# under `helm/runs/`; a public checkout has none and must not grow one — a live
+# run dir carries the 0600 env file the jail writes into it. So the suite BUILDS
+# the smallest run dirs that exercise each reader, points both itself and
+# `tick.py --selftest` (its own process) at them, and removes them on the way
+# out. Nothing here is committed and nothing survives the run.
+#
+# The numbers are the measured ones from docs/SPIKE-P2b.md §2 — `claude-1`:
+# 3 turns, $0.006826, a haiku line billed beside sonnet; `hermes-4-in-flag`:
+# 2 api_calls, cost unreportable. They are explicit literals, not generated, so
+# the file each adapter opens and the field it reads out of it are both legible
+# without running anything. The key set matches tests/stub_executor.py, which is
+# the in-repo reference for these two envelopes.
+FIXTURE_RUNS = tempfile.mkdtemp(prefix="helm-dispatch-fixtures-")
+atexit.register(_sh.rmtree, FIXTURE_RUNS, ignore_errors=True)
+
+
+def fixture_run(name, files):
+    """Write one recorded run dir: {filename: text} exactly as the CLI left it."""
+    d = os.path.join(FIXTURE_RUNS, name)
+    os.makedirs(d, exist_ok=True)
+    for fname, text in files.items():
+        with open(os.path.join(d, fname), "w", encoding="utf-8") as fh:
+            fh.write(text)
+    return d
+
+
+# claude -p --output-format json writes ONE JSON object to stdout.json.
+# from_claude() reads: is_error, subtype, num_turns, total_cost_usd, modelUsage
+# (its costliest key is the model of record), usage.*_tokens, permission_denials
+# and result. stderr.txt is optional and read only for its tail.
+fixture_run("claude-1", {"stdout.json": json.dumps({
+    "is_error": False,
+    "duration_api_ms": 6209,
+    "num_turns": 3,
+    "subtype": "success",
+    "total_cost_usd": 0.006826,
+    # One `claude -p` run bills MORE THAN ONE model: a haiku helper rides along
+    # with the model that was asked for. 0.005726 + 0.001100 = 0.006826, so the
+    # sonnet line is the costliest and becomes the model of record.
+    "modelUsage": {"claude-sonnet-4-5": {"costUSD": 0.005726},
+                   "claude-haiku-4-5": {"costUSD": 0.001100}},
+    "usage": {"input_tokens": 4, "cache_read_input_tokens": 5203,
+              "cache_creation_input_tokens": 331, "output_tokens": 372},
+    "permission_denials": [],
+    "result": "391 OK",
+}, indent=2) + "\n"})
+
+# The recorded escape run, which `--selftest` also parses: it wrote OUTSIDE its
+# run dir and the envelope still shows rc 0, subtype "success" and an EMPTY
+# denial list. That invisibility is the finding — the OS jail is the scope, not
+# the runtime's own report — so nothing asserts a denial here.
+fixture_run("claude-violation", {"stdout.json": json.dumps({
+    "is_error": False,
+    "duration_api_ms": 9044,
+    "num_turns": 4,
+    "subtype": "success",
+    "total_cost_usd": 0.013513,
+    "modelUsage": {"claude-sonnet-4-5": {"costUSD": 0.012413},
+                   "claude-haiku-4-5": {"costUSD": 0.001100}},
+    "usage": {"input_tokens": 6, "cache_read_input_tokens": 9611,
+              "cache_creation_input_tokens": 402, "output_tokens": 611},
+    "permission_denials": [],
+    "result": "391 OK",
+}, indent=2) + "\n"})
+
+# hermes -z prints final text ONLY, to stdout.txt; --usage-file is the whole
+# accounting surface. from_hermes() reads: api_calls (reported AS the turn count
+# and labelled as such — it is not the same number), estimated_cost_usd gated by
+# cost_status, and tokens.* under their own names. cost_status "unknown" on a
+# subscription credential means UNPRICED, not free, so the reader must map that
+# 0.0 to null with basis "unknown/none" and never sum it as spend (LESSONS 30).
+fixture_run("hermes-4-in-flag", {
+    "stdout.txt": "391 OK\n",
+    "usage.json": json.dumps({
+        "model": "glm-5.3",
+        "api_calls": 2,
+        "estimated_cost_usd": 0.0,
+        "cost_status": "unknown",
+        "cost_source": "none",
+        "tokens": {"input_tokens": 118, "output_tokens": 93,
+                   "cache_read_tokens": 26712, "cache_write_tokens": 0},
+    }, indent=2) + "\n"})
+
+# tick.py --selftest resolves the same three dirs in its own process; unset,
+# it reads the deployment's own `runs/` exactly as before.
+os.environ["HELM_SELFTEST_RUNS_DIR"] = FIXTURE_RUNS
 
 
 from dispatcher import adapters, brake as brake_mod, caps as caps_mod          # noqa: E402
@@ -217,13 +311,13 @@ FakeVM.sample_ts = None
 # ====================================================== 2. adapter parse
 
 cap = caps_mod.CapSet(max_budget_usd=1.50)
-r1 = adapters.from_claude(os.path.join(ROOT, "runs", "claude-1"), 0, False, 7.1,
+r1 = adapters.from_claude(os.path.join(FIXTURE_RUNS, "claude-1"), 0, False, 7.1,
                           cap, "t", "claude-1")
 check("claude parse ok/turns/cost/basis",
       r1.ok and r1.num_turns == 3 and abs(r1.cost_usd - 0.0068) < 1e-4
       and r1.cost_basis == "reported", r1.to_payload())
 check("claude parse counts a haiku line", any("haiku" in k for k in (r1.models_billed or {})))
-r2 = adapters.from_hermes(os.path.join(ROOT, "runs", "hermes-4-in-flag"), 0, False,
+r2 = adapters.from_hermes(os.path.join(FIXTURE_RUNS, "hermes-4-in-flag"), 0, False,
                           13.9, cap, "t", "h4")
 check("hermes cost unpriced -> null + unknown/none",
       r2.cost_usd is None and r2.cost_basis == "unknown/none", r2.to_payload())
@@ -233,7 +327,7 @@ check("unknown runtime raises",
 
 # budget cap fired ON PURPOSE: cost >= cap
 capf = caps_mod.CapSet(max_budget_usd=1.50)
-rf = adapters.from_claude(os.path.join(ROOT, "runs", "claude-1"), 0, False, 7,
+rf = adapters.from_claude(os.path.join(FIXTURE_RUNS, "claude-1"), 0, False, 7,
                           caps_mod.CapSet(max_budget_usd=0.005), "t", "f")
 check("budget cap fires when cost >= cap", rf.capped is True, rf.to_payload())
 check("budget cap quiet when cost < cap", r1.capped is False)
