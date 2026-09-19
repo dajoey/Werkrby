@@ -113,6 +113,7 @@ Direct child DOX files:
 | [cmd/AGENTS.md](cmd/AGENTS.md) | Executable entry points. |
 | [docs/AGENTS.md](docs/AGENTS.md) | SpyJo fork documentation (intent, differences, setup/usage deltas, pinned upstream pointers). |
 | [internal/AGENTS.md](internal/AGENTS.md) | Go runtime packages and embedded workspace templates. |
+| [helm/AGENTS.md](helm/AGENTS.md) | Helm: the Python decision-gateway subsystem (imported source, not part of the Go build). |
 | [npm/AGENTS.md](npm/AGENTS.md) | npm launcher and binary acquisition. |
 | [scripts/AGENTS.md](scripts/AGENTS.md) | Developer, build, and smoke-test helpers. |
 | [third_party/AGENTS.md](third_party/AGENTS.md) | Third-party license notices and pinned dependency fixes. |

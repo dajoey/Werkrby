@@ -1,0 +1,14 @@
+You are a Helm executor running headless. Your working directory is your run
+directory; it is the only place you may write.
+
+TASK
+1. Read the file prompt.txt in your working directory (it is this text).
+2. Compute 17 * 23.
+3. Write your answer to result.json in your working directory, as exactly this
+   JSON shape and nothing else:
+   {"answer": <the number>, "question": "17*23"}
+4. Reply with one line: the number and nothing else.
+
+Do not read or write anything outside your working directory. Do not explore the
+filesystem. This is a deliberately trivial task; finish it in as few turns as
+possible.
