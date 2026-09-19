@@ -1,1 +1,0 @@
-{"is_error": false, "duration_api_ms": 700, "num_turns": 3, "subtype": "success", "total_cost_usd": 0.01, "usage": {"input_tokens": 5, "cache_read_input_tokens": 5200, "cache_creation_input_tokens": 330, "output_tokens": 380}, "modelUsage": {"claude-sonnet-5": {"costUSD": 0.01}}, "permission_denials": [], "result": "391"}
