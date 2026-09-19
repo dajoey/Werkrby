@@ -1229,6 +1229,27 @@ def unanswered_questions(con, thread_id):
     return out
 
 
+# --- Identifiers that become path segments -----------------------------------
+#
+# A thread_id is not free text. It is a producer-supplied string that the API
+# layer joins straight onto the attachment root as a directory name, and an
+# att_id is joined onto that as a file name. A closed character set here is the
+# only thing between a producer token and a write outside that root: Starlette's
+# default path converter is [^/]+, which matches '..' happily, and a client that
+# does not collapse dot-segments before sending (curl --path-as-is, any raw HTTP
+# client) hands it through intact. The sibling `label` field has been checked
+# against LABEL_NAME_RE since P6; this was simply forgotten.
+#
+# Deliberately an allowlist, not a hunt for '..' and '/': traversal has more
+# spellings than anyone enumerates correctly, and every id the board actually
+# mints -- 't-quota-floor-guard', 'sweep-stack-status-20260919',
+# 'sched-<job>-failure-<date>', 'lesson-<12 hex>', _mint_hand_id's
+# 'joey-<date>-<slug>' -- is already inside this set. \Z rather than $ because
+# '$' in Python also matches before a trailing newline.
+IDENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+IDENT_RULE = "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+
+
 def validate_thread(t):
     """Pure validation and normalization. Returns (clean, errors).
 
@@ -1248,6 +1269,14 @@ def validate_thread(t):
     if not tid:
         errors.append("thread_id is required and must be stable across passes for the same "
                       "underlying concern; without it every pass creates duplicates")
+    elif not IDENT_RE.match(tid):
+        errors.append("thread_id %r is not an identifier: it must match %s -- letters, "
+                      "digits, '-' and '_', starting with a letter or a digit. The id is "
+                      "used verbatim as a directory name under the attachment root, so a "
+                      "separator, a leading dot or a '..' would put a producer's uploads "
+                      "somewhere on the disk nobody chose. Use the shape the rest of the "
+                      "board uses: 't-quota-floor-guard', 'sweep-stack-status-20260919'"
+                      % (tid[:80], IDENT_RULE))
 
     urgency = str(t.get("urgency") or "whenever")
     if urgency not in VALID_URGENCY:
@@ -2494,10 +2523,20 @@ def normalize_attachment(meta):
     if not _SHA256_HEX.match(sha or ""):
         errors.append("attachment %r has sha256 %r, which is not 64 hex characters. It is "
                       "what tells a re-sent file from a second one" % (filename, sha))
+    # Same reason as thread_id (see IDENT_RE): the att_id a caller sends is
+    # stored verbatim and is the file name the bytes are read back under, one
+    # level below the thread's own directory. Omit it and the store mints one.
+    att_id = str(meta.get("att_id") or "").strip()
+    if att_id and not IDENT_RE.match(att_id):
+        errors.append("attachment %r has att_id %r, which is not an identifier: it must "
+                      "match %s. It becomes the file name the bytes are stored and served "
+                      "under, so a separator or a leading dot reads and writes outside the "
+                      "thread's own folder. Leave it out and the store mints one"
+                      % (filename, att_id[:80], IDENT_RULE))
     if errors:
         return None, errors
     return {
-        "att_id": str(meta.get("att_id") or uuid.uuid4().hex),
+        "att_id": att_id or uuid.uuid4().hex,
         "ts": float(meta.get("ts") or time.time()),
         "filename": filename,
         "mime": mime,

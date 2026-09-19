@@ -38,6 +38,7 @@ from __future__ import annotations
 import os
 import pwd
 import shutil
+import socket
 import subprocess
 
 from .common import log
@@ -110,12 +111,55 @@ PROVIDER_HOSTS = (
 )
 
 
+def resolve_all(host: str) -> list:
+    """EVERY distinct address the resolver has for `host` — IPv4 and IPv6.
+
+    getaddrinfo, never gethostbyname: gethostbyname returns exactly ONE
+    address, and these provider hosts are CDN / load-balancer fronted with
+    several rotating records. The jailed executor does its OWN resolution
+    inside the sandbox (the DNS servers are passed through for exactly that),
+    so two independent lookups of the same round-robin name seconds apart
+    routinely disagree — measured on this host 2026-09-19: five consecutive
+    gethostbyname calls returned two different addresses for both api.z.ai and
+    api.venice.ai. When they disagree, IPAddressDeny=any silently drops the
+    executor's connection and the run fails looking like a provider outage.
+    That is ordinary rotation between two lookups, NOT "DNS changed under us":
+    it is why the symptom is intermittent and load-dependent rather than
+    reproducible. Allowlisting the whole set closes the race.
+
+    IPv6 rides along: IPAddressAllow= takes IPv4 and IPv6 alike (verified in
+    man 5 systemd.resource-control on this host — "a space separated list of
+    IPv4 or IPv6 addresses"), and an executor on a dual-stack host may well
+    pick an AAAA record. A link-local scope suffix would be rejected by
+    systemd, so it is stripped.
+
+    Unresolvable hosts return [] — the caller skips them quietly rather than
+    failing the jail build.
+    """
+    try:
+        infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return []
+    out, seen = [], set()
+    for info in infos:
+        addr = str(info[4][0]).split("%", 1)[0]  # drop any %scope suffix
+        if addr and addr not in seen:
+            seen.add(addr)
+            out.append(addr)
+    return out
+
+
 def provider_allowlist() -> str:
-    """Resolve the provider hosts to IPs at jail-build time. Resolved IPs, not
-    wildcard domains: the allowlist stays narrow even if DNS changes under us
-    mid-run, and no general egress is ever granted. DNS servers themselves are
-    passed through so name resolution works inside the jail."""
-    import socket
+    """Resolve the provider hosts to IPs at jail-build time — the FULL address
+    set per host, not one A record (see resolve_all: these hosts rotate between
+    lookups, and a single-address allowlist drops the executor's own connection).
+
+    Still resolved IPs, never wildcard domains and never general egress: the
+    allowlist is exactly loopback, the system resolvers, and the addresses the
+    configured provider hosts currently answer with. Nothing else is reachable
+    — no LAN, no sideways movement. DNS servers themselves are passed through
+    so name resolution works inside the jail.
+    """
     entries = ["127.0.0.1/8"]
     # the system resolvers, so getaddrinfo works inside the jail
     try:
@@ -129,18 +173,12 @@ def provider_allowlist() -> str:
     for host in os.environ.get("HELM_JAIL_EXTRA_HOSTS", "").split(","):
         host = host.strip()
         if host:
-            try:
-                entries.append(socket.gethostbyname(host))
-            except OSError:
-                pass
+            entries.extend(resolve_all(host))
     hosts_env = os.environ.get("HELM_JAIL_PROVIDER_HOSTS",
                                ",".join(PROVIDER_HOSTS))
     for h in (x.strip() for x in hosts_env.split(",")):
         if h:
-            try:
-                entries.append(socket.gethostbyname(h))
-            except OSError:
-                pass
+            entries.extend(resolve_all(h))
     # dedupe, preserve order
     seen, out = set(), []
     for e in entries:

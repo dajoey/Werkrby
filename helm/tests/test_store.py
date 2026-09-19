@@ -149,6 +149,38 @@ def run():
     check("missing thread_id is rejected", res["rejected_count"] == 1, res)
     check("and says why", "thread_id is required" in res["rejected"][0]["errors"][0], res)
 
+    print("\nthread_id is an identifier: it becomes a directory name")
+    # The API layer joins thread_id onto the attachment root verbatim, and
+    # Starlette's default path converter is [^/]+, so '..' reaches it intact
+    # from any client that does not collapse dot-segments. Traversal is refused
+    # at the only door that can create a row.
+    traversal = ["..", "../..", "../../../../etc/cron.d/helm", "a/b", "a\\b",
+                 ".hidden", "t-1 with spaces", "t-1;rm -rf /", "t\u00e9-1"]
+    res = store.put_threads(con, {"threads": (
+        [{"thread_id": tid, "title": "traversal probe " + repr(tid),
+          "ask": {"kind": "ack", "prompt": "Read this?"}} for tid in traversal]
+        + [thread("t-ident-ok", title="a legal id still lands")])})
+    check("every traversal-shaped thread_id is rejected",
+          res["rejected_count"] == len(traversal), res)
+    check("and names the character set",
+          "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$" in rejected_errors(res, ".."), res)
+    check("and says why it exists",
+          "directory name" in rejected_errors(res, ".."), res)
+    check("no traversal thread was stored", con.execute(
+        "SELECT COUNT(*) c FROM threads WHERE thread_id LIKE '%..%'"
+        " OR thread_id LIKE '%/%'").fetchone()["c"] == 0)
+    check("the legal id in the same payload still landed", con.execute(
+        "SELECT 1 FROM threads WHERE thread_id='t-ident-ok'").fetchone() is not None)
+    # Same rule, same reason, one level down: att_id is the file name.
+    _, errs = store.normalize_attachment(
+        {"att_id": "../../../../tmp/escape", "filename": "invoice.pdf",
+         "mime": "application/pdf", "size": 12, "sha256": "a" * 64})
+    check("a traversal-shaped att_id is rejected too", bool(errs), errs)
+    clean, errs = store.normalize_attachment(
+        {"filename": "invoice.pdf", "mime": "application/pdf", "size": 12,
+         "sha256": "a" * 64})
+    check("an omitted att_id is still minted", not errs and clean["att_id"], (clean, errs))
+
     print("\nInvariant 4a at the producer's door")
     res = store.put_threads(con, {"threads": [
         thread("t-bare", state="needs-you", ask={"kind": "none"})]})

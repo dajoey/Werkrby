@@ -4,6 +4,7 @@ Contract: docs/contracts/P2.md. Every handler is parse -> one store call -> JSON
 The store (helm/store.py) stays free of HTTP. Compatibility target: the legacy
 in-memory gateway that the existing Android app and web UI speak today.
 """
+import hmac
 import json
 import os
 import time
@@ -24,19 +25,72 @@ TOKEN = os.environ.get("HELM_APP_TOKEN", "")
 DB_PATH = os.environ.get("HELM_DB", "data/helm.db")
 OPEN_PATHS = {"/api/meta", "/metrics"}
 
+
+def _authorized(header: str) -> bool:
+    """Constant-time `Authorization: Bearer <token>` check, header only.
+
+    A token in a query string is written verbatim into access logs, proxy logs
+    and browser history, so there is no `?token=` fallback. A malformed or
+    non-ASCII header is unauthorized, never an exception.
+    """
+    try:
+        provided = header.encode("utf-8")
+        expected = ("Bearer " + TOKEN).encode("utf-8")
+    except (AttributeError, UnicodeError):
+        return False
+    return hmac.compare_digest(provided, expected)
+
+
 _metrics_lock = threading.Lock()
 _request_counts = collections.defaultdict(int)
 _request_duration_sum = collections.defaultdict(float)
 _request_errors = collections.defaultdict(int)
 
+# Metric labels are bounded by the route table. telemetry_gate is the outer
+# middleware, so every request reaching the port is counted -- including the
+# 401s and 404s of a client that never authenticated. Keying those by raw path
+# would let anyone grow these dicts, and /metrics with them, without limit.
+UNMATCHED_PATH = "/<unmatched>"
+_PATH_PARAM_RE = re.compile(r"(\{[^{}]+\})")
+_KNOWN_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH",
+                            "DELETE", "OPTIONS", "TRACE", "CONNECT"})
+_ROUTE_METRIC_KEYS = []
+
+
+def _compile_route_metric_keys(templates):
+    """One (matcher, label) pair per registered route path, in declaration order.
+
+    Path parameters collapse to `:id`, which is the label the old id regex
+    already produced for `t-` thread ids, so existing series do not churn.
+    """
+    keys = []
+    seen = set()
+    for template in templates:
+        if template in seen:
+            continue
+        seen.add(template)
+        pattern = "".join("[^/]+" if part.startswith("{") else re.escape(part)
+                          for part in _PATH_PARAM_RE.split(template) if part)
+        keys.append((re.compile("^" + pattern + "$"),
+                     _PATH_PARAM_RE.sub(":id", template)))
+    return keys
+
+
+def _metric_path(path: str) -> str:
+    for matcher, label in _ROUTE_METRIC_KEYS:
+        if matcher.match(path):
+            return label
+    return UNMATCHED_PATH
+
 
 def _record_http_metric(method: str, path: str, status: int, duration_s: float):
-    norm_path = re.sub(r'/(t-[a-zA-Z0-9_-]+|att-[a-zA-Z0-9_-]+|claim-[a-zA-Z0-9_-]+)', '/:id', path)
+    norm_path = _metric_path(path)
+    norm_method = method if method in _KNOWN_METHODS else "OTHER"
     with _metrics_lock:
-        _request_counts[(method, norm_path, status)] += 1
-        _request_duration_sum[(method, norm_path)] += duration_s
+        _request_counts[(norm_method, norm_path, status)] += 1
+        _request_duration_sum[(norm_method, norm_path)] += duration_s
         if status >= 500:
-            _request_errors[(method, norm_path, status)] += 1
+            _request_errors[(norm_method, norm_path, status)] += 1
 
 
 def _record_unhandled_error(trace_id: str, method: str, path: str, exc: Exception):
@@ -337,6 +391,19 @@ async def append_note(request):
 ATTACH_ROOT = os.environ.get("HELM_ATTACH_DIR", "data/attachments")
 
 
+def _safe_segment(*segments) -> bool:
+    """Every id that becomes a path segment must be one, at the join site too.
+
+    store.IDENT_RE is enforced when a thread or attachment is created, but these
+    ids arrive here from the URL, and Starlette's default converter is [^/]+,
+    which matches '..'. attachment_get stats the joined path BEFORE it asks the
+    store anything, so store-side validation alone leaves a file-existence
+    oracle -- and a database written before that validation existed can still
+    hold an id no producer could send today.
+    """
+    return all(store.IDENT_RE.match(seg or "") for seg in segments)
+
+
 async def attach(request):
     thread_id = request.path_params["thread_id"]
     # Who is uploading. A browser behind Authentik is a person; a direct API
@@ -376,6 +443,8 @@ async def attach(request):
         return _rej(exc)
     finally:
         con.close()
+    if not _safe_segment(thread_id, rec["att_id"]):
+        return JSONResponse({"detail": "no such thread"}, status_code=404)
     os.makedirs(os.path.join(ATTACH_ROOT, thread_id), exist_ok=True)
     path = os.path.join(ATTACH_ROOT, thread_id, rec["att_id"] + ".bin")
     with open(path, "wb") as f:
@@ -386,6 +455,8 @@ async def attach(request):
 async def attachment_get(request):
     thread_id = request.path_params["thread_id"]
     att_id = request.path_params["att_id"]
+    if not _safe_segment(thread_id, att_id):
+        return JSONResponse({"detail": "no such attachment"}, status_code=404)
     path = os.path.join(ATTACH_ROOT, thread_id, f"{att_id}.bin")
     if not os.path.isfile(path):
         return JSONResponse({"detail": "no such attachment"}, status_code=404)
@@ -1036,6 +1107,9 @@ def build_app():
         Route("/metrics", metrics_route, methods=["GET"]),
     ]
 
+    global _ROUTE_METRIC_KEYS
+    _ROUTE_METRIC_KEYS = _compile_route_metric_keys([r.path for r in routes])
+
     async def telemetry_gate(request, call_next):
         trace_id = request.headers.get("x-trace-id") or f"tr-req-{int(time.time()*1000)}-{os.urandom(4).hex()}"
         start_ts = time.time()
@@ -1057,14 +1131,11 @@ def build_app():
             }, status_code=500, headers={"X-Trace-ID": trace_id})
 
     async def auth_gate(request, call_next):
-        if request.url.path in OPEN_PATHS or request.url.path.startswith("/api/meta"):
+        if request.url.path in OPEN_PATHS:
             return await call_next(request)
         if not TOKEN:
             return JSONResponse({"detail": "server has no HELM_APP_TOKEN configured; refusing open"}, status_code=500)
-        auth = request.headers.get("Authorization", "")
-        if auth != f"Bearer {TOKEN}":
-            if request.query_params.get("token") == TOKEN:
-                return await call_next(request)
+        if not _authorized(request.headers.get("Authorization", "")):
             return JSONResponse({"detail": "unauthorized"}, status_code=401)
         return await call_next(request)
 
