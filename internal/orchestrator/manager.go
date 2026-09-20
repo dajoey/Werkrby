@@ -533,7 +533,7 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 		source := filepath.Join(sourceDir, entry.Name())
 		due, dueErr := documentDueForPhase(source, time.Now(), phase)
 		if dueErr != nil {
-			m.log("read queued document " + source + ": " + dueErr.Error())
+			m.reportUnparseableDocument(source, dueErr)
 			continue
 		}
 		if !due {
@@ -541,7 +541,7 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 		}
 		document, readErr := ReadDocument(source)
 		if readErr != nil {
-			m.log("read queued document " + source + ": " + readErr.Error())
+			m.reportUnparseableDocument(source, readErr)
 			continue
 		}
 		documentID := documentID(document)
@@ -1347,7 +1347,7 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 			path := filepath.Join(directory, entry.Name())
 			document, err := ReadDocument(path)
 			if err != nil {
-				m.log("read waiting document " + path + ": " + err.Error())
+				m.reportUnparseableDocument(path, err)
 				continue
 			}
 			due, err := scheduledWake(document, now)
@@ -1402,7 +1402,7 @@ func (m *Manager) advanceActiveGoals() error {
 		path := filepath.Join(directory, entry.Name())
 		document, err := ReadDocument(path)
 		if err != nil {
-			m.log("read active goal " + path + ": " + err.Error())
+			m.reportUnparseableDocument(path, err)
 			continue
 		}
 		if err := m.validateGoalActivation(document); err != nil {
@@ -1866,6 +1866,7 @@ func (m *Manager) ScheduledCheckpoints(now time.Time) ([]ScheduledCheckpoint, er
 		}
 		document, err := ParseDocument(data)
 		if err != nil {
+			m.reportUnparseableDocument(filepath.Join(directory, entry.Name()), err)
 			continue
 		}
 		trigger := stringField(document, "review_trigger")
