@@ -1143,6 +1143,18 @@ func (m *Manager) reconcileTaskTransition(ctx context.Context, route workflowRou
 				return "todo", target, nil
 			}
 		}
+		if status == "review" || status == "done" {
+			// The pre-registered acceptance check gates this hand-off; without
+			// an armed or registered check this is a no-op, byte for byte.
+			gateStatus, gatePath, gateHandled, gateErr := m.runAcceptanceGate(ctx, base, name, status, path)
+			if gateErr != nil {
+				return gateStatus, gatePath, gateErr
+			}
+			if gateHandled {
+				return gateStatus, gatePath, nil
+			}
+			status, path = gateStatus, gatePath
+		}
 		if status == "done" {
 			m.finalizeTaskCompletionSummary(path, status)
 		}

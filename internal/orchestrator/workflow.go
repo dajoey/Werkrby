@@ -247,6 +247,12 @@ func moveDocumentWithUpdate(path, target, status string, now time.Time, note str
 }
 
 func updateDocumentProgress(path string, now time.Time, note string) error {
+	return updateDocumentProgressWithUpdate(path, now, note, nil)
+}
+
+// updateDocumentProgressWithUpdate applies update to the front matter in the
+// same locked write that appends the progress note, without moving the file.
+func updateDocumentProgressWithUpdate(path string, now time.Time, note string, update func(map[string]any)) error {
 	lock, err := lockProviderTurn(path)
 	if err != nil {
 		return err
@@ -255,6 +261,9 @@ func updateDocumentProgress(path string, now time.Time, note string) error {
 	document, err := ReadDocument(path)
 	if err != nil {
 		return err
+	}
+	if update != nil {
+		update(document.FrontMatter)
 	}
 	document.FrontMatter["updated_at"] = now.UTC().Format(time.RFC3339)
 	appendProgress(&document, now, note)
