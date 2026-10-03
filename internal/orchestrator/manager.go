@@ -595,9 +595,18 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 			return candidates[i].name < candidates[j].name
 		}
 	})
+	// Priority means the top item takes capacity first AND the rest yields
+	// (Joey, 2026-10-03: the current goal is paramount). While goal work is
+	// queued or in flight no standalone task document is claimed; tasks already
+	// running finish. Computed once per scan; goal work parked in waiting/ does
+	// not hold, so a sleeping goal task cannot freeze the board.
+	holdStandalone := route.Name == "tasks" && m.goalWorkPending()
 	for _, candidate := range candidates {
 		source := filepath.Join(sourceDir, candidate.name)
 		document := candidate.document
+		if holdStandalone && !documentIsGoalDerived(document) {
+			continue
+		}
 		documentID := documentID(document)
 		if documentID == "" {
 			documentID = leaseID(route.Name+":"+phase, source)
@@ -2688,6 +2697,65 @@ func (m *Manager) isInflight(key string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.inflight[key]
+}
+
+// goalWorkPending reports whether any goal work is queued or in flight: a goal
+// document waiting to be planned, planned or reviewed, or a goal-derived task
+// that is due in todo/ or review/ or already claimed in working/ or reviewing/.
+// Goal work parked in waiting/ and goals in active/ with nothing runnable do not
+// count; the next claim of such work comes first by sort order anyway.
+func (m *Manager) goalWorkPending() bool {
+	cfg := m.runtimeSnapshot()
+	now := time.Now()
+	for _, route := range workflowRoutes() {
+		base := filepath.Dir(cfg.Resolve(route.Source))
+		switch route.Name {
+		case "goals":
+			for _, dir := range []string{"proposed", "planning", "review", "reviewing"} {
+				for _, name := range markdownNames(filepath.Join(base, dir)) {
+					document, err := ReadDocument(filepath.Join(base, dir, name))
+					if err != nil {
+						continue
+					}
+					if dir == "proposed" && !documentDue(document, now, phaseGoalPlanning) {
+						continue
+					}
+					return true
+				}
+			}
+		case "tasks":
+			for _, dir := range []string{"todo", "review", "working", "reviewing"} {
+				for _, name := range markdownNames(filepath.Join(base, dir)) {
+					document, err := ReadDocument(filepath.Join(base, dir, name))
+					if err != nil || !documentIsGoalDerived(document) {
+						continue
+					}
+					if dir == "todo" && !documentDue(document, now, phaseTaskImplementation) {
+						continue
+					}
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// markdownNames lists the queue documents in a directory (AGENTS.md excluded);
+// a missing directory is empty.
+func markdownNames(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") || entry.Name() == "AGENTS.md" {
+			continue
+		}
+		names = append(names, entry.Name())
+	}
+	return names
 }
 
 func (m *Manager) canAdmitClaim() bool {

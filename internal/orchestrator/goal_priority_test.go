@@ -142,3 +142,84 @@ func TestGoalReviewClaimsBeforeStandaloneTaskReview(t *testing.T) {
 		t.Fatalf("provider dispatches = %d, want exactly the goal review claim", fake.calls)
 	}
 }
+
+// Priority means the top item takes capacity first AND everything below it
+// yields. Claiming goal work first (above) is only half of that: with two free
+// slots a standalone task still started beside the goal's step. While goal work
+// is queued or in flight, no standalone document is claimed; tasks already
+// running finish (no pre-emption). Goal work parked in waiting/ does not hold.
+
+func twoSlotManager(t *testing.T) (*Manager, func(), string, string) {
+	t.Helper()
+	cfg, _, manager, finish := claimOrderTestManager(t)
+	manager.capacityMu.Lock()
+	manager.capacityLimit = 2
+	manager.capacityMu.Unlock()
+	taskRoute := workflowRoutes()[0]
+	return manager, finish, cfg.Resolve(taskRoute.Source), filepath.Dir(cfg.Resolve(taskRoute.Source))
+}
+
+func TestStandaloneWaitsWhileGoalTaskIsInFlight(t *testing.T) {
+	manager, finish, todoDir, base := twoSlotManager(t)
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-running.md", "2026-10-03T17:00:00Z")
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "working", "tasks-goal-running.md")); err != nil {
+		t.Fatalf("goal task was not claimed: %v", err)
+	}
+	// A free slot exists (limit 2, one in flight) and a standalone task arrives.
+	writeClaimFixture(t, todoDir, "tasks-standalone-late.md", "2026-09-01T00:00:00Z")
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "todo", "tasks-standalone-late.md")); err != nil {
+		t.Fatalf("a standalone task started while goal work was in flight: %v", err)
+	}
+	finish()
+}
+
+func TestStandaloneWaitsWhileGoalIsWaitingToBePlanned(t *testing.T) {
+	cfg, fake, manager, finish := claimOrderTestManager(t)
+	manager.capacityMu.Lock()
+	manager.capacityLimit = 2
+	manager.capacityMu.Unlock()
+	taskRoute := workflowRoutes()[0]
+	goalRoute := workflowRoutes()[1]
+	writeClaimFixture(t, cfg.Resolve(taskRoute.Source), "tasks-standalone.md", "2026-09-01T00:00:00Z")
+	goal, err := Create(cfg, "goals", "goal planning holds standalone work", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(cfg.Resolve(goalRoute.Source)), "planning", filepath.Base(goal))); err != nil {
+		t.Fatalf("goal was not claimed for planning: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(cfg.Resolve(taskRoute.Source)), "todo", "tasks-standalone.md")); err != nil {
+		t.Fatalf("a standalone task started while the goal was being planned: %v", err)
+	}
+	finish()
+	if fake.calls != 1 {
+		t.Fatalf("provider dispatches = %d, want only the goal planning claim", fake.calls)
+	}
+}
+
+// Goal work that is parked (waiting/) does not hold the board: a sleeping goal
+// task must not freeze every other task for hours.
+func TestStandaloneRunsWhileGoalTaskIsParked(t *testing.T) {
+	manager, finish, todoDir, base := twoSlotManager(t)
+	parked := writeGoalDerivedFixture(t, todoDir, "tasks-goal-parked.md", "2026-10-03T17:00:00Z")
+	if err := moveDocument(parked, filepath.Join(base, "waiting", filepath.Base(parked)), "waiting", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	writeClaimFixture(t, todoDir, "tasks-standalone.md", "2026-10-03T15:00:00Z")
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "working", "tasks-standalone.md")); err != nil {
+		t.Fatalf("a parked goal task froze standalone work: %v", err)
+	}
+	finish()
+}
