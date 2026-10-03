@@ -59,6 +59,8 @@ func acceptanceRegistryFile() string {
 
 type acceptanceSpec struct {
 	command string
+	argv    []string
+	target  string // the script file the pinned sha256 describes
 	sha256  string
 	timeout time.Duration
 	rounds  int
@@ -85,8 +87,19 @@ func acceptanceSpecFromDocument(document Document) (acceptanceSpec, bool, error)
 	if command == "" {
 		return malformed("command is missing")
 	}
-	if !filepath.IsAbs(command) {
-		return malformed("command must be an absolute path")
+	// The authoring tool's paste template wraps the script in an interpreter
+	// ("bash /abs/check.sh"); a bare executable path is equally valid. The
+	// pinned sha256 always describes the script file itself.
+	argv := strings.Fields(command)
+	target := ""
+	for _, token := range argv {
+		if filepath.IsAbs(token) {
+			target = token
+			break
+		}
+	}
+	if target == "" {
+		return malformed("command must name the check script by absolute path (optionally behind an interpreter)")
 	}
 	sum, _ := block["sha256"].(string)
 	sum = strings.ToLower(strings.TrimSpace(sum))
@@ -95,6 +108,8 @@ func acceptanceSpecFromDocument(document Document) (acceptanceSpec, bool, error)
 	}
 	spec := acceptanceSpec{
 		command: command,
+		argv:    argv,
+		target:  target,
 		sha256:  sum,
 		timeout: acceptanceDefaultTimeoutS * time.Second,
 		rounds:  acceptanceDefaultRounds,
@@ -151,12 +166,19 @@ func registeredAcceptanceSHA(taskID string) (string, bool, error) {
 		}
 		var entry struct {
 			Task   string `json:"task"`
+			TaskID string `json:"task_id"`
 			SHA256 string `json:"sha256"`
 		}
 		if json.Unmarshal([]byte(line), &entry) != nil {
 			continue
 		}
-		if strings.TrimSpace(entry.Task) == taskID {
+		// The registry carries one JSON line per registration; the authoring
+		// tool writes task_id, hand registrations may write task.
+		registeredTask := strings.TrimSpace(entry.Task)
+		if registeredTask == "" {
+			registeredTask = strings.TrimSpace(entry.TaskID)
+		}
+		if registeredTask == taskID {
 			latest, found = strings.ToLower(strings.TrimSpace(entry.SHA256)), true
 		}
 	}
@@ -232,23 +254,23 @@ func (m *Manager) runAcceptanceGate(ctx context.Context, base, name, status, pat
 		return m.acceptanceRefuse(path, base, name, now,
 			"the front-matter sha256 does not match the sha256 registered for this task")
 	}
-	info, statErr := os.Stat(spec.command)
+	info, statErr := os.Stat(spec.target)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
 			m.acceptanceNote(path, now, fmt.Sprintf(
-				"ACCEPTANCE CHECK INFRASTRUCTURE FAILURE (no attempt spent, hand-off accepted): the check script %s does not exist", spec.command), nil)
+				"ACCEPTANCE CHECK INFRASTRUCTURE FAILURE (no attempt spent, hand-off accepted): the check script %s does not exist", spec.target), nil)
 			return status, path, false, nil
 		}
 		m.acceptanceNote(path, now, fmt.Sprintf(
 			"ACCEPTANCE CHECK INFRASTRUCTURE FAILURE (no attempt spent, hand-off accepted): the check script could not be inspected: %s", statErr.Error()), nil)
 		return status, path, false, nil
 	}
-	if info.IsDir() || info.Mode()&0o111 == 0 {
+	if info.IsDir() || (spec.target == spec.argv[0] && info.Mode()&0o111 == 0) {
 		m.acceptanceNote(path, now, fmt.Sprintf(
-			"ACCEPTANCE CHECK INFRASTRUCTURE FAILURE (no attempt spent, hand-off accepted): the check script %s is not executable", spec.command), nil)
+			"ACCEPTANCE CHECK INFRASTRUCTURE FAILURE (no attempt spent, hand-off accepted): the check script %s is not executable", spec.target), nil)
 		return status, path, false, nil
 	}
-	actualSHA, hashErr := fileSHA256(spec.command)
+	actualSHA, hashErr := fileSHA256(spec.target)
 	if hashErr != nil {
 		m.acceptanceNote(path, now, fmt.Sprintf(
 			"ACCEPTANCE CHECK INFRASTRUCTURE FAILURE (no attempt spent, hand-off accepted): the check script could not be read: %s", hashErr.Error()), nil)
@@ -261,7 +283,7 @@ func (m *Manager) runAcceptanceGate(ctx context.Context, base, name, status, pat
 
 	runCtx, cancel := context.WithTimeout(ctx, spec.timeout)
 	defer cancel()
-	cmd := exec.CommandContext(runCtx, spec.command)
+	cmd := exec.CommandContext(runCtx, spec.argv[0], spec.argv[1:]...)
 	cmd.WaitDelay = 2 * time.Second
 	var output strings.Builder
 	cmd.Stdout = &output

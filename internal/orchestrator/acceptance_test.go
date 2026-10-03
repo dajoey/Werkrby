@@ -560,3 +560,37 @@ func TestAcceptanceGateDirectDoneFailsOnceThenBounces(t *testing.T) {
 		t.Fatalf("direct-done bounce does not carry the output: %q", bounced.Body)
 	}
 }
+
+// The authoring tool's paste template wraps the script in bash and writes
+// task_id keys; the gate must interop with that exact shape.
+func TestAcceptanceGateAuthoringToolShape(t *testing.T) {
+	cfg, route, registry := acceptanceTestWorkspace(t)
+	task, err := Create(cfg, "tasks", "gate tool shape", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(task)
+	check, sha := writeAcceptanceCheck(t, filepath.Join(cfg.Root, "checks", name), "exit 0")
+	if err := os.Chmod(check, 0o644); err != nil { // bash runs it; no exec bit needed
+		t.Fatal(err)
+	}
+	document := readTaskDocument(t, task)
+	entry := map[string]any{"task_id": documentID(document), "registered_at": time.Now().UTC().Format(time.RFC3339), "sha256": sha}
+	line, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(registry, append(line, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wrapped := "bash " + check
+	armAcceptanceCheck(t, task, wrapped, sha, 10, 2)
+
+	manager := handoffManager(t, cfg, route, name, "review")
+	runClaimCycle(t, manager)
+
+	after := readTaskDocument(t, taskPath(cfg, route, "review", name))
+	if !strings.Contains(after.Body, "ACCEPTANCE CHECK PASSED") {
+		t.Fatalf("bash-wrapped unregistered-exec-bit check did not pass: %q", after.Body)
+	}
+}
