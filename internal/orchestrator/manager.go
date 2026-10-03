@@ -2420,6 +2420,10 @@ func (m *Manager) restoreLeaseForRetry(leaseID string, recovery bool) {
 	}
 }
 
+// operatorStopHold is how long a task an operator stopped stays parked before
+// its wake_at brings it back. A stop is "stop doing this now", not "never".
+const operatorStopHold = 12 * time.Hour
+
 // restartInterrupted reports whether a harness/dispatch error is the
 // orchestrator's own lifecycle (service stop or the settling window after a
 // start) rather than a defect of the task being dispatched. Those kills must
@@ -2477,7 +2481,50 @@ func (m *Manager) recordRestartInterrupt(lease Lease, err error) {
 	}
 }
 
+// recordOperatorStop parks a task whose job an operator deliberately stopped
+// (MarkControlCancellation was set before the interrupt). The job's context is
+// cancelled by that stop, which restartInterrupted cannot tell from a service
+// restart, so the stop used to be filed as "interrupted by a service restart",
+// the lease was kept for re-adoption, and Spynel dispatched a recovery agent on
+// work the operator had just stopped (found live 2026-10-03). Parking in
+// waiting/ with a wake_at is the same shape recordQuotaError uses: the lease is
+// removed, the runtime job ends, no attempt is spent, and a timer owns the task.
+// Only task implementation is handled; reviews and goals keep their own
+// transitions and fall through to the old behaviour. It reports whether it
+// handled the error.
+func (m *Manager) recordOperatorStop(lease Lease) bool {
+	if !m.isControlCancelled(lease.ID) || lease.Phase != phaseTaskImplementation {
+		return false
+	}
+	route, ok := routeByName(lease.Route)
+	if !ok {
+		return false
+	}
+	now := time.Now().UTC()
+	wake := now.Add(operatorStopHold).Format(time.RFC3339)
+	base := filepath.Dir(m.Config.Resolve(route.Source))
+	waitingTarget := filepath.Join(base, "waiting", filepath.Base(lease.File))
+	note := fmt.Sprintf("stopped by an operator at %s; parked until %s; attempt not spent", now.Format(time.RFC3339), wake)
+	update := func(fm map[string]any) {
+		fm["wake_at"] = wake
+		fm["waiting_for"] = "stopped by an operator; resumes at wake_at, or re-queue or cancel it sooner"
+		fm["stopped_by"] = "operator"
+		fm[resumeCreditField] = true
+	}
+	if moveErr := moveDocumentWithUpdate(lease.File, waitingTarget, "waiting", now, note, update); moveErr != nil {
+		m.log("park operator-stopped task in waiting: " + moveErr.Error())
+		return false
+	}
+	_ = os.Remove(m.leasePath(lease.ID))
+	m.finishRuntimeJob(lease.ID)
+	m.log(fmt.Sprintf("%s: %s", note, waitingTarget))
+	return true
+}
+
 func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
+	if m.recordOperatorStop(lease) {
+		return
+	}
 	if m.restartInterrupted(ctx, err) {
 		m.recordRestartInterrupt(lease, err)
 		return
