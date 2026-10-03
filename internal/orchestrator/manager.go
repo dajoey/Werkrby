@@ -99,6 +99,7 @@ type Manager struct {
 	inflight                    map[string]bool
 	runtimeJobs                 map[string]int
 	controlCancelled            map[string]int
+	operatorStops               map[string]time.Time // lease id -> when an operator stopped it; survives finishRuntimeJob
 	jobs                        sync.WaitGroup
 	capacityMu                  sync.Mutex
 	capacityActive              int
@@ -243,7 +244,7 @@ func New(cfg config.Config, target harness.Harness, hooks extensions.Runner) *Ma
 		parallel = 1
 	}
 	manager := &Manager{
-		Config: cfg, runtimeConfig: cfg, Harness: target, Hooks: hooks, inflight: map[string]bool{}, runtimeJobs: map[string]int{}, controlCancelled: map[string]int{}, capacityLimit: parallel,
+		Config: cfg, runtimeConfig: cfg, Harness: target, Hooks: hooks, inflight: map[string]bool{}, runtimeJobs: map[string]int{}, controlCancelled: map[string]int{}, operatorStops: map[string]time.Time{}, capacityLimit: parallel,
 		Outbox:                 &Outbox{Directory: cfg.StatePath("runtime", "outbox")},
 		ownerID:                fmt.Sprintf("%d-%d-%s", os.Getpid(), time.Now().UTC().UnixNano(), randomSuffix()),
 		scanNow:                make(chan struct{}, 1),
@@ -2358,6 +2359,12 @@ func (m *Manager) MarkControlCancellation(sessionKey string) string {
 	}
 	m.mu.Lock()
 	m.controlCancelled[lease.ID]++
+	for id, at := range m.operatorStops {
+		if time.Since(at) > operatorStopWindow {
+			delete(m.operatorStops, id)
+		}
+	}
+	m.operatorStops[lease.ID] = time.Now()
 	m.mu.Unlock()
 	return lease.ID
 }
@@ -2372,10 +2379,30 @@ func (m *Manager) RestoreControlCancellation(leaseID string) {
 	m.mu.Lock()
 	if m.controlCancelled[leaseID] <= 1 {
 		delete(m.controlCancelled, leaseID)
+		delete(m.operatorStops, leaseID)
 	} else {
 		m.controlCancelled[leaseID]--
 	}
 	m.mu.Unlock()
+}
+
+// operatorStopPending reports whether an operator stop was recorded for the lease
+// within operatorStopWindow. Unlike controlCancelled it is NOT cleared by
+// finishRuntimeJob, which runs before recordError after a failed send.
+func (m *Manager) operatorStopPending(leaseID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	at, ok := m.operatorStops[leaseID]
+	return ok && time.Since(at) <= operatorStopWindow
+}
+
+// consumeOperatorStop is operatorStopPending that also forgets the record.
+func (m *Manager) consumeOperatorStop(leaseID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	at, ok := m.operatorStops[leaseID]
+	delete(m.operatorStops, leaseID)
+	return ok && time.Since(at) <= operatorStopWindow
 }
 
 func (m *Manager) isControlCancelled(leaseID string) bool {
@@ -2423,6 +2450,10 @@ func (m *Manager) restoreLeaseForRetry(leaseID string, recovery bool) {
 // operatorStopHold is how long a task an operator stopped stays parked before
 // its wake_at brings it back. A stop is "stop doing this now", not "never".
 const operatorStopHold = 12 * time.Hour
+
+// operatorStopWindow is how long a recorded stop may wait for the dispatch error handler to
+// see it; a record older than this belongs to some other cancellation and is ignored.
+const operatorStopWindow = 10 * time.Minute
 
 // restartInterrupted reports whether a harness/dispatch error is the
 // orchestrator's own lifecycle (service stop or the settling window after a
@@ -2482,7 +2513,9 @@ func (m *Manager) recordRestartInterrupt(lease Lease, err error) {
 }
 
 // recordOperatorStop parks a task whose job an operator deliberately stopped
-// (MarkControlCancellation was set before the interrupt). The job's context is
+// (MarkControlCancellation recorded it before the interrupt, in operatorStops, which
+// survives finishRuntimeJob: after a failed send finish() runs BEFORE recordError and
+// clears controlCancelled, so the first version of this check never fired live). The job's context is
 // cancelled by that stop, which restartInterrupted cannot tell from a service
 // restart, so the stop used to be filed as "interrupted by a service restart",
 // the lease was kept for re-adoption, and Spynel dispatched a recovery agent on
@@ -2493,7 +2526,7 @@ func (m *Manager) recordRestartInterrupt(lease Lease, err error) {
 // transitions and fall through to the old behaviour. It reports whether it
 // handled the error.
 func (m *Manager) recordOperatorStop(lease Lease) bool {
-	if !m.isControlCancelled(lease.ID) || lease.Phase != phaseTaskImplementation {
+	if lease.Phase != phaseTaskImplementation || !m.consumeOperatorStop(lease.ID) {
 		return false
 	}
 	route, ok := routeByName(lease.Route)

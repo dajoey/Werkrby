@@ -59,6 +59,10 @@ func TestOperatorStopParksTheTaskInsteadOfReadoptingIt(t *testing.T) {
 	}
 	before := time.Now().UTC()
 
+	// The real order after a failed Send is finish() then recordError (manager.go dispatch
+	// path); finishRuntimeJob clears controlCancelled, which is why the first version of this
+	// fix passed its unit test and did nothing live.
+	manager.finishRuntimeJob(lease.ID)
 	manager.recordError(cancelledContext(), lease, context.Canceled)
 
 	if fileExists(doc) {
@@ -87,8 +91,36 @@ func TestOperatorStopParksTheTaskInsteadOfReadoptingIt(t *testing.T) {
 	if leases, _ := manager.loadLeases(); len(leases) != 0 {
 		t.Fatalf("lease still exists, so Spynel would adopt it again: %#v", leases)
 	}
-	if manager.isControlCancelled(lease.ID) {
-		t.Fatalf("the cancellation marker was not cleared")
+	if manager.isControlCancelled(lease.ID) || manager.operatorStopPending(lease.ID) {
+		t.Fatalf("the cancellation record was not cleared")
+	}
+}
+
+func TestAnInterruptTheProviderRefusedDoesNotLeaveAStopPending(t *testing.T) {
+	manager, lease, doc, waiting := stoppedTaskFixture(t)
+	leaseID := manager.MarkControlCancellation("sess-stopped")
+	manager.RestoreControlCancellation(leaseID)
+	manager.finishRuntimeJob(lease.ID)
+
+	manager.recordError(cancelledContext(), lease, context.Canceled)
+
+	if !fileExists(doc) || fileExists(waiting) {
+		t.Fatalf("a refused interrupt must not park the task")
+	}
+}
+
+func TestAStaleStopRecordIsIgnored(t *testing.T) {
+	manager, lease, doc, waiting := stoppedTaskFixture(t)
+	manager.MarkControlCancellation("sess-stopped")
+	manager.mu.Lock()
+	manager.operatorStops[lease.ID] = time.Now().Add(-2 * operatorStopWindow)
+	manager.mu.Unlock()
+	manager.finishRuntimeJob(lease.ID)
+
+	manager.recordError(cancelledContext(), lease, context.Canceled)
+
+	if !fileExists(doc) || fileExists(waiting) {
+		t.Fatalf("a stop older than the window must not park an unrelated later cancellation")
 	}
 }
 
