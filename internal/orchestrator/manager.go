@@ -548,24 +548,49 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 	if err != nil {
 		return err
 	}
+	type queueCandidate struct {
+		name     string
+		document Document
+	}
+	var candidates []queueCandidate
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") || entry.Name() == "AGENTS.md" {
 			continue
 		}
 		source := filepath.Join(sourceDir, entry.Name())
-		due, dueErr := documentDueForPhase(source, time.Now(), phase)
-		if dueErr != nil {
-			m.reportUnparseableDocument(source, dueErr)
-			continue
-		}
-		if !due {
-			continue
-		}
 		document, readErr := ReadDocument(source)
 		if readErr != nil {
 			m.reportUnparseableDocument(source, readErr)
 			continue
 		}
+		if !documentDue(document, time.Now(), phase) {
+			continue
+		}
+		candidates = append(candidates, queueCandidate{name: entry.Name(), document: document})
+	}
+	// Claim oldest first. ReadDir returns filename order, which made claim
+	// priority an accident of naming (2026-10-03: date-named tasks-20261003-*
+	// filed 15:18Z-15:23Z overtook Helm-filed tasks waiting since 14:06Z
+	// because digits sort before letters). Front-matter created_at decides,
+	// equal timestamps fall back to filename order, and a document without a
+	// usable created_at sorts last so one bad document cannot stall the board.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		ti, oki := documentCreatedAt(candidates[i].document)
+		tj, okj := documentCreatedAt(candidates[j].document)
+		switch {
+		case oki && !okj:
+			return true
+		case !oki && okj:
+			return false
+		case oki && okj && !ti.Equal(tj):
+			return ti.Before(tj)
+		default:
+			return candidates[i].name < candidates[j].name
+		}
+	})
+	for _, candidate := range candidates {
+		source := filepath.Join(sourceDir, candidate.name)
+		document := candidate.document
 		documentID := documentID(document)
 		if documentID == "" {
 			documentID = leaseID(route.Name+":"+phase, source)
@@ -575,7 +600,7 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 		// before this queue is scanned. Do not claim the next phase while the
 		// preceding phase still owns the same durable document; its lease must
 		// reconcile the move first.
-		_, documentLeased, leaseErr := m.leaseForDocument(route.Name, entry.Name(), "", "")
+		_, documentLeased, leaseErr := m.leaseForDocument(route.Name, candidate.name, "", "")
 		if leaseErr != nil {
 			return leaseErr
 		}
@@ -586,14 +611,14 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 			break
 		}
 		if phase == phaseTaskReview && m.harnessSettings().Reviews == config.TaskReviewsNever {
-			target := filepath.Join(filepath.Dir(sourceDir), "todo", entry.Name())
+			target := filepath.Join(filepath.Dir(sourceDir), "todo", candidate.name)
 			note := "Independent task review is disabled by harness.reviews=never; Spynel returned this task to todo so an implementation session can record the required direct-completion evidence."
 			if err := moveDocumentWithProgress(source, target, "todo", time.Now().UTC(), note); err != nil {
 				m.log("bypass disabled task review " + source + ": " + err.Error())
 			}
 			continue
 		}
-		target := filepath.Join(claimedDir, entry.Name())
+		target := filepath.Join(claimedDir, candidate.name)
 		now := time.Now().UTC()
 		attemptField := phaseAttemptField(phase)
 		// Same rule the claim applies under the provider-turn lock below; the
@@ -1142,6 +1167,18 @@ func (m *Manager) reconcileTaskTransition(ctx context.Context, route workflowRou
 				m.log(note + " " + target)
 				return "todo", target, nil
 			}
+		}
+		if status == "review" || status == "done" {
+			// The pre-registered acceptance check gates this hand-off; without
+			// an armed or registered check this is a no-op, byte for byte.
+			gateStatus, gatePath, gateHandled, gateErr := m.runAcceptanceGate(ctx, base, name, status, path)
+			if gateErr != nil {
+				return gateStatus, gatePath, gateErr
+			}
+			if gateHandled {
+				return gateStatus, gatePath, nil
+			}
+			status, path = gateStatus, gatePath
 		}
 		if status == "done" {
 			m.finalizeTaskCompletionSummary(path, status)

@@ -357,6 +357,12 @@ func documentDueForPhase(path string, now time.Time, phase string) (bool, error)
 	if err != nil {
 		return false, err
 	}
+	return documentDue(document, now, phase), nil
+}
+
+// documentDue is the parse-free half of documentDueForPhase: the claim loop
+// already read the document, so eligibility must not trigger a second read.
+func documentDue(document Document, now time.Time, phase string) bool {
 	fields := []string{"not_before", "next_dispatch_at", "next_review_at"}
 	switch phase {
 	case phaseTaskImplementation, phaseGoalPlanning:
@@ -379,8 +385,28 @@ func documentDueForPhase(path string, now time.Time, phase string) (bool, error)
 			continue
 		}
 		if when.After(now) {
-			return false, nil
+			return false
 		}
 	}
-	return true, nil
+	return true
+}
+
+// documentCreatedAt is the claim-ordering timestamp, taken from the front
+// matter the caller already parsed; it never re-reads the file. A missing or
+// unparseable value reports !ok so the document sorts last instead of first.
+func documentCreatedAt(document Document) (time.Time, bool) {
+	switch value := document.FrontMatter["created_at"].(type) {
+	case string:
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err != nil || parsed.IsZero() {
+			return time.Time{}, false
+		}
+		return parsed, true
+	case time.Time:
+		if value.IsZero() {
+			return time.Time{}, false
+		}
+		return value, true
+	}
+	return time.Time{}, false
 }
