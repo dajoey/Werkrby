@@ -507,7 +507,7 @@ func (m *Manager) scanOnce(ctx context.Context) error {
 	// while 03/04 started), so nothing finished until the batch drained,
 	// reviewer findings could not inform later tasks, and reviews verified
 	// systems that later tasks had already changed.
-	for _, route := range workflowRoutes() {
+	for _, route := range workflowRoutesGoalsFirst() {
 		base := filepath.Dir(cfg.Resolve(route.Source))
 		var phase string
 		switch route.Name {
@@ -522,7 +522,7 @@ func (m *Manager) scanOnce(ctx context.Context) error {
 			return err
 		}
 	}
-	for _, route := range workflowRoutes() {
+	for _, route := range workflowRoutesGoalsFirst() {
 		var err error
 		switch route.Name {
 		case "tasks":
@@ -575,6 +575,13 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 	// equal timestamps fall back to filename order, and a document without a
 	// usable created_at sorts last so one bad document cannot stall the board.
 	sort.SliceStable(candidates, func(i, j int) bool {
+		// Goal-derived documents (goal_id) claim before standalone ones: the
+		// current goal is paramount (Joey, 2026-10-03), including tasks the
+		// goal files after today. Within a class the order is unchanged.
+		gi, gj := documentIsGoalDerived(candidates[i].document), documentIsGoalDerived(candidates[j].document)
+		if gi != gj {
+			return gi
+		}
 		ti, oki := documentCreatedAt(candidates[i].document)
 		tj, okj := documentCreatedAt(candidates[j].document)
 		switch {

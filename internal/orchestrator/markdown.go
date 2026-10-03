@@ -391,6 +391,15 @@ func documentDue(document Document, now time.Time, phase string) bool {
 	return true
 }
 
+// documentIsGoalDerived reports whether a document belongs to a goal: a task
+// the goal planner (or one of the goal's workers) filed carries a goal_id.
+// Goal-derived documents claim ahead of standalone ones (Joey, 2026-10-03:
+// the current goal is paramount); a blank or non-string goal_id is standalone.
+func documentIsGoalDerived(document Document) bool {
+	id, _ := document.FrontMatter["goal_id"].(string)
+	return strings.TrimSpace(id) != ""
+}
+
 // documentCreatedAt is the claim-ordering timestamp, taken from the front
 // matter the caller already parsed; it never re-reads the file. A missing or
 // unparseable value reports !ok so the document sorts last instead of first.

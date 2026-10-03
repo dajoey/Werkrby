@@ -46,6 +46,28 @@ const (
 	restartInterruptGrace = 2 * time.Minute
 )
 
+// workflowRoutesGoalsFirst is the claim-loop order: the goals route before the
+// tasks route. A scan stops at the first full house (canAdmitClaim), and the
+// tasks route is long; scanned first it kept every slot busy and a goal in
+// proposed/ or review/ never got to plan or close (observed 2026-10-03, goal
+// back in proposed/ behind 30+ queued tasks). Goals are few, so claiming them
+// first costs standalone work at most one slot per goal phase.
+func workflowRoutesGoalsFirst() []workflowRoute {
+	routes := workflowRoutes()
+	ordered := make([]workflowRoute, 0, len(routes))
+	for _, route := range routes {
+		if route.Name == "goals" {
+			ordered = append(ordered, route)
+		}
+	}
+	for _, route := range routes {
+		if route.Name != "goals" {
+			ordered = append(ordered, route)
+		}
+	}
+	return ordered
+}
+
 func routeByName(name string) (workflowRoute, bool) {
 	for _, route := range workflowRoutes() {
 		if route.Name == name {
