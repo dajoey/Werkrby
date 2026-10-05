@@ -49,7 +49,11 @@ type Staff struct {
 	// set together; the target may escalate again on its own thresholds.
 	EscalateAfter int    `yaml:"escalate_after,omitempty"`
 	EscalateTo    string `yaml:"escalate_to,omitempty"`
-	Note          string `yaml:"note,omitempty"`
+	// Family names the model family behind the staff (glm, gemini, claude, kimi, ...). Empty means
+	// derive it from the --model launch argument; see FamilyOf. Review picks a reviewer from a
+	// different family than the seat that wrote the work.
+	Family string `yaml:"family,omitempty"`
+	Note   string `yaml:"note,omitempty"`
 }
 
 type Escalation struct {
@@ -81,6 +85,9 @@ type Roster struct {
 	Staff      map[string]Staff  `yaml:"staff"`
 	Roles      map[string]string `yaml:"roles"`
 	Escalation Ladder            `yaml:"escalation,omitempty"`
+	// RoleAlternates lists, per role, other staff a review may use when the role's own staff is the
+	// same model family as the seat that wrote the work. See PickDifferentFamily.
+	RoleAlternates map[string][]string `yaml:"role_alternates,omitempty"`
 	// Routing is the machine-readable domain routing table (Joey 2026-09-18:
 	// "routing is by work type, and the filer sets it — not a classifier, not
 	// Joey"). Each entry names a work type; filers stamp front matter
@@ -137,6 +144,67 @@ func (r *Roster) EscalatedStaff(name string, attempt int) string {
 		cur = s.EscalateTo
 	}
 	return cur
+}
+
+var familyPatterns = []struct {
+	name string
+	re   *regexp.Regexp
+}{
+	{"glm", regexp.MustCompile(`(?i)glm|zai`)},
+	{"gemini", regexp.MustCompile(`(?i)gemini|antigravity`)},
+	{"claude", regexp.MustCompile(`(?i)claude|sonnet|haiku|opus`)},
+	{"kimi", regexp.MustCompile(`(?i)kimi|(^|/)k[0-9]`)},
+}
+
+func modelArg(args []string) string {
+	for i, a := range args {
+		if a == "--model" && i+1 < len(args) {
+			return args[i+1]
+		}
+		if strings.HasPrefix(a, "--model=") {
+			return strings.TrimPrefix(a, "--model=")
+		}
+	}
+	return ""
+}
+
+// FamilyOf returns the model family behind a staff: its explicit `family:` (lower-cased), else the
+// family its --model launch argument names, else "" when it cannot be told.
+func (r *Roster) FamilyOf(name string) string {
+	if r == nil {
+		return ""
+	}
+	s, ok := r.Staff[name]
+	if !ok {
+		return ""
+	}
+	if f := strings.ToLower(strings.TrimSpace(s.Family)); f != "" {
+		return f
+	}
+	model := modelArg(s.Args)
+	for _, p := range familyPatterns {
+		if p.re.MatchString(model) {
+			return p.name
+		}
+	}
+	return ""
+}
+
+// PickDifferentFamily chooses the reviewer for work written on seat `implementer`: `main` when it
+// is a different family (or either family is unknown, which is never second-guessed), otherwise the
+// first alternate whose family is known and differs, otherwise `main` again.
+func (r *Roster) PickDifferentFamily(main string, alternates []string, implementer string) string {
+	implFamily := r.FamilyOf(implementer)
+	mainFamily := r.FamilyOf(main)
+	if implFamily == "" || mainFamily == "" || mainFamily != implFamily {
+		return main
+	}
+	for _, alt := range alternates {
+		if f := r.FamilyOf(alt); f != "" && f != implFamily {
+			return alt
+		}
+	}
+	return main
 }
 
 // Path returns the roster file inside a workspace state directory.
@@ -213,6 +281,13 @@ func (r *Roster) validate() error {
 				return fmt.Errorf("staff %s: escalate_to forms a cycle", name)
 			}
 			visited[cur] = true
+		}
+	}
+	for role, alternates := range r.RoleAlternates {
+		for _, alt := range alternates {
+			if _, ok := r.Staff[alt]; !ok {
+				return fmt.Errorf("role_alternates %s: staff %q is not defined", role, alt)
+			}
 		}
 	}
 	for role, name := range r.Roles {

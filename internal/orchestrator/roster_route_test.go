@@ -3,7 +3,9 @@ package orchestrator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/agent0ai/spynel/internal/config"
 	"github.com/agent0ai/spynel/internal/extensions"
@@ -188,5 +190,74 @@ roles:
 		if got := resolve(task(c.name[:5]+"-"+c.want+"-"+c.frontMatter[len(c.frontMatter)-3:len(c.frontMatter)-1], c.frontMatter)); got != c.want {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
 		}
+	}
+}
+
+// A review picks a reviewer from a different model family than the seat that wrote the work, when
+// the review role lists alternates (role_alternates). Spynel remembers the implementing seat.
+func TestResolveTargetModelCrossFamilyReview(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, config.StateDirectoryName)
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Root: root, Harness: config.Harness{Name: "herdr", Model: "opencode", DeveloperModel: "opencode", ReviewerModel: "pi"}}
+	manager := New(cfg, newFakeRecipient(), extensions.Runner{})
+	task := func(name, frontMatter string) Lease {
+		path := filepath.Join(root, name+".md")
+		if err := os.WriteFile(path, []byte("---\nid: "+name+"\n"+frontMatter+"---\n# T\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Lease{File: path, SessionKey: "orchestrator:tasks:task_review:" + name + ":1"}
+	}
+	review := func(lease Lease) string {
+		lease.Phase = phaseTaskReview
+		return manager.resolveTargetModel(workflowRoute{Name: "tasks"}, lease)
+	}
+	body := `
+staff:
+  ops: {runner: agy, args: ["--model", "gemini-3.8-flash-high"]}
+  analyst: {runner: agy, args: ["--model", "gemini-3.8-flash-high"]}
+  glmflash: {runner: pi, args: ["--model", "zai/glm-5.3-flash"]}
+  glmmax: {runner: pi, args: ["--model", "zai/glm-5.3"]}
+  thinker: {runner: pi, args: ["--model", "zai/glm-5.3"]}
+roles:
+  task_implementation: ops
+  task_review: analyst
+  task_review_medium: analyst
+  task_review_high_risk: thinker
+role_alternates:
+  task_review_medium: [glmflash]
+`
+	if err := os.WriteFile(roster.Path(state), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := func(file, seat string) {
+		if err := roster.RecordImplementer(state, file, seat, time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct{ name, frontMatter, implementer, want string }{
+		{"medium risk, Gemini wrote it: GLM reviews", "risk: medium\n", "ops", "@glmflash"},
+		{"medium risk, GLM wrote it: Gemini reviews", "risk: medium\n", "glmmax", "@analyst"},
+		{"medium risk, writer unknown: the main reviewer", "risk: medium\n", "", "@analyst"},
+		{"ordinary review has no alternates and is untouched", "", "ops", "@analyst"},
+		{"high risk is untouched", "risk: high\n", "ops", "@thinker"},
+	} {
+		lease := task(strings.ReplaceAll(c.name[:8]+c.implementer+c.want, " ", "-"), c.frontMatter)
+		if c.implementer != "" {
+			record(filepath.Base(lease.File), c.implementer)
+		}
+		if got := review(lease); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+
+	// The implementation dispatch is what records the seat, so a review that follows it finds it.
+	impl := task("recorded", "")
+	impl.Phase = phaseTaskImplementation
+	manager.resolveTargetModel(workflowRoute{Name: "tasks"}, impl)
+	if seat, ok := roster.ImplementedBy(state, filepath.Base(impl.File)); !ok || seat != "ops" {
+		t.Errorf("implementation dispatch recorded %q %v, want ops", seat, ok)
 	}
 }

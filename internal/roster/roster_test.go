@@ -376,3 +376,114 @@ func TestSeatEscalationValidation(t *testing.T) {
 		}
 	}
 }
+
+// A seat's family comes from the roster (`family:`) or, failing that, from its --model launch
+// argument. Review is meant to be a different family from the implementer's.
+func TestFamilyOf(t *testing.T) {
+	r, err := Load(write(t, `
+staff:
+  flash: {runner: pi, args: ["--model", "zai/glm-5.3-flash", "--thinking", "high"]}
+  bal: {runner: pi, args: ["--model", "zai-balance/glm-5.3-flash"]}
+  gem: {runner: agy, args: ["--model", "gemini-3.8-flash-high"]}
+  son: {runner: claude, args: ["--model", "sonnet", "--effort", "high"]}
+  hai: {runner: claude, args: ["--model=haiku"]}
+  kim: {runner: kimi, args: ["--model", "kimi-code/k3"]}
+  explicit: {runner: hermes, family: Gemini}
+  bare: {runner: hermes}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"flash": "glm", "bal": "glm", "gem": "gemini", "son": "claude", "hai": "claude", "kim": "kimi",
+		"explicit": "gemini", "bare": "", "missing": "",
+	} {
+		if got := r.FamilyOf(name); got != want {
+			t.Errorf("FamilyOf(%s) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestPickDifferentFamily(t *testing.T) {
+	r, err := Load(write(t, `
+staff:
+  gem: {runner: agy, args: ["--model", "gemini-3.8-flash-high"]}
+  glm: {runner: pi, args: ["--model", "zai/glm-5.3-flash"]}
+  son: {runner: claude, args: ["--model", "sonnet"]}
+  bare: {runner: hermes}
+role_alternates:
+  task_review_medium: [glm, son]
+roles:
+  task_review_medium: gem
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	alts := r.RoleAlternates["task_review_medium"]
+	for _, c := range []struct{ name, main, impl, want string }{
+		{"different family keeps the main", "gem", "glm", "gem"},
+		{"same family takes the first different alternate", "gem", "gem", "glm"},
+		{"an alternate of the same family is skipped", "glm", "glm", "son"}, // main glm, impl glm: alternates are glm (same, skipped) then son
+		{"unknown implementer keeps the main", "gem", "", "gem"},
+		{"implementer with no family keeps the main", "gem", "bare", "gem"},
+		{"unknown implementer seat keeps the main", "gem", "nobody", "gem"},
+	} {
+		if got := r.PickDifferentFamily(c.main, alts, c.impl); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+	// Nothing differs: stay on the main rather than invent a seat.
+	if got := r.PickDifferentFamily("gem", []string{"gem"}, "gem"); got != "gem" {
+		t.Errorf("no different alternate: got %q, want gem", got)
+	}
+}
+
+func TestRoleAlternatesValidation(t *testing.T) {
+	for name, body := range map[string]string{
+		"undefined alternate": "staff: {a: {runner: pi}}\nrole_alternates: {task_review: [nobody]}",
+		"empty alternate":     "staff: {a: {runner: pi}}\nrole_alternates: {task_review: [\"\"]}",
+	} {
+		if _, err := Load(write(t, body)); err == nil {
+			t.Errorf("%s: want a load error", name)
+		}
+	}
+	if _, err := Load(write(t, "staff: {a: {runner: pi}}\nrole_alternates: {task_review: [a]}")); err != nil {
+		t.Errorf("valid alternates rejected: %v", err)
+	}
+}
+
+// The seat that actually ran an implementation is remembered across days (the daily usage count
+// forgets at midnight), so a review the next morning still knows who wrote the work.
+func TestImplementerIsRemembered(t *testing.T) {
+	dir := t.TempDir()
+	if _, ok := ImplementedBy(dir, "t1.md"); ok {
+		t.Fatal("nothing recorded yet")
+	}
+	day1 := time.Date(2026, 10, 5, 12, 0, 0, 0, time.Local)
+	if err := RecordImplementer(dir, "t1.md", "ops", day1); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordImplementer(dir, "t2.md", "architect", day1); err != nil {
+		t.Fatal(err)
+	}
+	if seat, ok := ImplementedBy(dir, "t1.md"); !ok || seat != "ops" {
+		t.Fatalf("t1 = %q %v", seat, ok)
+	}
+	// A retry on another seat replaces the record; the latest implementer is who wrote the work.
+	if err := RecordImplementer(dir, "t1.md", "architect", day1.Add(26*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if seat, _ := ImplementedBy(dir, "t1.md"); seat != "architect" {
+		t.Fatalf("after retry t1 = %q", seat)
+	}
+	// Old records are pruned so the file cannot grow forever.
+	if err := RecordImplementer(dir, "t3.md", "ops", day1.Add(40*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ImplementedBy(dir, "t2.md"); ok {
+		t.Fatal("a 40-day-old record should be pruned")
+	}
+	if seat, ok := ImplementedBy(dir, "t3.md"); !ok || seat != "ops" {
+		t.Fatalf("t3 = %q %v", seat, ok)
+	}
+}

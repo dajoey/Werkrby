@@ -2031,11 +2031,30 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 	name := ""
 	switch phase {
 	case phaseTaskReview:
-		if strings.EqualFold(text("risk"), "high") {
+		role := phaseTaskReview
+		switch {
+		case strings.EqualFold(text("risk"), "high"):
 			name = staffing.ForRole(phaseTaskReview + "_high_risk")
+			role = phaseTaskReview + "_high_risk"
+		case strings.EqualFold(text("risk"), "medium"):
+			// Optional role; unmapped, a medium-risk review is an ordinary review as before.
+			name = staffing.ForRole(phaseTaskReview + "_medium")
+			role = phaseTaskReview + "_medium"
 		}
 		if name == "" {
 			name = staffing.ForRole(phaseTaskReview)
+			role = phaseTaskReview
+		}
+		// A role that lists alternates (role_alternates) is reviewed by a different model family
+		// than the seat that wrote the work: use the first alternate when the role's own staff
+		// shares the implementer's family. An unknown implementer keeps the role's staff.
+		if alternates := staffing.RoleAlternates[role]; name != "" && len(alternates) > 0 {
+			if implementer, ok := roster.ImplementedBy(stateDir, filepath.Base(lease.File)); ok {
+				if picked := staffing.PickDifferentFamily(name, alternates, implementer); picked != name {
+					m.log("roster: " + role + " review of " + filepath.Base(lease.File) + " moves from " + name + " to " + picked + " (the work was written on " + implementer + ", the same model family)")
+					name = picked
+				}
+			}
 		}
 	case phaseTaskImplementation:
 		pinnedStaff := text("staff")
@@ -2087,6 +2106,13 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 	}
 	if assigned != name {
 		m.log("roster: " + name + " is at its daily cap; " + filepath.Base(lease.File) + " goes to " + assigned)
+	}
+	if phase == phaseTaskImplementation {
+		// The seat that actually runs the work, after caps and stops, is who wrote it: a later
+		// review picks a different model family from this one.
+		if err := roster.RecordImplementer(stateDir, filepath.Base(lease.File), assigned, time.Now()); err != nil {
+			m.log("roster implementer: " + err.Error())
+		}
 	}
 	return staffing.Model(assigned), true
 }
