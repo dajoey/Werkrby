@@ -2063,6 +2063,15 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 		if name == "" {
 			name = staffing.ForRole(phase)
 		}
+		// A seat's own escalation (escalate_after / escalate_to) moves a retry onto the seat it
+		// names, whether the task was pinned here or reached this seat as the role default.
+		if name != "" {
+			attempt := int(numberValue(frontMatter["attempt"]))
+			if escalated := staffing.EscalatedStaff(name, attempt); escalated != name {
+				m.log("roster: " + name + " escalates to " + escalated + " at attempt " + strconv.Itoa(attempt) + ": " + filepath.Base(lease.File))
+				name = escalated
+			}
+		}
 	default:
 		name = staffing.ForRole(phase)
 	}

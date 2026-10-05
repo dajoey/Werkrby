@@ -328,3 +328,51 @@ staff:
 		t.Fatal("duplicate rung must fail")
 	}
 }
+
+// A seat can name where its tasks go once an attempt has failed (escalate_after / escalate_to).
+// Unlike the global ladder it is per seat, so a retry stays inside the job's own lane: the
+// 2026-09-28 ladder sent every attempt-3 task to kimi whatever its job, and Joey took it out.
+func TestSeatEscalation(t *testing.T) {
+	r, err := Load(write(t, `
+staff:
+  ops: {runner: agy, escalate_after: 1, escalate_to: architect}
+  architect: {runner: pi}
+  implementer: {runner: pi}
+  a: {runner: pi, escalate_after: 1, escalate_to: b}
+  b: {runner: pi, escalate_after: 2, escalate_to: c}
+  c: {runner: pi}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name    string
+		attempt int
+		want    string
+	}{
+		{"ops", 1, "ops"}, {"ops", 2, "architect"}, {"ops", 9, "architect"},
+		{"architect", 5, "architect"}, {"implementer", 3, "implementer"},
+		{"a", 1, "a"}, {"a", 2, "b"}, {"a", 3, "c"}, {"b", 2, "b"}, {"b", 3, "c"},
+		{"nobody", 7, "nobody"}, // unknown names pass through untouched
+	} {
+		if got := r.EscalatedStaff(c.name, c.attempt); got != c.want {
+			t.Errorf("EscalatedStaff(%s, %d) = %q, want %q", c.name, c.attempt, got, c.want)
+		}
+	}
+}
+
+func TestSeatEscalationValidation(t *testing.T) {
+	for name, body := range map[string]string{
+		"target without after": "staff: {a: {runner: pi, escalate_to: b}, b: {runner: pi}}",
+		"after without target": "staff: {a: {runner: pi, escalate_after: 1}, b: {runner: pi}}",
+		"after below one":      "staff: {a: {runner: pi, escalate_after: 0, escalate_to: b}, b: {runner: pi}}",
+		"negative after":       "staff: {a: {runner: pi, escalate_after: -1, escalate_to: b}, b: {runner: pi}}",
+		"undefined target":     "staff: {a: {runner: pi, escalate_after: 1, escalate_to: nobody}}",
+		"escalates to itself":  "staff: {a: {runner: pi, escalate_after: 1, escalate_to: a}}",
+		"cycle":                "staff: {a: {runner: pi, escalate_after: 1, escalate_to: b}, b: {runner: pi, escalate_after: 2, escalate_to: a}}",
+	} {
+		if _, err := Load(write(t, body)); err == nil {
+			t.Errorf("%s: want a load error", name)
+		}
+	}
+}

@@ -139,3 +139,54 @@ escalation:
 		}
 	}
 }
+
+// A seat's own escalation (escalate_after / escalate_to) moves its tasks on a retry, whether the
+// task is pinned to the seat or reaches it as the role default, and leaves every other seat alone.
+func TestResolveTargetModelSeatEscalation(t *testing.T) {
+	root := t.TempDir()
+	state := filepath.Join(root, config.StateDirectoryName)
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{Root: root, Harness: config.Harness{Name: "herdr", Model: "opencode", DeveloperModel: "opencode", ReviewerModel: "pi"}}
+	manager := New(cfg, newFakeRecipient(), extensions.Runner{})
+	task := func(name, frontMatter string) Lease {
+		path := filepath.Join(root, name+".md")
+		if err := os.WriteFile(path, []byte("---\nid: "+name+"\n"+frontMatter+"---\n# T\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return Lease{File: path, SessionKey: "orchestrator:tasks:x:" + name + ":1"}
+	}
+	resolve := func(lease Lease) string {
+		lease.Phase = phaseTaskImplementation
+		return manager.resolveTargetModel(workflowRoute{Name: "tasks"}, lease)
+	}
+	body := `
+staff:
+  ops: {runner: agy, escalate_after: 1, escalate_to: architect}
+  architect: {runner: pi, args: ["--model", "zai/glm-5.3"]}
+  implementer: {runner: opencode}
+  media: {runner: hermes, escalate_after: 2, escalate_to: architect}
+roles:
+  task_implementation: ops
+  task_review: architect
+`
+	if err := os.WriteFile(roster.Path(state), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, frontMatter, want string }{
+		{"pinned first attempt stays", "staff: ops\nattempt: 1\n", "agy"},
+		{"pinned retry escalates", "staff: ops\nattempt: 2\n", "@architect"},
+		{"pinned later retry stays escalated", "staff: ops\nattempt: 4\n", "@architect"},
+		{"unpinned role default escalates too", "attempt: 2\n", "@architect"},
+		{"unpinned first attempt stays", "attempt: 1\n", "agy"},
+		{"a seat with no escalation never moves", "staff: implementer\nattempt: 5\n", "opencode"},
+		{"escalation honours its own threshold", "staff: media\nattempt: 2\n", "hermes"},
+		{"escalation honours its own threshold, later", "staff: media\nattempt: 3\n", "@architect"},
+		{"the target itself does not escalate", "staff: architect\nattempt: 9\n", "@architect"},
+	} {
+		if got := resolve(task(c.name[:5]+"-"+c.want+"-"+c.frontMatter[len(c.frontMatter)-3:len(c.frontMatter)-1], c.frontMatter)); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}

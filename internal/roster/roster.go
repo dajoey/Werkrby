@@ -41,8 +41,15 @@ type Staff struct {
 	Fallback string `yaml:"fallback,omitempty"`
 	// NoEscalate keeps a pinned task on this staff past the top ladder rung
 	// instead of promoting it. Opt-in for private-domain seats.
-	NoEscalate bool   `yaml:"no_escalate,omitempty"`
-	Note       string `yaml:"note,omitempty"`
+	NoEscalate bool `yaml:"no_escalate,omitempty"`
+	// EscalateAfter and EscalateTo move a task that has used up attempts onto another seat: once a
+	// task's attempt number is above EscalateAfter it runs on EscalateTo instead. Unlike the global
+	// Escalation ladder this is per seat, so a retry stays inside the job's own lane (the ladder
+	// sent every attempt-3 task to one seat whatever its job and was removed 2026-09-28). Both are
+	// set together; the target may escalate again on its own thresholds.
+	EscalateAfter int    `yaml:"escalate_after,omitempty"`
+	EscalateTo    string `yaml:"escalate_to,omitempty"`
+	Note          string `yaml:"note,omitempty"`
 }
 
 type Escalation struct {
@@ -114,6 +121,24 @@ func (r *Roster) EscalationFor(attempt int, pinned bool) string {
 	return r.Escalation[best].Staff
 }
 
+// EscalatedStaff returns the seat a task runs on once it has reached `attempt` after starting on
+// `name`: it follows each seat's own escalate_to while the attempt is above that seat's
+// escalate_after. A name that is unknown, or has no escalation, comes back unchanged.
+func (r *Roster) EscalatedStaff(name string, attempt int) string {
+	if r == nil {
+		return name
+	}
+	cur := name
+	for hop := 0; hop < maxFallback; hop++ {
+		s, ok := r.Staff[cur]
+		if !ok || s.EscalateTo == "" || attempt <= s.EscalateAfter {
+			break
+		}
+		cur = s.EscalateTo
+	}
+	return cur
+}
+
 // Path returns the roster file inside a workspace state directory.
 func Path(stateDir string) string { return filepath.Join(stateDir, FileName) }
 
@@ -164,10 +189,30 @@ func (r *Roster) validate() error {
 		if s.DailyCap > 0 && s.Fallback == "" {
 			return fmt.Errorf("staff %s: daily_cap needs a fallback", name)
 		}
+		if s.EscalateAfter != 0 || s.EscalateTo != "" {
+			if s.EscalateAfter < 1 || s.EscalateTo == "" {
+				return fmt.Errorf("staff %s: escalate_after (at least 1) and escalate_to must be set together", name)
+			}
+			if s.EscalateTo == name {
+				return fmt.Errorf("staff %s: escalate_to cannot be the staff itself", name)
+			}
+			if _, ok := r.Staff[s.EscalateTo]; !ok {
+				return fmt.Errorf("staff %s: escalate_to %q is not defined", name, s.EscalateTo)
+			}
+		}
 		for _, arg := range s.Args {
 			if strings.ContainsAny(arg, "\n\r\x00") {
 				return fmt.Errorf("staff %s: args must be single-line", name)
 			}
+		}
+	}
+	for name := range r.Staff {
+		visited := map[string]bool{}
+		for cur := name; r.Staff[cur].EscalateTo != ""; cur = r.Staff[cur].EscalateTo {
+			if visited[cur] {
+				return fmt.Errorf("staff %s: escalate_to forms a cycle", name)
+			}
+			visited[cur] = true
 		}
 	}
 	for role, name := range r.Roles {
