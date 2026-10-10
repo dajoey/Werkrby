@@ -143,11 +143,11 @@ func TestGoalReviewClaimsBeforeStandaloneTaskReview(t *testing.T) {
 	}
 }
 
-// Priority means the top item takes capacity first AND everything below it
-// yields. Claiming goal work first (above) is only half of that: with two free
-// slots a standalone task still started beside the goal's step. While goal work
-// is queued or in flight, no standalone document is claimed; tasks already
-// running finish (no pre-emption). Goal work parked in waiting/ does not hold.
+// Priority is about who gets a slot, never about leaving slots empty. Goal work
+// claims first; a free slot still runs standalone work (Joey, 2026-10-10: "the
+// goal is the #1 priority" does not mean nothing happens until the goal is done
+// when workers are idle). When goal work is queued and every slot is full, a
+// running standalone task is paused to make room (goal_preempt_test.go).
 
 func twoSlotManager(t *testing.T) (*Manager, func(), string, string) {
 	t.Helper()
@@ -159,7 +159,7 @@ func twoSlotManager(t *testing.T) (*Manager, func(), string, string) {
 	return manager, finish, cfg.Resolve(taskRoute.Source), filepath.Dir(cfg.Resolve(taskRoute.Source))
 }
 
-func TestStandaloneWaitsWhileGoalTaskIsInFlight(t *testing.T) {
+func TestStandaloneClaimsAFreeSlotWhileGoalTaskIsInFlight(t *testing.T) {
 	manager, finish, todoDir, base := twoSlotManager(t)
 	writeGoalDerivedFixture(t, todoDir, "tasks-goal-running.md", "2026-10-03T17:00:00Z")
 	if err := manager.ScanOnce(context.Background()); err != nil {
@@ -173,13 +173,13 @@ func TestStandaloneWaitsWhileGoalTaskIsInFlight(t *testing.T) {
 	if err := manager.ScanOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(base, "todo", "tasks-standalone-late.md")); err != nil {
-		t.Fatalf("a standalone task started while goal work was in flight: %v", err)
+	if _, err := os.Stat(filepath.Join(base, "working", "tasks-standalone-late.md")); err != nil {
+		t.Fatalf("a free slot stayed idle while standalone work was queued behind in-flight goal work: %v", err)
 	}
 	finish()
 }
 
-func TestStandaloneWaitsWhileGoalIsWaitingToBePlanned(t *testing.T) {
+func TestStandaloneClaimsAFreeSlotWhileGoalIsWaitingToBePlanned(t *testing.T) {
 	cfg, fake, manager, finish := claimOrderTestManager(t)
 	manager.capacityMu.Lock()
 	manager.capacityLimit = 2
@@ -187,7 +187,7 @@ func TestStandaloneWaitsWhileGoalIsWaitingToBePlanned(t *testing.T) {
 	taskRoute := workflowRoutes()[0]
 	goalRoute := workflowRoutes()[1]
 	writeClaimFixture(t, cfg.Resolve(taskRoute.Source), "tasks-standalone.md", "2026-09-01T00:00:00Z")
-	goal, err := Create(cfg, "goals", "goal planning holds standalone work", "")
+	goal, err := Create(cfg, "goals", "goal planning leaves the other slot to standalone work", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,17 +197,17 @@ func TestStandaloneWaitsWhileGoalIsWaitingToBePlanned(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(cfg.Resolve(goalRoute.Source)), "planning", filepath.Base(goal))); err != nil {
 		t.Fatalf("goal was not claimed for planning: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(cfg.Resolve(taskRoute.Source)), "todo", "tasks-standalone.md")); err != nil {
-		t.Fatalf("a standalone task started while the goal was being planned: %v", err)
+	if _, err := os.Stat(filepath.Join(filepath.Dir(cfg.Resolve(taskRoute.Source)), "working", "tasks-standalone.md")); err != nil {
+		t.Fatalf("the second slot stayed idle while the goal was being planned: %v", err)
 	}
 	finish()
-	if fake.calls != 1 {
-		t.Fatalf("provider dispatches = %d, want only the goal planning claim", fake.calls)
+	if fake.calls != 2 {
+		t.Fatalf("provider dispatches = %d, want the goal planning claim and the standalone claim", fake.calls)
 	}
 }
 
-// Goal work that is parked (waiting/) does not hold the board: a sleeping goal
-// task must not freeze every other task for hours.
+// Goal work that is parked (waiting/) neither holds the board nor pauses
+// anything: a sleeping goal task must not freeze every other task for hours.
 func TestStandaloneRunsWhileGoalTaskIsParked(t *testing.T) {
 	manager, finish, todoDir, base := twoSlotManager(t)
 	parked := writeGoalDerivedFixture(t, todoDir, "tasks-goal-parked.md", "2026-10-03T17:00:00Z")

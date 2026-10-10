@@ -195,6 +195,19 @@ func NewWithRuntime(cfg config.Config, target harness.Harness, runtime *Runtime)
 	manager.JobExecutionUpdated = func(id int, status core.ExecutionStatus) { runtime.UpdateJob(id, status) }
 	manager.JobEvent = runtime.RecordJobEvent
 	manager.JobFinished = runtime.EndJob
+	// Goal work that cannot get a slot pauses a running standalone task through
+	// the same reserved stop an operator's job kill uses.
+	manager.PreemptJob = func(ctx context.Context, sessionKey string) error {
+		job, ok := runtime.JobForSession(sessionKey)
+		if !ok {
+			return fmt.Errorf("no live job for session %s", sessionKey)
+		}
+		reserved, ok := runtime.ReserveJobCancellation(job.ID)
+		if !ok {
+			return nil // already terminal; the slot is free
+		}
+		return service.stopReservedJob(ctx, reserved)
+	}
 	manager.SetNotificationDelivery(service.deliverNotification)
 	return service
 }

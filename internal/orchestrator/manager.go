@@ -78,17 +78,21 @@ type ScheduledCheckpoint struct {
 }
 
 type Manager struct {
-	Config                   config.Config
-	Harness                  harness.Harness
-	Hooks                    extensions.Runner
-	Log                      func(string)
-	LogError                 func(component, event, message string)
-	JobStarted               func(lease Lease, description string, firstAssignedAt time.Time, providerIterations, implementationAttempts int) (int, error)
-	JobUpdated               func(id int, lease Lease)
-	JobTimingUpdated         func(id int, firstAssignedAt time.Time, providerIterations int)
-	JobExecutionUpdated      func(id int, status core.ExecutionStatus)
-	JobEvent                 func(id int, event core.Event)
-	JobFinished              func(id int)
+	Config              config.Config
+	Harness             harness.Harness
+	Hooks               extensions.Runner
+	Log                 func(string)
+	LogError            func(component, event, message string)
+	JobStarted          func(lease Lease, description string, firstAssignedAt time.Time, providerIterations, implementationAttempts int) (int, error)
+	JobUpdated          func(id int, lease Lease)
+	JobTimingUpdated    func(id int, firstAssignedAt time.Time, providerIterations int)
+	JobExecutionUpdated func(id int, status core.ExecutionStatus)
+	JobEvent            func(id int, event core.Event)
+	JobFinished         func(id int)
+	// PreemptJob stops the live job behind sessionKey the way an operator stop
+	// does, so goal work can take its slot. Nil means the manager interrupts the
+	// harness session itself.
+	PreemptJob               func(ctx context.Context, sessionKey string) error
 	Cleanup                  func(context.Context, int) (string, error)
 	notificationAgentTimeout time.Duration
 	runtimeConfigMu          sync.RWMutex
@@ -100,6 +104,7 @@ type Manager struct {
 	runtimeJobs                 map[string]int
 	controlCancelled            map[string]int
 	operatorStops               map[string]time.Time // lease id -> when an operator stopped it; survives finishRuntimeJob
+	preemptions                 map[string]time.Time // lease id -> when it was paused for goal work; consumed by recordError
 	jobs                        sync.WaitGroup
 	capacityMu                  sync.Mutex
 	capacityActive              int
@@ -244,7 +249,7 @@ func New(cfg config.Config, target harness.Harness, hooks extensions.Runner) *Ma
 		parallel = 1
 	}
 	manager := &Manager{
-		Config: cfg, runtimeConfig: cfg, Harness: target, Hooks: hooks, inflight: map[string]bool{}, runtimeJobs: map[string]int{}, controlCancelled: map[string]int{}, operatorStops: map[string]time.Time{}, capacityLimit: parallel,
+		Config: cfg, runtimeConfig: cfg, Harness: target, Hooks: hooks, inflight: map[string]bool{}, runtimeJobs: map[string]int{}, controlCancelled: map[string]int{}, operatorStops: map[string]time.Time{}, preemptions: map[string]time.Time{}, capacityLimit: parallel,
 		Outbox:                 &Outbox{Directory: cfg.StatePath("runtime", "outbox")},
 		ownerID:                fmt.Sprintf("%d-%d-%s", os.Getpid(), time.Now().UTC().UnixNano(), randomSuffix()),
 		scanNow:                make(chan struct{}, 1),
@@ -595,18 +600,9 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 			return candidates[i].name < candidates[j].name
 		}
 	})
-	// Priority means the top item takes capacity first AND the rest yields
-	// (Joey, 2026-10-03: the current goal is paramount). While goal work is
-	// queued or in flight no standalone task document is claimed; tasks already
-	// running finish. Computed once per scan; goal work parked in waiting/ does
-	// not hold, so a sleeping goal task cannot freeze the board.
-	holdStandalone := route.Name == "tasks" && m.goalWorkPending()
 	for _, candidate := range candidates {
 		source := filepath.Join(sourceDir, candidate.name)
 		document := candidate.document
-		if holdStandalone && !documentIsGoalDerived(document) {
-			continue
-		}
 		documentID := documentID(document)
 		if documentID == "" {
 			documentID = leaseID(route.Name+":"+phase, source)
@@ -624,6 +620,13 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 			continue
 		}
 		if !m.canAdmitClaim() {
+			// Every slot is taken. Goal work is the top priority: it claims
+			// first (sort order above) and, when it cannot get a slot, a running
+			// standalone task is paused so the next scan can claim it. Idle slots
+			// are never held back for it; they simply run whatever is queued.
+			if route.Name == "goals" || documentIsGoalDerived(document) {
+				m.pauseStandaloneForGoalWork(ctx)
+			}
 			break
 		}
 		if phase == phaseTaskReview && m.harnessSettings().Reviews == config.TaskReviewsNever {
@@ -2643,6 +2646,9 @@ func (m *Manager) recordOperatorStop(lease Lease) bool {
 }
 
 func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
+	if m.recordPreemption(lease) {
+		return
+	}
 	if m.recordOperatorStop(lease) {
 		return
 	}
@@ -2732,65 +2738,6 @@ func (m *Manager) isInflight(key string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.inflight[key]
-}
-
-// goalWorkPending reports whether any goal work is queued or in flight: a goal
-// document waiting to be planned, planned or reviewed, or a goal-derived task
-// that is due in todo/ or review/ or already claimed in working/ or reviewing/.
-// Goal work parked in waiting/ and goals in active/ with nothing runnable do not
-// count; the next claim of such work comes first by sort order anyway.
-func (m *Manager) goalWorkPending() bool {
-	cfg := m.runtimeSnapshot()
-	now := time.Now()
-	for _, route := range workflowRoutes() {
-		base := filepath.Dir(cfg.Resolve(route.Source))
-		switch route.Name {
-		case "goals":
-			for _, dir := range []string{"proposed", "planning", "review", "reviewing"} {
-				for _, name := range markdownNames(filepath.Join(base, dir)) {
-					document, err := ReadDocument(filepath.Join(base, dir, name))
-					if err != nil {
-						continue
-					}
-					if dir == "proposed" && !documentDue(document, now, phaseGoalPlanning) {
-						continue
-					}
-					return true
-				}
-			}
-		case "tasks":
-			for _, dir := range []string{"todo", "review", "working", "reviewing"} {
-				for _, name := range markdownNames(filepath.Join(base, dir)) {
-					document, err := ReadDocument(filepath.Join(base, dir, name))
-					if err != nil || !documentIsGoalDerived(document) {
-						continue
-					}
-					if dir == "todo" && !documentDue(document, now, phaseTaskImplementation) {
-						continue
-					}
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-// markdownNames lists the queue documents in a directory (AGENTS.md excluded);
-// a missing directory is empty.
-func markdownNames(dir string) []string {
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var names []string
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") || entry.Name() == "AGENTS.md" {
-			continue
-		}
-		names = append(names, entry.Name())
-	}
-	return names
 }
 
 func (m *Manager) canAdmitClaim() bool {
