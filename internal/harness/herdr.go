@@ -1562,15 +1562,101 @@ func isHerdrWaitTimeout(output string) bool {
 	return strings.Contains(output, "timed out waiting for agent status")
 }
 
+type herdrPaneProcessInfoResponse struct {
+	Result struct {
+		ProcessInfo struct {
+			ForegroundProcesses []struct {
+				PID int `json:"pid"`
+			} `json:"foreground_processes"`
+		} `json:"process_info"`
+	} `json:"result"`
+}
+
+// paneOutputBytes sums /proc rchar over the foreground process trees of a
+// herdr worker pane: every read the runner and its tool children make
+// (terminal output, model streaming, sockets) advances the counters, so the
+// sum grows while the pane does work even when the agent sits inside one long
+// tool call. Same signal and semantics as the ops runner-watchdog's pane
+// liveness check.
+func paneOutputBytes(ctx context.Context, run herdrRunner, paneID string) (int64, error) {
+	out, err := run(ctx, "pane", "process-info", "--pane", paneID)
+	if err != nil {
+		return 0, err
+	}
+	var resp herdrPaneProcessInfoResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, proc := range resp.Result.ProcessInfo.ForegroundProcesses {
+		total += treeReadBytes(proc.PID)
+	}
+	return total, nil
+}
+
+// treeReadBytes sums rchar over one pid and all descendants via
+// /proc/<pid>/task/<tid>/children, tolerating processes that exit mid-walk
+// (a pane's tool children come and go).
+var treeReadBytes = func(pid int) int64 {
+	total, seen, todo := int64(0), map[int]bool{}, []int{pid}
+	for len(todo) > 0 {
+		p := todo[len(todo)-1]
+		todo = todo[:len(todo)-1]
+		if p <= 0 || seen[p] {
+			continue
+		}
+		seen[p] = true
+		ioBytes, err := os.ReadFile(fmt.Sprintf("/proc/%d/io", p))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(ioBytes), "\n") {
+			if value, found := strings.CutPrefix(line, "rchar:"); found {
+				if n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+					total += n
+				}
+			}
+		}
+		tasks, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", p))
+		if err != nil {
+			continue
+		}
+		for _, task := range tasks {
+			children, err := os.ReadFile(fmt.Sprintf("/proc/%d/task/%s/children", p, task.Name()))
+			if err != nil {
+				continue
+			}
+			for _, field := range strings.Fields(string(children)) {
+				if n, err := strconv.Atoi(field); err == nil {
+					todo = append(todo, n)
+				}
+			}
+		}
+	}
+	return total
+}
+
 type herdrRunner func(ctx context.Context, args ...string) ([]byte, error)
+
+// herdrNow is the clock extendHerdrWait waits on; tests replace it.
+var herdrNow = time.Now
 
 // extendHerdrWait keeps waiting on a worker whose prompt wait timed out while
 // herdr still reports it working. It returns success once the agent reaches
 // idle/done, hands blocked or vanished agents back with the original failure so
-// the caller's blocked/error handling runs, and gives up at the ceiling.
+// the caller's blocked/error handling runs, and gives up only when the worker
+// pane stops producing output. A fixed wall from turn start retired healthy
+// turns that sat inside one long tool call (job j-20261010T004721Z: two 2-hour
+// timeouts and two recovery attempts charged to one worker that was working
+// continuously and finished fine afterwards), so the deadline re-arms whenever
+// the pane's foreground processes read more bytes -- the same /proc rchar
+// liveness signal the ops runner-watchdog applies as "bytes flowing -- not a
+// stall". A pane that produces no output for a whole ceiling window, or a
+// pane-output probe that fails, keeps the original bounded behavior.
 func extendHerdrWait(ctx context.Context, target string, out []byte, err error, ceiling time.Duration, run herdrRunner, status func(string)) ([]byte, error) {
-	started := time.Now()
+	started := herdrNow()
 	deadline := started.Add(ceiling - 15*time.Minute)
+	lastPaneBytes := int64(-1)
 	for {
 		getOut, getErr := run(ctx, "agent", "get", target)
 		if getErr != nil {
@@ -1587,7 +1673,15 @@ func extendHerdrWait(ctx context.Context, target string, out []byte, err error, 
 		default:
 			return out, err
 		}
-		remaining := time.Until(deadline)
+		if paneID := resp.Result.Agent.PaneID; paneID != "" {
+			if paneBytes, probeErr := paneOutputBytes(ctx, run, paneID); probeErr == nil {
+				if paneBytes > lastPaneBytes {
+					deadline = herdrNow().Add(ceiling - 15*time.Minute)
+				}
+				lastPaneBytes = paneBytes
+			}
+		}
+		remaining := deadline.Sub(herdrNow())
 		if remaining <= 0 || ctx.Err() != nil {
 			return out, err
 		}
