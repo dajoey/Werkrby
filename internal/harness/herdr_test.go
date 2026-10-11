@@ -221,37 +221,37 @@ func TestWorkerNameAndLabel(t *testing.T) {
 		{
 			key:          "orchestrator:tasks:task_implementation:tasks-20260914-helm-fleet-update-03:1",
 			model:        "opencode",
-			wantName:     "sj-t-a1-helm-fleet-update-03",
+			wantName:     "wk-t-a1-helm-fleet-update-03",
 			wantTabLabel: "Task: helm-fleet-update-03 (opencode)",
 		},
 		{
 			key:          "orchestrator:tasks:task_review:tasks-20260914-helm-lmc-verify-02:1",
 			model:        "kimi",
-			wantName:     "sj-r-a1-helm-lmc-verify-02",
+			wantName:     "wk-r-a1-helm-lmc-verify-02",
 			wantTabLabel: "Review: helm-lmc-verify-02 (kimi)",
 		},
 		{
 			key:          "orchestrator:goals:planning:goals-20260914-202731-helm01:1",
 			model:        "opencode",
-			wantName:     "sj-p-a1-helm01",
+			wantName:     "wk-p-a1-helm01",
 			wantTabLabel: "Plan: helm01 (opencode)",
 		},
 		{
 			key:          "orchestrator:semantic-heartbeat",
 			model:        "opencode",
-			wantName:     "sj-hb-opencode",
+			wantName:     "wk-hb-opencode",
 			wantTabLabel: "Heartbeat (%s)",
 		},
 		{
 			key:          "chat:tui:local-2a0229b8d17f26ca2335fa4eaaf39397",
 			model:        "opencode",
-			wantName:     "sj-c-tui-2a0229b8d17f26ca-31c8d3",
+			wantName:     "wk-c-tui-2a0229b8d17f26ca-31c8d3",
 			wantTabLabel: "Chat: 2a0229b8d17f (opencode)",
 		},
 		{
 			key:          "chat:tui:local-71f92e03b302",
 			model:        "opencode",
-			wantName:     "sj-c-tui-71f92e03b302",
+			wantName:     "wk-c-tui-71f92e03b302",
 			wantTabLabel: "Chat: 71f92e03b302 (opencode)",
 		},
 	}
@@ -284,27 +284,27 @@ func TestWorkerSubjectAndWorkspaceLabel(t *testing.T) {
 		{
 			key:         "orchestrator:tasks:task_implementation:tasks-helm-t-joey-1789190796770-1789493241:1",
 			wantSubject: "helm",
-			wantLabel:   "[sj-worker] helm",
+			wantLabel:   "[wk-worker] helm",
 		},
 		{
 			key:         "orchestrator:tasks:task_review:tasks-20260914-helm-lmc-verify-02:1",
 			wantSubject: "helm",
-			wantLabel:   "[sj-worker] helm",
+			wantLabel:   "[wk-worker] helm",
 		},
 		{
 			key:         "orchestrator:tasks:task_implementation:tasks-20260914-bst-prioritize-01:1",
 			wantSubject: "tasks",
-			wantLabel:   "[sj-worker] tasks",
+			wantLabel:   "[wk-worker] tasks",
 		},
 		{
 			key:         "orchestrator:semantic-heartbeat",
 			wantSubject: "tasks",
-			wantLabel:   "[sj-worker] tasks",
+			wantLabel:   "[wk-worker] tasks",
 		},
 		{
 			key:         "chat:telegram:1701167661",
 			wantSubject: "telegram",
-			wantLabel:   "[sj-worker] telegram",
+			wantLabel:   "[wk-worker] telegram",
 		},
 	}
 
@@ -319,6 +319,59 @@ func TestWorkerSubjectAndWorkspaceLabel(t *testing.T) {
 				t.Errorf("workerWorkspaceLabel(%q) = %q, want %q", gotSubject, gotLabel, tc.wantLabel)
 			}
 		})
+	}
+}
+
+func TestResolveDedicatedWorkspaceBothLabelForms(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "fake-herdr")
+	scriptContent := `#!/usr/bin/env bash
+cmd="$1"
+sub="$2"
+case "$cmd" in
+workspace)
+	case "$sub" in
+	list)
+		echo '{"result":{"workspaces":[{"workspace_id":"w-legacy","label":"[sj-worker] legacy-subject"},{"workspace_id":"w-current","label":"[wk-worker] current-subject"},{"workspace_id":"w-main","label":"workspace-main"}]}}'
+		;;
+	create)
+		echo '{"result":{"workspace":{"workspace_id":"w-created"}}}'
+		;;
+	esac
+	;;
+esac
+`
+	if err := os.WriteFile(scriptPath, []byte(scriptContent), 0755); err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHerdr(HarnessConfig{
+		Name:         "herdr",
+		Command:      scriptPath,
+		Cwd:          dir,
+		SessionsFile: filepath.Join(dir, "sessions.json"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Workspaces created before the wk- writer switch keep their legacy label
+	// and must keep resolving instead of being duplicated.
+	got, err := h.resolveDedicatedWorkspace(ctx, "legacy-subject", dir)
+	if err != nil || got != "w-legacy" {
+		t.Fatalf("resolveDedicatedWorkspace(legacy [sj-worker] label) = %q, %v; want w-legacy", got, err)
+	}
+
+	// Workspaces already carrying the current form resolve as before.
+	got, err = h.resolveDedicatedWorkspace(ctx, "current-subject", dir)
+	if err != nil || got != "w-current" {
+		t.Fatalf("resolveDedicatedWorkspace(current [wk-worker] label) = %q, %v; want w-current", got, err)
+	}
+
+	// A different subject must not hijack another subject's workspace.
+	got, err = h.resolveDedicatedWorkspace(ctx, "other-subject", dir)
+	if err != nil || got != "w-created" {
+		t.Fatalf("resolveDedicatedWorkspace(unrelated subject) = %q, %v; want the created workspace w-created", got, err)
 	}
 }
 
@@ -535,8 +588,8 @@ func TestWorkerNameAndLabelGenericFallbackNamesWerkrby(t *testing.T) {
 	if label != "Werkrby (kimi)" {
 		t.Fatalf("generic tab label = %q, want %q", label, "Werkrby (kimi)")
 	}
-	if !strings.HasPrefix(name, "sj-") {
-		t.Fatalf("generic worker name = %q, want the sj- pane prefix", name)
+	if !strings.HasPrefix(name, "wk-") {
+		t.Fatalf("generic worker name = %q, want the wk- pane prefix", name)
 	}
 }
 

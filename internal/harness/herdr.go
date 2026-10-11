@@ -313,12 +313,34 @@ func workerWorkspaceLabel(subject string) string {
 	if subject == "" {
 		subject = "tasks"
 	}
-	return fmt.Sprintf("[sj-worker] %s", subject)
+	return fmt.Sprintf("[wk-worker] %s", subject)
 }
 
 func isWorkerWorkspaceLabel(label string) bool {
 	lower := strings.ToLower(label)
 	return strings.Contains(lower, "[sj-worker]") || strings.Contains(lower, "[wk-worker]")
+}
+
+// workerLabelSubjectPrefixes lists both workspace-label forms that address a
+// dedicated worker workspace: the legacy pre-rename "[sj-worker]" form and the
+// current "[wk-worker]" form.
+var workerLabelSubjectPrefixes = []string{"[sj-worker] ", "[wk-worker] "}
+
+// workspaceLabelMatchesSubject reports whether a dedicated worker workspace
+// label addresses the given subject under either label form, so workspaces
+// labeled before the wk- writer switch keep resolving instead of duplicating.
+func workspaceLabelMatchesSubject(label, subject string) bool {
+	subject = strings.TrimSpace(strings.ToLower(subject))
+	if subject == "" {
+		subject = "tasks"
+	}
+	lower := strings.ToLower(strings.TrimSpace(label))
+	for _, prefix := range workerLabelSubjectPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.EqualFold(strings.TrimSpace(strings.TrimPrefix(lower, prefix)), subject)
+		}
+	}
+	return false
 }
 
 func hasWorkerPrefix(name string) bool {
@@ -360,7 +382,7 @@ func (h *Herdr) resolveDedicatedWorkspace(ctx context.Context, subject string, c
 		}
 		if json.Unmarshal(outWorkspaces, &wResp) == nil {
 			for _, ws := range wResp.Result.Workspaces {
-				if strings.EqualFold(strings.TrimSpace(ws.Label), targetLabel) {
+				if workspaceLabelMatchesSubject(ws.Label, subject) {
 					return ws.WorkspaceID, nil
 				}
 			}
@@ -401,7 +423,7 @@ func (h *Herdr) resolveDedicatedWorkspace(ctx context.Context, subject string, c
 		}
 		if json.Unmarshal(outWorkspaces, &wResp) == nil {
 			for _, ws := range wResp.Result.Workspaces {
-				if strings.EqualFold(strings.TrimSpace(ws.Label), targetLabel) {
+				if workspaceLabelMatchesSubject(ws.Label, subject) {
 					return ws.WorkspaceID, nil
 				}
 			}
@@ -485,7 +507,7 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 			if modelTag == "" {
 				modelTag = "opencode"
 			}
-			workerName = fitHerdrWorkerName("sj-hb-", modelTag, modelTag)
+			workerName = fitHerdrWorkerName("wk-hb-", modelTag, modelTag)
 			tabLabel = fmt.Sprintf("Heartbeat (%s)", model)
 			return
 		}
@@ -528,7 +550,7 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 			}
 
 			// Herdr limits agent names to 1-32 lowercase characters [a-z0-9_-]
-			prefix := fmt.Sprintf("sj-%s-a%s-", phaseCode, attempt)
+			prefix := fmt.Sprintf("wk-%s-a%s-", phaseCode, attempt)
 			workerName = fitHerdrWorkerName(prefix, shortID, shortID)
 			tabLabel = fmt.Sprintf("%s: %s (%s)", phaseLabel, shortID, model)
 			return
@@ -538,7 +560,7 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 		if sanitized == "" {
 			sanitized = "job"
 		}
-		workerName = fitHerdrWorkerName("sj-o-", sanitized, sanitized)
+		workerName = fitHerdrWorkerName("wk-o-", sanitized, sanitized)
 		tabLabel = fmt.Sprintf("Task (%s)", model)
 		return
 	}
@@ -570,7 +592,7 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 		if len(labelConv) > 12 {
 			labelConv = labelConv[:12]
 		}
-		workerName = fitHerdrWorkerName(fmt.Sprintf("sj-c-%s-", channel), shortConv, shortConv)
+		workerName = fitHerdrWorkerName(fmt.Sprintf("wk-c-%s-", channel), shortConv, shortConv)
 		tabLabel = fmt.Sprintf("Chat: %s (%s)", labelConv, model)
 		return
 	}
@@ -580,7 +602,7 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 	if sanitized == "" {
 		sanitized = "worker"
 	}
-	workerName = fitHerdrWorkerName("sj-", sanitized, sanitized)
+	workerName = fitHerdrWorkerName("wk-", sanitized, sanitized)
 	tabLabel = fmt.Sprintf("Werkrby (%s)", model)
 	return
 }
@@ -1890,7 +1912,7 @@ func (h *Herdr) teardownWorker(key, tabID, paneID, agentName string, force bool)
 // sweepOrphanedWorkers cleans up any abandoned worker tabs or agent registrations
 // from previous crashed or aborted sessions in this workspace on startup.
 func (h *Herdr) sweepOrphanedWorkers(ctx context.Context) {
-	// Find all dedicated worker workspaces matching "[sj-worker]"
+	// Find all dedicated worker workspaces (worker label forms)
 	workerWorkspaceIDs := make(map[string]bool)
 	if outW, err := exec.CommandContext(ctx, h.config.Command, "workspace", "list").Output(); err == nil {
 		var wResp struct {
@@ -1924,7 +1946,7 @@ func (h *Herdr) sweepOrphanedWorkers(ctx context.Context) {
 			continue
 		}
 
-		// Only sweep if the worker is in a dedicated [sj-worker] workspace
+		// Only sweep if the worker is in a dedicated worker workspace
 		if len(workerWorkspaceIDs) > 0 && !workerWorkspaceIDs[a.WorkspaceID] {
 			continue
 		}
