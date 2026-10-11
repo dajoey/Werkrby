@@ -125,8 +125,9 @@ func pathFor(stateRoot string, role Role) (string, error) {
 	if !role.Valid() {
 		return "", fmt.Errorf("unknown persistent-instruction role %q", role)
 	}
-	if filepath.Base(stateRoot) != ".spynel" {
-		return "", errors.New("persistent instructions require the fixed .spynel state directory")
+	base := filepath.Base(stateRoot)
+	if base != ".spynel" && base != ".werkrby" {
+		return "", errors.New("persistent instructions require the fixed state directory")
 	}
 	return filepath.Join(stateRoot, "instructions", "agent-"+string(role)+".md"), nil
 }
@@ -146,11 +147,12 @@ func inspectRealDirectory(path, description string) (os.FileInfo, error) {
 }
 
 func inspectBoundary(stateRoot string) (os.FileInfo, os.FileInfo, error) {
-	stateInfo, err := inspectRealDirectory(stateRoot, ".spynel state path")
+	base := filepath.Base(stateRoot)
+	stateInfo, err := inspectRealDirectory(stateRoot, base+" state path")
 	if err != nil {
 		return nil, nil, err
 	}
-	instructionsInfo, err := inspectRealDirectory(filepath.Join(stateRoot, "instructions"), ".spynel/instructions path")
+	instructionsInfo, err := inspectRealDirectory(filepath.Join(stateRoot, "instructions"), base+"/instructions path")
 	if err != nil {
 		return nil, nil, err
 	}

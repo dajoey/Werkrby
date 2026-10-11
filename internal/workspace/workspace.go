@@ -77,11 +77,12 @@ func ensureRealDirectory(path, description string) error {
 }
 
 func ensureInstructionBoundary(root string) error {
-	stateRoot := filepath.Join(root, ".spynel")
-	if err := ensureRealDirectory(stateRoot, ".spynel state path"); err != nil {
+	stateRoot := config.StateDir(root)
+	stateName := filepath.Base(stateRoot)
+	if err := ensureRealDirectory(stateRoot, stateName+" state path"); err != nil {
 		return err
 	}
-	return ensureRealDirectory(filepath.Join(stateRoot, "instructions"), ".spynel/instructions path")
+	return ensureRealDirectory(filepath.Join(stateRoot, "instructions"), stateName+"/instructions path")
 }
 
 func Init(root string, force bool) error {
@@ -177,11 +178,13 @@ func Upgrade(root string) error {
 	if err := ensureInstructionBoundary(abs); err != nil {
 		return err
 	}
+	stateRoot := config.StateDir(abs)
 	for _, dir := range directories {
-		if dir == ".spynel/instructions" {
+		rel := strings.TrimPrefix(dir, ".spynel/")
+		if rel == "instructions" {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Join(abs, filepath.FromSlash(dir)), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Join(stateRoot, filepath.FromSlash(rel)), 0o700); err != nil {
 			return err
 		}
 	}
@@ -189,7 +192,8 @@ func Upgrade(root string) error {
 		if spec.Path == config.FileName {
 			continue
 		}
-		target := filepath.Join(abs, filepath.FromSlash(spec.Path))
+		rel := strings.TrimPrefix(spec.Path, ".spynel/")
+		target := filepath.Join(stateRoot, filepath.FromSlash(rel))
 		if _, err := os.Stat(target); err == nil {
 			continue
 		} else if !os.IsNotExist(err) {

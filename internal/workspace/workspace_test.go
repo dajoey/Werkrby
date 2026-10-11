@@ -483,3 +483,21 @@ func TestUpgradePreservesConfigIncludingUnusedKeys(t *testing.T) {
 		t.Fatal("upgrade rewrote user configuration")
 	}
 }
+
+func TestUpgradeWithWerkrbyStateDirAndCompatSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	oldState := filepath.Join(root, ".spynel")
+	newState := filepath.Join(root, ".werkrby")
+	if err := os.Rename(oldState, newState); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".werkrby", oldState); err != nil {
+		t.Fatal(err)
+	}
+	if err := Upgrade(root); err != nil {
+		t.Fatalf("Upgrade failed on workspace with .werkrby and compat symlink: %v", err)
+	}
+}
