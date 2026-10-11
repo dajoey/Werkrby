@@ -1,11 +1,12 @@
-# SpyJo fork notes
+# Werkrby fork notes
 
-SpyJo is Joey's personal fork of [Spynel](https://github.com/agent0ai/spynel) — a customized build for his preferences and homelab workflow, not a competing product. Upstream Spynel remains canonical for product behavior, protocol, and documentation. Generally useful improvements belong upstream; only personal workflow tweaks live here.
+Werkrby (pronounced "worker bee"; formerly SpyJo) is Joey's personal fork of [Spynel](https://github.com/agent0ai/spynel) — a customized build for his preferences and homelab workflow, not a competing product. Upstream Spynel remains canonical for product behavior, protocol, and documentation. Generally useful improvements belong upstream; only personal workflow tweaks live here.
 
 ## Differences from upstream
 
 Local changes on top of upstream (newest first; see `git log` for detail):
 
+- `werkrby` rebrand: the TUI, CLI, replies, prompts and agent docs read Werkrby; new `./cmd/werkrby` entry point, with `./cmd/spyjo` and `./cmd/spynel` kept as compatibility entry points and `spyjo`/`spynel` kept as install aliases. Internal identifiers (`.spynel/`, `SPYNEL_*`, config keys, the Go module path) are unchanged for now.
 - Herdr automated workers isolated into dedicated collision-free workspaces (`[sj-worker] helm`, `[sj-worker] tasks`).
 - Ephemeral Herdr worker tabs auto-close; orphaned tabs are swept on startup.
 - Herdr worker agent names constrained to the 32-character limit.
@@ -14,27 +15,27 @@ Local changes on top of upstream (newest first; see `git log` for detail):
 - `agy` worker execution support, added to the fleet routing matrix.
 - Per-task agent routing and a multi-agent review pipeline.
 - Herdr worker panes isolated to the caller workspace with fleet pane immunity.
-- `spyjo` rebrand: new `./cmd/spyjo` entry point, SpyJo TUI title, Herdr assistant rendering cleanup. The `spynel` entry point and install alias are retained for compatibility.
+- Earlier `spyjo` rename (superseded by Werkrby): `./cmd/spyjo` entry point and Herdr assistant rendering cleanup.
 
-What has *not* changed: the Go module path (`github.com/agent0ai/spynel`), the `.spynel/` workspace layout and config schema, the task/goal lifecycle, and the offline `spyjo docs` topic catalog.
+What has *not* changed: the Go module path (`github.com/agent0ai/spynel`), the `.spynel/` workspace layout and config schema, the task/goal lifecycle, and the offline `werkrby docs` topic catalog.
 
 ## Setup deltas
 
-No published SpyJo releases exist. The upstream `install.sh` / npm paths install upstream Spynel, not this fork. Build and install from this checkout:
+No published Werkrby releases exist. The upstream `install.sh` / npm paths install upstream Spynel, not this fork. Build and install from this checkout:
 
 ```sh
 git clone https://github.com/dajoey/SpyJo.git
 cd SpyJo
-./scripts/dev.sh build        # produces .tmp-bin/spyjo (+ spynel symlink)
-./scripts/install-dev.sh      # installs spyjo (and spynel alias) to ~/.local/bin
+./scripts/dev.sh build        # produces .tmp-bin/werkrby (+ spyjo and spynel symlinks)
+./scripts/install-dev.sh      # installs werkrby (and spyjo/spynel aliases) to ~/.local/bin
 ```
 
-Run from a workspace directory, never from inside the repository checkout. `spyjo init --dir /path/to/workspace` initializes; bare `spyjo` launches the TUI.
+Run from a workspace directory, never from inside the repository checkout. `werkrby init --dir /path/to/workspace` initializes; bare `werkrby` launches the TUI.
 
 ## Usage deltas
 
-- The command is `spyjo`; `spynel` still works as an alias where installed.
-- Day-to-day usage (TUI, `/task`, `/goal`, tasks lifecycle, channels) matches upstream. Where this file and upstream disagree about fork behavior, this file wins for SpyJo checkouts.
+- The command is `werkrby`; `spyjo` and `spynel` still work as aliases where installed.
+- Day-to-day usage (TUI, `/task`, `/goal`, tasks lifecycle, channels) matches upstream. Where this file and upstream disagree about fork behavior, this file wins for Werkrby checkouts.
 
 ## Canonical upstream docs
 
@@ -53,4 +54,4 @@ Full product documentation lives upstream (pinned to `v0.12.12`, the tag this fo
 
 ## Attribution
 
-SpyJo builds on [Spynel](https://github.com/agent0ai/spynel) by the Agent Zero team. Upstream docs, protocol, and product direction remain theirs; fork-local changes are Joey's.
+Werkrby builds on [Spynel](https://github.com/agent0ai/spynel) by the Agent Zero team (MIT). Upstream docs, protocol, and product direction remain theirs; fork-local changes are Joey's.

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-- Own curated, offline documentation exposed by `spynel docs` and concise help-topic metadata used by prompts and commands.
+- Own curated, offline documentation exposed by `werkrby docs` and concise help-topic metadata used by prompts and commands.
 
 ## Local Contracts
 

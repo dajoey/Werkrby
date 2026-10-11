@@ -2,7 +2,7 @@
 
 ## Purpose
 
-- Own single-primary election and authenticated rendezvous for all Spynel processes sharing one workspace.
+- Own single-primary election and authenticated rendezvous for all Werkrby processes sharing one workspace.
 
 ## Local Contracts
 

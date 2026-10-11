@@ -14,7 +14,7 @@ import (
 
 // These labels identify the public protocol snapshots represented by the
 // synthetic process variants. Refresh them with upstream docs/harness-compatibility.md
-// (pinned in docs/spyjo-fork.md) whenever a consumed method, flag, field, event, or terminal shape changes.
+// (pinned in docs/werkrby-fork.md) whenever a consumed method, flag, field, event, or terminal shape changes.
 const (
 	codexFixtureProvenance  = "codex-app-server-0.154.0-schema-retrieved-2026-09-14"
 	claudeFixtureProvenance = "claude-code-stream-json-docs-retrieved-2026-08-07"
