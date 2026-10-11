@@ -2,7 +2,7 @@ name: fork-drift-alarm
 
 # Alarm only: red means agent0ai/spynel moved past the tip recorded in
 # docs/tracking/upstream-reviewed.sha and this fork needs a deliberate review/sync.
-# Auto-merge is intentionally NOT enabled — dajoey/SpyJo carries local
+# Auto-merge is intentionally NOT enabled — dajoey/Werkrby carries local
 # commits, so merge-upstream would be unsafe. Companion to
 # scripts/check-upstream-impact.sh.
 #

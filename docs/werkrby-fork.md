@@ -24,7 +24,7 @@ What has *not* changed: the Go module path (`github.com/agent0ai/spynel`), the `
 No published Werkrby releases exist. The upstream `install.sh` / npm paths install upstream Spynel, not this fork. Build and install from this checkout:
 
 ```sh
-git clone https://github.com/dajoey/SpyJo.git
+git clone https://github.com/dajoey/Werkrby.git
 cd SpyJo
 ./scripts/dev.sh build        # produces .tmp-bin/werkrby (+ spyjo and spynel symlinks)
 ./scripts/install-dev.sh      # installs werkrby (and spyjo/spynel aliases) to ~/.local/bin
