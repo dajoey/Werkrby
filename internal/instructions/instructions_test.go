@@ -200,17 +200,18 @@ func TestEnsureChatGuidanceEnforcesEvidenceGroundedHonesty(t *testing.T) {
 	}
 }
 
-func TestEnsureChatGuidanceCoversContextualSpynelTranscriptions(t *testing.T) {
+func TestEnsureChatGuidanceCoversContextualWerkrbyTranscriptions(t *testing.T) {
 	prompt := EnsureChatGuidance("preserved custom chat prompt with " + chatGuidanceMarker)
 	for _, test := range []struct {
 		input       string
 		context     string
 		interpretAs string
 	}{
-		{input: "spinal", context: "the Spynel framework", interpretAs: "Spynel"},
-		{input: "spinel", context: "the Spynel framework", interpretAs: "Spynel"},
-		{input: "spy nell", context: "the Spynel framework", interpretAs: "Spynel"},
-		{input: "spinal", context: "a medical reference", interpretAs: "literal meaning"},
+		{input: "worker bee", context: "the Werkrby framework", interpretAs: "Werkrby"},
+		{input: "worker b", context: "the Werkrby framework", interpretAs: "Werkrby"},
+		{input: "werker bee", context: "the Werkrby framework", interpretAs: "Werkrby"},
+		{input: "work ruby", context: "the Werkrby framework", interpretAs: "Werkrby"},
+		{input: "worker bee", context: "a literal reference", interpretAs: "literal meaning"},
 	} {
 		if !strings.Contains(prompt, "`"+test.input+"`") || !strings.Contains(prompt, test.context) || !strings.Contains(prompt, test.interpretAs) {
 			t.Errorf("guidance does not cover %#v:\n%s", test, prompt)

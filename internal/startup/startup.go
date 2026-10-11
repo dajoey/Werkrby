@@ -317,7 +317,7 @@ func (m *Manager) enableLinux(ctx context.Context, cfg config.Config) error {
 			return fmt.Errorf("startup link %s already points to %s", linkPath, target)
 		}
 	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("startup target %s already exists and is not a Spynel symlink", linkPath)
+		return fmt.Errorf("startup target %s already exists and is not a Werkrby symlink", linkPath)
 	} else if err := os.Symlink(filepath.Join("..", unitName), linkPath); err != nil {
 		return err
 	}

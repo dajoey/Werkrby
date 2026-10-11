@@ -45,7 +45,7 @@ func TestDocsCommandIsOfflineStructuredAndRejectsBadInputs(t *testing.T) {
 	output.Reset()
 	err := runDocsCommand([]string{"taks"}, &output)
 	var exit docsExitError
-	if !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.Contains(output.String(), "spynel docs tasks") {
+	if !errors.As(err, &exit) || exit.ExitCode() != 2 || !strings.Contains(output.String(), "werkrby docs tasks") {
 		t.Fatalf("unknown topic = %T %v, %q", err, err, output.String())
 	}
 	for _, args := range [][]string{{"page", "0"}, {"tasks", "page", "x"}, {"search"}, {"--wat"}} {

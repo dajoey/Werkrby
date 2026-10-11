@@ -123,7 +123,7 @@ func run(args []string, version string) error {
 		return runUninstallBundles(args[1:])
 	case "killall":
 		if len(args) != 1 {
-			return errors.New("usage: spyjo killall")
+			return errors.New("usage: werkrby killall")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
@@ -155,25 +155,25 @@ func run(args []string, version string) error {
 			return nil
 		})
 		if err == nil {
-			fmt.Printf("Stopped %d SpyJo instance(s).\n", count)
+			fmt.Printf("Stopped %d Werkrby instance(s).\n", count)
 		}
 		return err
 	case "update":
 		return runUpdateCommand(args[1:], version)
 	case "check-restartable":
 		if len(args) != 1 {
-			return errors.New("usage: spyjo check-restartable")
+			return errors.New("usage: werkrby check-restartable")
 		}
 		return updater.Detect(version).CheckRestartable()
 	case "restart-instances":
 		if len(args) != 1 {
-			return errors.New("usage: spyjo restart-instances")
+			return errors.New("usage: werkrby restart-instances")
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
 		defer cancel()
 		count, err := updater.Detect(version).RestartInstances(ctx, version)
 		if err == nil {
-			fmt.Fprintf(os.Stderr, "Restarted %d other SpyJo instance(s).\n", count)
+			fmt.Fprintf(os.Stderr, "Restarted %d other Werkrby instance(s).\n", count)
 		}
 		return err
 	case "docs":
@@ -187,12 +187,12 @@ func run(args []string, version string) error {
 			return err
 		}
 		if flags.NArg() != 0 {
-			return errors.New("usage: spyjo version [--quiet]")
+			return errors.New("usage: werkrby version [--quiet]")
 		}
 		if *quiet {
 			return nil
 		}
-		fmt.Println("spyjo " + version)
+		fmt.Println("werkrby " + version)
 		return nil
 	case "init":
 		flags := flag.NewFlagSet("init", flag.ContinueOnError)
@@ -206,7 +206,7 @@ func run(args []string, version string) error {
 			return err
 		}
 		absolute, _ := filepath.Abs(*root)
-		fmt.Println("Initialized Spynel in " + absolute)
+		fmt.Println("Initialized Werkrby in " + absolute)
 		if !*noStart && interactiveTerminal() {
 			configPath := config.PathForRoot(absolute)
 			return runServer(configPath, true, version, []string{"serve", "--tui", "--config", configPath})
@@ -230,7 +230,7 @@ func run(args []string, version string) error {
 			return err
 		}
 		if !*once {
-			return errors.New("run currently requires --once; use 'spynel serve' for the continuous loop")
+			return errors.New("run currently requires --once; use 'werkrby serve' for the continuous loop")
 		}
 		return runOnce(*configPath, version)
 	case "send":
@@ -252,7 +252,7 @@ func run(args []string, version string) error {
 	case "task", "todo", "goal":
 		if len(args) >= 2 && args[0] != "goal" && args[1] == "inspect" {
 			if len(args) != 3 {
-				return errors.New("usage: spyjo task inspect FILE")
+				return errors.New("usage: werkrby task inspect FILE")
 			}
 			return inspectTaskPolicy(args[2], os.Stdout)
 		}
@@ -277,14 +277,14 @@ func run(args []string, version string) error {
 		}
 		return runFrameworkCLICommand("whatsapp", args[1:], version)
 	default:
-		return fmt.Errorf("unknown command %q; run 'spynel help'", args[0])
+		return fmt.Errorf("unknown command %q; run 'werkrby help'", args[0])
 	}
 }
 
 // runTaskOrGoalCreate creates a task or goal from a free-text request. Help flags,
 // unknown dashes, and lone read-only aliases (list/status/…) must never create work.
 func runTaskOrGoalCreate(command string, requestArgs []string) error {
-	usage := fmt.Sprintf("usage: spyjo %s [--no-review] <request>", command)
+	usage := fmt.Sprintf("usage: werkrby %s [--no-review] <request>", command)
 	noReview := false
 	if len(requestArgs) > 0 && requestArgs[0] == "--no-review" && command != "goal" {
 		noReview = true
@@ -302,7 +302,7 @@ func runTaskOrGoalCreate(command string, requestArgs []string) error {
 		return fmt.Errorf("unknown flag %q; %s", requestArgs[0], usage)
 	}
 	if plural, rest, ok := taskGoalReadonlyAlias(command, requestArgs); ok {
-		suggested := "spyjo " + plural
+		suggested := "werkrby " + plural
 		if len(rest) > 0 {
 			suggested += " " + strings.Join(rest, " ")
 		}
@@ -510,7 +510,7 @@ func runInstructionsCommand(args []string, output io.Writer) error {
 		return err
 	}
 	if flags.NArg() != 0 {
-		return errors.New("usage: spyjo instructions [--config PATH]")
+		return errors.New("usage: werkrby instructions [--config PATH]")
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -538,7 +538,7 @@ type restartRequest struct {
 }
 
 func (r *restartRequest) Error() string {
-	return "restart Spynel"
+	return "restart Werkrby"
 }
 
 type updateRequest struct {
@@ -548,7 +548,7 @@ type updateRequest struct {
 	manager    *updater.Manager
 }
 
-func (*updateRequest) Error() string { return "update and restart Spynel" }
+func (*updateRequest) Error() string { return "update and restart Werkrby" }
 func (r *updateRequest) ExitCode() int {
 	r.writeRestartArgs()
 	return npmUpdateExitCode
@@ -666,7 +666,7 @@ func runServerWithSocket(configPath string, withTUI bool, version string, restar
 	defer signal.Stop(restartSignals)
 	registered, err := manager.RegisterProcess()
 	if err != nil {
-		return fmt.Errorf("register running Spynel instance: %w", err)
+		return fmt.Errorf("register running Werkrby instance: %w", err)
 	}
 	defer registered()
 	go func() {
@@ -740,7 +740,7 @@ func runServerWithSocket(configPath string, withTUI bool, version string, restar
 		return serverResult(nil)
 	}
 	if err := updater.MarkProcessReady(); err != nil {
-		return serverResult(fmt.Errorf("confirm running Spynel instance: %w", err))
+		return serverResult(fmt.Errorf("confirm running Werkrby instance: %w", err))
 	}
 	if launchTUI {
 		themes, themeErr := theme.LoadDir(cfg.StatePath("themes"))
@@ -859,13 +859,13 @@ func newStartupConnectionStatus(output io.Writer, enabled bool) startupConnectio
 
 func (s startupConnectionStatus) connecting() {
 	if s.enabled {
-		fmt.Fprintln(s.output, "Connecting to the existing Spynel primary…")
+		fmt.Fprintln(s.output, "Connecting to the existing Werkrby primary…")
 	}
 }
 
 func (s startupConnectionStatus) connected() {
 	if s.enabled {
-		fmt.Fprintln(s.output, "Connected to the existing Spynel primary.")
+		fmt.Fprintln(s.output, "Connected to the existing Werkrby primary.")
 	}
 }
 
@@ -873,11 +873,11 @@ func (s startupConnectionStatus) failed(err error) {
 	if s.enabled {
 		detail := "connection failed; review the error below and retry or exit"
 		if errors.Is(err, localapi.ErrForeignLoopback) {
-			detail = "the workspace primary is active in another host/container environment, so its loopback API is unreachable here; stop that primary or run Spynel in the same environment, then retry"
+			detail = "the workspace primary is active in another host/container environment, so its loopback API is unreachable here; stop that primary or run Werkrby in the same environment, then retry"
 		} else if errors.Is(err, localapi.ErrReadinessTimeout) {
 			detail = "the existing primary did not become reachable within the bounded startup interval; review the error below, then retry or exit"
 		}
-		fmt.Fprintln(s.output, "Could not connect to the existing Spynel primary: "+detail)
+		fmt.Fprintln(s.output, "Could not connect to the existing Werkrby primary: "+detail)
 	}
 }
 
@@ -967,7 +967,7 @@ func runMessageMode(configPath, conversation, text, version string, options mess
 	} else if active {
 		return runMessageWithOutput(ctx, client.Handle, conversation, text, options)
 	} else if options.FollowupOnly {
-		return errors.New("followup requires a running Spynel server with an active execution; start `spynel serve` first")
+		return errors.New("followup requires a running Werkrby server with an active execution; start `werkrby serve` first")
 	}
 	service, err := buildService(cfg, version)
 	if err != nil {
@@ -1173,7 +1173,7 @@ func writeCLIEvent(output io.Writer, streamed *strings.Builder, event core.Event
 
 func buildService(cfg config.Config, version string) (*app.Service, error) {
 	if err := workspace.Upgrade(cfg.Root); err != nil {
-		return nil, fmt.Errorf("upgrade Spynel workspace: %w", err)
+		return nil, fmt.Errorf("upgrade Werkrby workspace: %w", err)
 	}
 	runtimeState := app.NewRuntimeAt(cfg.StatePath("runtime", "logs"), fmt.Sprintf("pid-%d", os.Getpid()))
 	registry := harness.NewBuiltinRegistry()
@@ -1314,7 +1314,7 @@ func extensionCommand(args []string) error {
 	switch args[0] {
 	case "install":
 		if len(args) < 2 || len(args) > 3 {
-			return errors.New("usage: spyjo extension install <git-url> [name]")
+			return errors.New("usage: werkrby extension install <git-url> [name]")
 		}
 		name := ""
 		if len(args) == 3 {
@@ -1332,7 +1332,7 @@ func extensionCommand(args []string) error {
 		return nil
 	case "remove":
 		if len(args) != 2 {
-			return errors.New("usage: spyjo extension remove <name>")
+			return errors.New("usage: werkrby extension remove <name>")
 		}
 		if err := extensions.Remove(directory, args[1]); err != nil {
 			return err
@@ -1340,7 +1340,7 @@ func extensionCommand(args []string) error {
 		fmt.Printf("Removed %s; reinstall its Git repository to recover it.\n", args[1])
 		return nil
 	default:
-		return errors.New("usage: spyjo extension [list|install <git-url> [name]|remove <name>]")
+		return errors.New("usage: werkrby extension [list|install <git-url> [name]|remove <name>]")
 	}
 }
 
@@ -1396,63 +1396,63 @@ func enabled(value bool) string {
 	return "disabled"
 }
 
-const helpText = `SpyJo - non-AI orchestration for one human and many coding agents
+const helpText = `Werkrby - non-AI orchestration for one human and many coding agents
 
 Usage:
-  spyjo                         Launch TUI and enabled background services
-  spyjo serve [--tui] [--socket PATH]
-                                Run channels and orchestration; mirror safe lifecycle logs when headless
-  spyjo init [--dir DIR]        Initialize and continue into the TUI
-    --no-start                  Initialize only (for scripts and automation)
-  spyjo send [flags] TEXT       Send or stream a message
-    --config PATH               Load an explicit workspace configuration
-    --conversation NAME         Reuse a durable CLI conversation (default local)
-    --stream                    Print response deltas as they arrive
-    --json                      Emit every response event as NDJSON
-    --stdin                     Read the message body from standard input
-    --attach PATH               Copy and attach a file (repeatable)
-    --request-id ID             Retain request identity across a deliberate retry
-    --socket PATH               Use an explicit private Unix socket
-  spyjo events [--config PATH|--socket PATH] [--conversation NAME] [--after CURSOR]
-                                Subscribe to committed replies and later notifications
-  spyjo followup [flags] TEXT   Steer an active server-side CLI conversation
-  spyjo notify --workdir PATH (--origin O | --recent-authorized) --message TEXT
-                                Queue a proactive assistant notification
-  spyjo conversations list      List disk-backed conversations
-  spyjo conversations show      Read a bounded conversation tail
-  spyjo conversations resume    Branch any saved conversation into CLI
-  spyjo status [flags]          Show workspace and current conversation status
-  spyjo command [flags] NAME    Run any non-visual framework slash command
-  spyjo model|effort|speed ...  Inspect or select model inference properties
-  spyjo tasks [flags] [VIEW]    List durable tasks (open by default)
-  spyjo goals [flags] [VIEW]    List durable goals (open by default)
-    VIEW                        open|recent|active|review|waiting|done|failed|all
-    --config PATH               Load an explicit workspace configuration
-    --conversation NAME         Use a durable CLI command conversation
-    --days N                    Restrict updated_at to the last N days
-    --limit N                   Render 1 through 100 matching items
-    --detail                    Add allowlisted durable details
-    --json                      Emit the shared response event as NDJSON
-  spyjo job message N TEXT      Guide a live orchestrator job in place
-  spyjo job ping N              Request durable progress from a live job
-  spyjo docs [TOPIC]            Read curated offline documentation
-    search QUERY [page NUMBER]  Search bounded topic sections
-    --format text|json          Select plain Markdown or versioned JSON
-  spyjo instructions            Validate role instruction files without showing contents
-  spyjo jobs|log...             Other concise framework-command aliases
-  spyjo update                  Update and restart every instance of this installation
-  spyjo update check            Check versions without updating or restarting
-  spyjo killall                 Stop all running SpyJo instances
-  spyjo run --once              Dispatch one orchestration scan and wait
-  spyjo task [--no-review] REQUEST
-                                Create a task (reviewed by default)
-  spyjo task inspect FILE       Show the task's effective review policy
-  spyjo goal OBJECTIVE          Create a goal markdown file
-  spyjo extension ...           List, install, or remove Git extensions
-  spyjo whatsapp pair           Pair a WhatsApp account by QR code
-  spyjo config [get|set ...]    Validate config or run the shared config command
-  spyjo doctor                  Check local configuration and prerequisites
-  spyjo version                 Print the binary version
+  werkrby                         Launch TUI and enabled background services
+  werkrby serve [--tui] [--socket PATH]
+                                  Run channels and orchestration; mirror safe lifecycle logs when headless
+  werkrby init [--dir DIR]        Initialize and continue into the TUI
+    --no-start                    Initialize only (for scripts and automation)
+  werkrby send [flags] TEXT       Send or stream a message
+    --config PATH                 Load an explicit workspace configuration
+    --conversation NAME           Reuse a durable CLI conversation (default local)
+    --stream                      Print response deltas as they arrive
+    --json                        Emit every response event as NDJSON
+    --stdin                       Read the message body from standard input
+    --attach PATH                 Copy and attach a file (repeatable)
+    --request-id ID               Retain request identity across a deliberate retry
+    --socket PATH                 Use an explicit private Unix socket
+  werkrby events [--config PATH|--socket PATH] [--conversation NAME] [--after CURSOR]
+                                  Subscribe to committed replies and later notifications
+  werkrby followup [flags] TEXT   Steer an active server-side CLI conversation
+  werkrby notify --workdir PATH (--origin O | --recent-authorized) --message TEXT
+                                  Queue a proactive assistant notification
+  werkrby conversations list      List disk-backed conversations
+  werkrby conversations show      Read a bounded conversation tail
+  werkrby conversations resume    Branch any saved conversation into CLI
+  werkrby status [flags]          Show workspace and current conversation status
+  werkrby command [flags] NAME    Run any non-visual framework slash command
+  werkrby model|effort|speed ...  Inspect or select model inference properties
+  werkrby tasks [flags] [VIEW]    List durable tasks (open by default)
+  werkrby goals [flags] [VIEW]    List durable goals (open by default)
+    VIEW                          open|recent|active|review|waiting|done|failed|all
+    --config PATH                 Load an explicit workspace configuration
+    --conversation NAME           Use a durable CLI command conversation
+    --days N                      Restrict updated_at to the last N days
+    --limit N                     Render 1 through 100 matching items
+    --detail                      Add allowlisted durable details
+    --json                        Emit the shared response event as NDJSON
+  werkrby job message N TEXT      Guide a live orchestrator job in place
+  werkrby job ping N              Request durable progress from a live job
+  werkrby docs [TOPIC]            Read curated offline documentation
+    search QUERY [page NUMBER]    Search bounded topic sections
+    --format text|json            Select plain Markdown or versioned JSON
+  werkrby instructions            Validate role instruction files without showing contents
+  werkrby jobs|log...             Other concise framework-command aliases
+  werkrby update                  Update and restart every instance of this installation
+  werkrby update check            Check versions without updating or restarting
+  werkrby killall                 Stop all running Werkrby instances
+  werkrby run --once              Dispatch one orchestration scan and wait
+  werkrby task [--no-review] REQUEST
+                                  Create a task (reviewed by default)
+  werkrby task inspect FILE       Show the task's effective review policy
+  werkrby goal OBJECTIVE          Create a goal markdown file
+  werkrby extension ...           List, install, or remove Git extensions
+  werkrby whatsapp pair           Pair a WhatsApp account by QR code
+  werkrby config [get|set ...]    Validate config or run the shared config command
+  werkrby doctor                  Check local configuration and prerequisites
+  werkrby version                 Print the binary version
 `
 
 // runInstallBundle is a workspace-independent entry point used by install.sh.

@@ -148,16 +148,16 @@ func Lookup(request Request) (Document, error) {
 		page = 1
 	}
 	if page < 1 {
-		return errorDocument("invalid_page", "page must be a positive integer", "spynel docs page 1", nil), nil
+		return errorDocument("invalid_page", "page must be a positive integer", "werkrby docs page 1", nil), nil
 	}
 	if containsControl(request.Search) || containsControl(request.Topic) {
-		return errorDocument("invalid_input", "topics and search queries may not contain control characters", "spynel docs", nil), nil
+		return errorDocument("invalid_input", "topics and search queries may not contain control characters", "werkrby docs", nil), nil
 	}
 	if strings.Count(request.Topic, "#") > 1 || strings.HasPrefix(request.Topic, "#") || strings.HasSuffix(request.Topic, "#") {
-		return errorDocument("invalid_reference", "section references must use topic#section", "spynel docs", nil), nil
+		return errorDocument("invalid_reference", "section references must use topic#section", "werkrby docs", nil), nil
 	}
 	if utf8.RuneCountInString(request.Search) > 256 || utf8.RuneCountInString(request.Topic) > 128 {
-		return errorDocument("input_too_large", "topic names are limited to 128 runes and search queries to 256 runes", "spynel docs", nil), nil
+		return errorDocument("input_too_large", "topic names are limited to 128 runes and search queries to 256 runes", "werkrby docs", nil), nil
 	}
 	if strings.TrimSpace(request.Search) != "" {
 		return searchDocument(strings.TrimSpace(request.Search), page), nil
@@ -175,18 +175,18 @@ func Lookup(request Request) (Document, error) {
 		}
 		start, end, metadata, ok := paginate(weights, page)
 		if !ok {
-			return errorDocument("page_out_of_range", fmt.Sprintf("index page %d does not exist", page), "spynel docs page "+strconv.Itoa(metadata.Total), nil), nil
+			return errorDocument("page_out_of_range", fmt.Sprintf("index page %d does not exist", page), "werkrby docs page "+strconv.Itoa(metadata.Total), nil), nil
 		}
-		doc := Document{SchemaVersion: SchemaVersion, Kind: "index", ID: "index", Title: "Spynel documentation", Summary: "Curated static behavior; use status, jobs, and logs for current runtime state.", Topics: entries[start:end], Page: metadata}
+		doc := Document{SchemaVersion: SchemaVersion, Kind: "index", ID: "index", Title: "Werkrby documentation", Summary: "Curated static behavior; use status, jobs, and logs for current runtime state.", Topics: entries[start:end], Page: metadata}
 		return bounded(doc)
 	}
 	topic, ok := topicByID(name)
 	if !ok {
 		valid := topicIDs()
 		suggestion := closest(name, valid)
-		hint := "spynel docs"
+		hint := "werkrby docs"
 		if suggestion != "" {
-			hint = "spynel docs " + suggestion
+			hint = "werkrby docs " + suggestion
 		}
 		return errorDocument("unknown_topic", fmt.Sprintf("unknown documentation topic %q", request.Topic), hint, valid), nil
 	}
@@ -205,9 +205,9 @@ func Lookup(request Request) (Document, error) {
 				valid = append(valid, topic.ID+"#"+section.ID)
 			}
 			suggestion := closest(topic.ID+"#"+sectionID, valid)
-			hint := "spynel docs " + topic.ID
+			hint := "werkrby docs " + topic.ID
 			if suggestion != "" {
-				hint = "spynel docs " + suggestion
+				hint = "werkrby docs " + suggestion
 			}
 			return errorDocument("unknown_section", fmt.Sprintf("unknown documentation section %q", request.Topic), hint, valid), nil
 		}
@@ -218,7 +218,7 @@ func Lookup(request Request) (Document, error) {
 	}
 	start, end, metadata, ok := paginate(weights, page)
 	if !ok {
-		return errorDocument("page_out_of_range", fmt.Sprintf("topic %q has no page %d", topic.ID, page), fmt.Sprintf("spynel docs %s page %d", topic.ID, metadata.Total), nil), nil
+		return errorDocument("page_out_of_range", fmt.Sprintf("topic %q has no page %d", topic.ID, page), fmt.Sprintf("werkrby docs %s page %d", topic.ID, metadata.Total), nil), nil
 	}
 	id := topic.ID
 	if sectionID != "" {
@@ -286,7 +286,7 @@ func searchDocument(query string, page int) Document {
 	}
 	start, end, metadata, ok := paginate(weights, page)
 	if !ok {
-		return errorDocument("page_out_of_range", fmt.Sprintf("search page %d does not exist", page), "spynel docs search "+query+" page "+strconv.Itoa(metadata.Total), nil)
+		return errorDocument("page_out_of_range", fmt.Sprintf("search page %d does not exist", page), "werkrby docs search "+query+" page "+strconv.Itoa(metadata.Total), nil)
 	}
 	doc := Document{SchemaVersion: SchemaVersion, Kind: "search", ID: "search", Title: "Documentation search", Query: query, Topics: results[start:end], Page: metadata}
 	boundedDoc, _ := bounded(doc)
@@ -417,11 +417,11 @@ func renderText(doc Document) string {
 	}
 	if doc.Page.Number < doc.Page.Total {
 		if doc.Kind == "topic" {
-			lines = append(lines, fmt.Sprintf("Next: `spynel docs %s page %d`", doc.ID, doc.Page.Number+1))
+			lines = append(lines, fmt.Sprintf("Next: `werkrby docs %s page %d`", doc.ID, doc.Page.Number+1))
 		} else if doc.Kind == "search" {
-			lines = append(lines, fmt.Sprintf("Next: `spynel docs search %s page %d`", doc.Query, doc.Page.Number+1))
+			lines = append(lines, fmt.Sprintf("Next: `werkrby docs search %s page %d`", doc.Query, doc.Page.Number+1))
 		} else {
-			lines = append(lines, fmt.Sprintf("Next: `spynel docs page %d`", doc.Page.Number+1))
+			lines = append(lines, fmt.Sprintf("Next: `werkrby docs page %d`", doc.Page.Number+1))
 		}
 	}
 	return strings.Join(lines, "\n") + "\n"

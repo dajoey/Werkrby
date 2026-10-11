@@ -54,7 +54,7 @@ func runOwnerElection(ctx context.Context, cfg config.Config, version string, el
 	var nextAttempt time.Time
 	logLine := func(format string, args ...any) {
 		if len(options) > 0 && options[0].Log != nil {
-			fmt.Fprintf(options[0].Log, "spyjo: "+format+"\n", args...)
+			fmt.Fprintf(options[0].Log, "werkrby: "+format+"\n", args...)
 		}
 	}
 	deferFailure := func(now time.Time, format string, args ...any) error {

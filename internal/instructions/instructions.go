@@ -40,9 +40,9 @@ const requiredChatGuidance = chatGuidanceMarker + ` When the user explicitly ask
 
 Never persist one-off directions, ordinary feedback, transient decisions, inferred preferences, secrets, credentials, recipient identifiers, attachments, or transcripts. Persistent rules cannot weaken safety, authorization, lifecycle, review, or data-handling requirements and never override the current explicit request or nearest AGENTS.md/DOX contract.`
 
-const chatTranscriptionGuidanceMarker = "Speech transcription can render Spynel"
+const chatTranscriptionGuidanceMarker = "Speech transcription can render Werkrby"
 
-const chatTranscriptionGuidance = chatTranscriptionGuidanceMarker + " as `spinal`, `spinel`, `spy nell`, or other phonetically similar words. When the surrounding context clearly refers to the Spynel framework, interpret those variants as `Spynel`. Preserve the literal meaning when the context instead indicates an unrelated use, such as a medical reference to `spinal`; contextual confidence is required."
+const chatTranscriptionGuidance = chatTranscriptionGuidanceMarker + " (pronounced \"worker bee\") as `worker bee`, `worker b`, `werker bee`, `work ruby`, or other phonetically similar words. When the surrounding context clearly refers to the Werkrby framework, interpret those variants as `Werkrby`. Preserve the literal meaning when the context instead indicates an unrelated use, such as a literal reference to a `worker bee`; contextual confidence is required."
 
 type Role string
 

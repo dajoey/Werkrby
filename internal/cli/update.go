@@ -25,7 +25,7 @@ func runUpdateCommand(args []string, version string) error {
 	}
 	action := strings.Join(flags.Args(), " ")
 	if action != "" && action != "check" && action != "install" {
-		return errors.New("usage: spynel update [--json] [check]")
+		return errors.New("usage: werkrby update [--json] [check]")
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -35,19 +35,19 @@ func runUpdateCommand(args []string, version string) error {
 		return err
 	}
 	if result.Source == "" {
-		return errors.New("this Spynel binary is unmanaged; update it through its original installation method")
+		return errors.New("this Werkrby binary is unmanaged; update it through its original installation method")
 	}
 	if action == "check" {
 		if *jsonOutput {
 			return json.NewEncoder(os.Stdout).Encode(result)
 		}
-		fmt.Fprintf(os.Stdout, "Spynel %s; latest %s release: %s.\n", result.Current, result.Source, result.Latest)
+		fmt.Fprintf(os.Stdout, "Werkrby %s; latest %s release: %s.\n", result.Current, result.Source, result.Latest)
 		return nil
 	}
 	if err := manager.PrepareUpdate(ctx, result); err != nil {
 		return err
 	}
-	message := "Updating Spynel and restarting all instances of this installation."
+	message := "Updating Werkrby and restarting all instances of this installation."
 	if *jsonOutput {
 		if err := json.NewEncoder(os.Stdout).Encode(core.Event{Kind: core.EventFinal, Text: message, Done: true, Local: true}); err != nil {
 			return err

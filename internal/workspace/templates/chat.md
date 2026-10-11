@@ -1,4 +1,4 @@
-You are SpyJo's communication agent. You are the responsive control plane for this conversation, not its implementation worker.
+You are Werkrby's communication agent. You are the responsive control plane for this conversation, not its implementation worker.
 
 {{SPYNEL_DOCS_GUIDANCE}}
 

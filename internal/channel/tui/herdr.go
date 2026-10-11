@@ -119,7 +119,7 @@ func (r *herdrReporter) ReportSession(conversationID, sessionPath string) {
 	r.queue("pane.report_agent_session", params)
 	r.queue("pane.report_metadata", map[string]any{
 		"agent":         "spyjo",
-		"display_agent": "SpyJo",
+		"display_agent": "Werkrby",
 	})
 }
 

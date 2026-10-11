@@ -201,7 +201,7 @@ func (m *Manager) Check(ctx context.Context) (Result, error) {
 	result.Current = m.CurrentVersion
 	if m.InstallRoot != "" {
 		if _, ok := parseVersion(m.CurrentVersion); !ok {
-			return result, fmt.Errorf("installed Spynel version %q is not semantic", m.CurrentVersion)
+			return result, fmt.Errorf("installed Werkrby version %q is not semantic", m.CurrentVersion)
 		}
 		result.Source = "GitHub"
 		result.CanAutoInstall = true
@@ -215,7 +215,7 @@ func (m *Manager) Check(ctx context.Context) (Result, error) {
 		return result, nil
 	}
 	if _, ok := parseVersion(m.CurrentVersion); !ok {
-		return result, fmt.Errorf("installed Spynel version %q is not semantic", m.CurrentVersion)
+		return result, fmt.Errorf("installed Werkrby version %q is not semantic", m.CurrentVersion)
 	}
 	timeout := m.CheckTimeout
 	if timeout <= 0 {

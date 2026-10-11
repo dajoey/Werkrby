@@ -189,7 +189,7 @@ func TestRestartRejectsLegacyProcessBeforeSignaling(t *testing.T) {
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.CheckRestartable(); err == nil || !strings.Contains(err.Error(), "spynel killall") {
+	if err := manager.CheckRestartable(); err == nil || !strings.Contains(err.Error(), "werkrby killall") {
 		t.Fatalf("legacy preflight: %v", err)
 	}
 	if err := process.Process.Signal(syscall.Signal(0)); err != nil {

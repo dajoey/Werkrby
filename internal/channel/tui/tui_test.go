@@ -107,7 +107,7 @@ func TestApplyThemeRebindsRenderedComposerPlaceholder(t *testing.T) {
 
 func TestFreshConversationUsesConciseCopy(t *testing.T) {
 	m := testModel()
-	if m.input.Placeholder != "Message SpyJo, / for commands" {
+	if m.input.Placeholder != "Message Werkrby, / for commands" {
 		t.Fatalf("composer placeholder = %q", m.input.Placeholder)
 	}
 	m.renderHistory()
@@ -117,7 +117,7 @@ func TestFreshConversationUsesConciseCopy(t *testing.T) {
 	}
 }
 
-func TestYouSpyAndErrPrefixesAlign(t *testing.T) {
+func TestYouBeeAndErrPrefixesAlign(t *testing.T) {
 	m := testModel()
 	user := ansi.Strip(m.renderTranscriptEntry(transcriptEntry{role: "user", text: "hello"}))
 	agent := ansi.Strip(m.renderTranscriptEntry(transcriptEntry{role: "assistant", text: "hello"}))
@@ -125,7 +125,7 @@ func TestYouSpyAndErrPrefixesAlign(t *testing.T) {
 	if strings.Contains(user, "›") || strings.Contains(agent, "›") || strings.Contains(failure, "›") {
 		t.Fatalf("sender separator remains: user=%q agent=%q error=%q", user, agent, failure)
 	}
-	if user != "You hello" || agent != "Spy hello" || failure != "Err hello" {
+	if user != "You hello" || agent != "Bee hello" || failure != "Err hello" {
 		t.Fatalf("chat rows = %q, %q, and %q; want aligned sender prefixes", user, agent, failure)
 	}
 	if userContent, agentContent, errorContent := strings.Index(user, "hello"), strings.Index(agent, "hello"), strings.Index(failure, "hello"); userContent != chatContentColumn || agentContent != chatContentColumn || errorContent != chatContentColumn {
@@ -166,7 +166,7 @@ func TestMarkdownChatDoesNotOrphanBoundaryLettersBesideScrollbar(t *testing.T) {
 	if !strings.Contains(rendered, "are explicitly preserved.") || strings.Contains(rendered, "\n    are\n") {
 		t.Fatalf("Markdown renderer stranded a short word despite room on its continuation row: %q", rendered)
 	}
-	if got, want := strings.Join(strings.Fields(rendered), " "), "Spy "+strings.Join(strings.Fields(strings.NewReplacer("`", "").Replace(message)), " "); got != want {
+	if got, want := strings.Join(strings.Fields(rendered), " "), "Bee "+strings.Join(strings.Fields(strings.NewReplacer("`", "").Replace(message)), " "); got != want {
 		t.Fatalf("wrapped Markdown text changed: got %q, want %q", got, want)
 	}
 }
@@ -1820,10 +1820,10 @@ func TestHelpMarkdownHeadingsStayOnOneChatRow(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(profile) })
 	narrow := ansi.Strip(visualNarrowHelpModel().View())
-	if lineContaining(strings.Split(narrow, "\n"), "About Spynel") < 0 {
+	if lineContaining(strings.Split(narrow, "\n"), "About Werkrby") < 0 {
 		t.Fatalf("help heading wrapped in the narrow full-frame render: %q", narrow)
 	}
-	for _, heading := range []string{"Spynel help", "About Spynel"} {
+	for _, heading := range []string{"Werkrby help", "About Werkrby"} {
 		for _, terminalWidth := range []int{24, 40, 80, 110} {
 			m := testModel()
 			next, _ := m.Update(tea.WindowSizeMsg{Width: terminalWidth, Height: 24})
@@ -2917,7 +2917,7 @@ func TestWorkingSpinnerTrailsStreamingResponseUntilFinal(t *testing.T) {
 	firstWorkingFrame := got.workingSpinner.View()
 	firstLogoFrame := got.logoSpinner.View()
 	view := ansi.Strip(got.viewport.View())
-	if !got.working || !strings.Contains(view, "Spy "+firstWorkingFrame) || strings.Contains(view, "Working") {
+	if !got.working || !strings.Contains(view, "Bee "+firstWorkingFrame) || strings.Contains(view, "Working") {
 		t.Fatalf("initial activity placeholder is not spinner-only: working=%t view=%q", got.working, view)
 	}
 	if logo := got.spynelLogo(); logo == firstLogoFrame || got.logoAnimation != logoStopped {
@@ -3035,7 +3035,7 @@ func TestFrameworkCommandDuringRecipientTurnKeepsResponsesAndSpinnerFlow(t *test
 		t.Fatalf("framework final stopped or replaced active response: working=%t transcript=%#v", m.working, m.transcript)
 	}
 	view := ansi.Strip(m.viewport.View())
-	if !strings.Contains(view, "/jobs") || !strings.Contains(view, "1 job") || !strings.Contains(view, "Spy "+m.workingSpinner.View()) {
+	if !strings.Contains(view, "/jobs") || !strings.Contains(view, "1 job") || !strings.Contains(view, "Bee "+m.workingSpinner.View()) {
 		t.Fatalf("interleaved command flow is not visible: %q", view)
 	}
 
@@ -4064,7 +4064,7 @@ func TestRequiredInitializationScreenActionsAndCannotFallIntoChat(t *testing.T) 
 	screen := InitializationScreen("/workspace/new")
 	m.openScreen(screen)
 	view := ansi.Strip(m.View())
-	if !strings.Contains(screen.Subtitle, "not configured") || !strings.Contains(view, "/workspace/new") || !strings.Contains(screen.Controls[0].Value, "Initialize SpyJo") {
+	if !strings.Contains(screen.Subtitle, "not configured") || !strings.Contains(view, "/workspace/new") || !strings.Contains(screen.Controls[0].Value, "Initialize Werkrby") {
 		t.Fatalf("initialization screen is incomplete: %q", view)
 	}
 
@@ -4107,7 +4107,7 @@ func TestParentWorkspaceScreenDefaultsToParentAndKeepsFailuresInPlace(t *testing
 	parentRoot := "/workspace/project"
 	screen := ParentWorkspaceScreen(launchRoot, parentRoot)
 	if screen.Banner != core.SpynelASCII {
-		t.Fatalf("workspace choice banner does not use the canonical Spynel logo: %q", screen.Banner)
+		t.Fatalf("workspace choice banner does not use the canonical Werkrby logo: %q", screen.Banner)
 	}
 	if len(screen.Controls) != 3 || screen.Controls[0].Key != string(WorkspaceChoiceUseParent) || screen.Controls[1].Key != string(WorkspaceChoiceInitializeHere) || screen.Controls[2].Key != string(WorkspaceChoiceExit) {
 		t.Fatalf("workspace actions = %#v", screen.Controls)
@@ -4167,7 +4167,7 @@ func TestInitializationOptionBlocksHaveOneSemanticSeparatorRow(t *testing.T) {
 
 	initializeRow := -1
 	for index, row := range plainRows {
-		if strings.Contains(row, "Initialize SpyJo in /workspace/fresh-project") {
+		if strings.Contains(row, "Initialize Werkrby in /workspace/fresh-project") {
 			initializeRow = index
 			break
 		}
@@ -4723,8 +4723,8 @@ func TestWelcomeRendersInlineAboveChatWithoutTakingComposerFocus(t *testing.T) {
 	if logoLine < 0 || helpLine <= logoLine || messageLine <= helpLine || strings.Contains(view, "Old button") {
 		t.Fatalf("inline welcome order = %q", view)
 	}
-	if !strings.Contains(view, "    ████     ████") || !strings.Contains(view, " ██      ███      ██") {
-		t.Fatalf("inline welcome does not use the canonical five-row Spynel logo: %q", view)
+	if !strings.Contains(view, "██     ██ ███████ ██████") || !strings.Contains(view, " ███ ███  ███████ ██   ██") {
+		t.Fatalf("inline welcome does not use the canonical five-row Werkrby logo: %q", view)
 	}
 	if !m.input.Focused() || m.viewport.YOffset != 0 {
 		t.Fatalf("inline welcome stole composer focus or did not start at top: focused=%v offset=%d", m.input.Focused(), m.viewport.YOffset)

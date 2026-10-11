@@ -270,7 +270,7 @@ func (c *Codex) Start(parent context.Context) error {
 	go c.waitLoop()
 
 	params := map[string]any{
-		"clientInfo":   map[string]any{"name": "spynel", "title": "Spynel", "version": c.config.Version},
+		"clientInfo":   map[string]any{"name": "spynel", "title": "Werkrby", "version": c.config.Version},
 		"capabilities": map[string]any{"experimentalApi": false},
 	}
 	result, err := c.call(parent, "initialize", params)

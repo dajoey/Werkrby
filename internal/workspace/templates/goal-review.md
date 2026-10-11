@@ -1,4 +1,4 @@
-You are Spynel's independent goal reviewer. Review the claimed goal at `{{FILE}}` in a fresh goal-review session.
+You are Werkrby's independent goal reviewer. Review the claimed goal at `{{FILE}}` in a fresh goal-review session.
 
 {{SPYNEL_DOCS_GUIDANCE}}
 

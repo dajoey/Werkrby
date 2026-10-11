@@ -176,9 +176,9 @@ func visualHelpModel() model {
 	value := visualBaseModel()
 	value.transcript = []transcriptEntry{
 		{role: "user", text: "/help"},
-		{role: "assistant", text: "# Spynel Help\n\nSpynel is a classic, non-AI program coordinating external coding agents through one assistant relationship.\n\n- `/help about` — What Spynel does\n- `/help commands` — Slash-command reference"},
+		{role: "assistant", text: "# Werkrby help\n\nWerkrby is a classic, non-AI program coordinating external coding agents through one assistant relationship.\n\n- `/help about` — What Werkrby does\n- `/help commands` — Slash-command reference"},
 		{role: "user", text: "/help about"},
-		{role: "assistant", text: "# About Spynel\n\nSpynel is a classic, non-AI program coordinating external coding agents through one assistant relationship."},
+		{role: "assistant", text: "# About Werkrby\n\nWerkrby is a classic, non-AI program coordinating external coding agents through one assistant relationship."},
 	}
 	value.renderHistory()
 	return value
@@ -194,7 +194,7 @@ func visualNarrowHelpModel() model {
 	value.input.SetWidth(value.inputWidth)
 	value.transcript = []transcriptEntry{
 		{role: "user", text: "/help about"},
-		{role: "assistant", text: "# About Spynel\n\nSpynel is a non-AI orchestration program for external coding agents."},
+		{role: "assistant", text: "# About Werkrby\n\nWerkrby is a non-AI orchestration program for external coding agents."},
 	}
 	value.renderHistory()
 	return value
@@ -204,7 +204,7 @@ func visualWelcomeModel() model {
 	value := visualBaseModel()
 	value.welcome = &core.Screen{
 		ID: "welcome", Banner: core.SpynelASCII,
-		Subtitle: "👋 Hey, I'm **Spynel** — you can call me **Spy**.\n\nI handle tasks and orchestrate agents. Just tell me your objectives and leave the rest to me.\nFeel free to ask me for updates anytime or have me get things done. 👍\n\n- type `/help` if you ever feel lost\n- type `/config` for configuration\n- type `/whatsapp` to connect WhatsApp",
+		Subtitle: "👋 Hey, I'm **Werkrby** — you can call me **Bee**.\n\nI handle tasks and orchestrate agents. Just tell me your objectives and leave the rest to me.\nFeel free to ask me for updates anytime or have me get things done. 👍\n\n- type `/help` if you ever feel lost\n- type `/config` for configuration\n- type `/whatsapp` to connect WhatsApp",
 		Markdown: true,
 	}
 	value.welcomeFocus = true
@@ -217,7 +217,7 @@ func visualManualWelcomeModel() model {
 	value := visualBaseModel()
 	value.transcript = []transcriptEntry{{
 		role: "assistant",
-		text: core.SpynelLogoMarkdown + "\n\n👋 Hey, I'm **Spynel** — you can call me **Spy**.\n\nI handle tasks and orchestrate agents. Just tell me your objectives and leave the rest to me.\nFeel free to ask me for updates anytime or have me get things done. 👍\n\n- type `/help` if you ever feel lost\n- type `/config` for configuration\n- type `/whatsapp` to connect WhatsApp",
+		text: core.SpynelLogoMarkdown + "\n\n👋 Hey, I'm **Werkrby** — you can call me **Bee**.\n\nI handle tasks and orchestrate agents. Just tell me your objectives and leave the rest to me.\nFeel free to ask me for updates anytime or have me get things done. 👍\n\n- type `/help` if you ever feel lost\n- type `/config` for configuration\n- type `/whatsapp` to connect WhatsApp",
 	}}
 	value.renderHistory()
 	value.viewport.GotoBottom()
@@ -515,7 +515,7 @@ func visualWhatsAppConfigModel() model {
 			{Key: "channels.whatsapp.enabled", Label: "enabled", Kind: "toggle", Value: "on", Options: []string{"on", "off"}, Description: "Start the WhatsApp connection"},
 			{Key: "wizard", Section: "Setup", Kind: "action", Value: "Setup wizard", Description: "Configure the essential connection step by step"},
 			{Key: "channels.whatsapp.mode", Section: "Basic settings", Label: "mode", Kind: "select", Value: "self-chat", Options: []string{"self-chat", "dedicated"}, Description: "Choose the account behavior"},
-			{Key: "channels.whatsapp.allowed_numbers", Label: "allowed numbers", Kind: "text", Value: "15551234567", Description: "Required phone numbers allowed to message Spynel"},
+			{Key: "channels.whatsapp.allowed_numbers", Label: "allowed numbers", Kind: "text", Value: "15551234567", Description: "Required phone numbers allowed to message Werkrby"},
 			{Key: "advanced", Section: "Advanced settings", Kind: "disclosure", Value: "Advanced settings", Description: "Show optional connection, group, notification, and storage controls"},
 		},
 	})

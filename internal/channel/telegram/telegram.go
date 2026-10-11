@@ -464,7 +464,7 @@ func (b *Bot) handle(ctx context.Context, handler channel.Handler, message *tele
 	}
 	text, err := b.messageText(ctx, message)
 	if err != nil {
-		_ = b.send(context.Background(), chatID, channel.ErrorResponse("Spynel attachment error: "+err.Error()), message.MessageID)
+		_ = b.send(context.Background(), chatID, channel.ErrorResponse("Werkrby attachment error: "+err.Error()), message.MessageID)
 		setActivity(false)
 		return
 	}
@@ -508,7 +508,7 @@ func (b *Bot) handle(ctx context.Context, handler channel.Handler, message *tele
 		}
 		for _, attachment := range event.Attachments {
 			if err := b.sendAttachment(context.Background(), chatID, attachment, message.MessageID); err != nil {
-				_ = b.send(context.Background(), chatID, channel.ErrorResponse("Spynel attachment delivery error: "+err.Error()), message.MessageID)
+				_ = b.send(context.Background(), chatID, channel.ErrorResponse("Werkrby attachment delivery error: "+err.Error()), message.MessageID)
 			}
 			message.MessageID = 0
 		}

@@ -197,7 +197,7 @@ func (a *ACP) Start(parent context.Context) error {
 			"fs":       map[string]bool{"readTextFile": false, "writeTextFile": false},
 			"terminal": false,
 		},
-		"clientInfo": map[string]string{"name": "spynel", "title": "Spynel", "version": version},
+		"clientInfo": map[string]string{"name": "spynel", "title": "Werkrby", "version": version},
 	})
 	if err != nil {
 		_ = a.Close()
@@ -213,7 +213,7 @@ func (a *ACP) Start(parent context.Context) error {
 	}
 	if initialized.ProtocolVersion != acpProtocolVersion {
 		_ = a.Close()
-		return fmt.Errorf("ACP agent selected protocol version %d; Spynel requires stable v1", initialized.ProtocolVersion)
+		return fmt.Errorf("ACP agent selected protocol version %d; Werkrby requires stable v1", initialized.ProtocolVersion)
 	}
 	a.mu.Lock()
 	a.caps = initialized.AgentCapabilities
@@ -636,7 +636,7 @@ func (a *ACP) handleAgentMessage(envelope acpEnvelope) {
 		a.handlePermissionRequest(envelope.ID, envelope.Params)
 	default:
 		if len(envelope.ID) != 0 {
-			_ = a.respondError(envelope.ID, -32601, "method not supported by Spynel")
+			_ = a.respondError(envelope.ID, -32601, "method not supported by Werkrby")
 		}
 	}
 }
@@ -803,7 +803,7 @@ func (a *ACP) waitLoop() {
 
 func (a *ACP) fail(err error) {
 	if a.config.Name == "agent-zero" {
-		err = fmt.Errorf("Agent Zero CLI ACP process exited; run `a0 acp --check`, verify Agent Zero is reachable, and inspect Spynel's attributed harness logs: %w", err)
+		err = fmt.Errorf("Agent Zero CLI ACP process exited; run `a0 acp --check`, verify Agent Zero is reachable, and inspect Werkrby's attributed harness logs: %w", err)
 	}
 	a.mu.Lock()
 	if a.closed {

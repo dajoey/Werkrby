@@ -530,3 +530,25 @@ esac
 	}
 }
 
+func TestWorkerNameAndLabelGenericFallbackNamesWerkrby(t *testing.T) {
+	name, label := workerNameAndLabel("notification:adhoc-probe", "kimi")
+	if label != "Werkrby (kimi)" {
+		t.Fatalf("generic tab label = %q, want %q", label, "Werkrby (kimi)")
+	}
+	if !strings.HasPrefix(name, "sj-") {
+		t.Fatalf("generic worker name = %q, want the sj- pane prefix", name)
+	}
+}
+
+func TestAgyComposerPatternsAcceptLegacyAndWerkrbyNames(t *testing.T) {
+	for _, name := range []string{"Antigravity", "agy", "SpyJo", "Werkrby"} {
+		box := "╭──────────────────╮\n│ Message " + name + " here\n╰──────────────────╯"
+		if !agyInputBoxPattern.MatchString(box) {
+			t.Errorf("agyInputBoxPattern does not match the %q composer", name)
+		}
+		cleaned := cleanHerdrTerminalOutput("answer line\n\n" + box + "\n")
+		if strings.Contains(cleaned, "Message "+name) {
+			t.Errorf("cleanHerdrTerminalOutput kept the %q composer:\n%s", name, cleaned)
+		}
+	}
+}

@@ -97,13 +97,13 @@ func CreateWithOptions(cfg config.Config, routeName, title, body string, options
 	}
 	if strings.TrimSpace(body) == "" {
 		if routeName == "goals" {
-			body = "# " + title + "\n\n## Objective\n\n" + title + "\n\n## Boundaries\n\n- To be refined during planning.\n\n## Target conditions\n\n- `criterion-1`: " + title + "\n\n## Current evidence\n\n- No evidence recorded yet.\n\n## Planning history\n\n- Awaiting the initial planning pass.\n\n## Review history\n\n- No reviews yet.\n\n## Progress\n\n- Created by Spynel.\n"
+			body = "# " + title + "\n\n## Objective\n\n" + title + "\n\n## Boundaries\n\n- To be refined during planning.\n\n## Target conditions\n\n- `criterion-1`: " + title + "\n\n## Current evidence\n\n- No evidence recorded yet.\n\n## Planning history\n\n- Awaiting the initial planning pass.\n\n## Review history\n\n- No reviews yet.\n\n## Progress\n\n- Created by Werkrby.\n"
 		} else {
 			acceptance := "The requested finite outcome is completed and independently verified."
 			if !taskReviewRequired {
 				acceptance = "The requested low-risk outcome is completed with proportionate verification, evidence, residual uncertainty, and an exact UTC completion time recorded."
 			}
-			body = "# " + title + "\n\n## Objective\n\n" + title + "\n\n## Acceptance criteria\n\n- " + acceptance + "\n\n## Context\n\n- Created by Spynel.\n\n## Progress\n\n- Not started.\n"
+			body = "# " + title + "\n\n## Objective\n\n" + title + "\n\n## Acceptance criteria\n\n- " + acceptance + "\n\n## Context\n\n- Created by Werkrby.\n\n## Progress\n\n- Not started.\n"
 		}
 	}
 	document := Document{FrontMatter: front, Body: body}

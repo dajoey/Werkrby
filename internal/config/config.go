@@ -30,7 +30,7 @@ const (
 	TaskNotificationsAlways = "always"
 )
 
-var ErrNotInitialized = errors.New("Spynel is not initialized")
+var ErrNotInitialized = errors.New("Werkrby is not initialized")
 
 type Config struct {
 	Version      int          `yaml:"version"`
@@ -215,7 +215,7 @@ func Default() Config {
 			Reviews: TaskReviewsSkipTrivial,
 		},
 		Channels: Channels{
-			TUI:      TUI{Title: "Spynel", Theme: "spynel"},
+			TUI:      TUI{Title: "Werkrby", Theme: "spynel"},
 			Telegram: Telegram{Name: "spynel", TokenEnv: "SPYNEL_TELEGRAM_TOKEN", Mode: "polling", WebhookListen: "127.0.0.1:8787", PollTimeoutSec: 30, GroupMode: "mention", WelcomeMessage: "Welcome, {name}!"},
 			WhatsApp: WhatsApp{Mode: "self-chat", Database: ".spynel/whatsapp.db", PollIntervalSec: 3},
 		},

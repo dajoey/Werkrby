@@ -533,7 +533,7 @@ notify:
 waiting_for: "Joey's call on %[2]s usage for %[4]s"
 joey_ask:
   kind: choice
-  prompt: "SpyJo staff '%[2]s' (%[6]s) has used %[3]d sessions today, the point where you asked to be told. Let it keep going today, or stop it for today?"
+  prompt: "Werkrby staff '%[2]s' (%[6]s) has used %[3]d sessions today, the point where you asked to be told. Let it keep going today, or stop it for today?"
   context: "Nothing is paused: %[2]s is still taking work while this card is open. %[7]s This card is only so you know what is going on and can overrule it."
   how_to: "Tap one option."
   options:
@@ -549,7 +549,7 @@ joey_ask:
 
 ## Objective
 
-Record Joey's answer so the roster applies it. Filed automatically by SpyJo when roster staff %[2]s reached its notify_at count.
+Record Joey's answer so the roster applies it. Filed automatically by Werkrby when roster staff %[2]s reached its notify_at count.
 
 ## Scope
 
@@ -568,7 +568,7 @@ Record Joey's answer so the roster applies it. Filed automatically by SpyJo when
 
 ## Progress
 
-- %[5]s - Filed by the SpyJo roster: %[2]s at %[3]d sessions (notify_at %[9]d, daily_cap %[10]d).
+- %[5]s - Filed by the Werkrby roster: %[2]s at %[3]d sessions (notify_at %[9]d, daily_cap %[10]d).
 `, id, name, count, day, stamp, s.Runner, halt, stopEffect, s.NotifyAt, s.DailyCap)
 	dir := filepath.Join(stateDir, "tasks", "waiting")
 	if err := os.MkdirAll(dir, 0o700); err != nil {

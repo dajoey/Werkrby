@@ -25,8 +25,8 @@ func TestTaskAndGoalTopicsDocumentLiveListingCommands(t *testing.T) {
 		topic string
 		want  []string
 	}{
-		{topic: "tasks", want: []string{"/tasks", "direct `spynel tasks`", "default to `open`", "three", "review", "failed", "NDJSON", "Telegram", "--detail", "never starts a harness"}},
-		{topic: "goals", want: []string{"/goals", "direct `spynel goals`", "default to `open`", "seven", "abandoned", "NDJSON", "WhatsApp", "round", "without invoking a harness"}},
+		{topic: "tasks", want: []string{"/tasks", "direct `werkrby tasks`", "default to `open`", "three", "review", "failed", "NDJSON", "Telegram", "--detail", "never starts a harness"}},
+		{topic: "goals", want: []string{"/goals", "direct `werkrby goals`", "default to `open`", "seven", "abandoned", "NDJSON", "WhatsApp", "round", "without invoking a harness"}},
 	} {
 		document, err := Lookup(Request{Topic: test.topic})
 		if err != nil {
@@ -126,7 +126,7 @@ func TestJSONSchemaErrorsSuggestionsAndOutputBounds(t *testing.T) {
 	if err := json.Unmarshal([]byte(output), &document); err != nil {
 		t.Fatal(err)
 	}
-	if document.SchemaVersion != SchemaVersion || document.Kind != "error" || document.Error == nil || document.Error.Code != "unknown_topic" || document.Error.Suggestion != "spynel docs goals" {
+	if document.SchemaVersion != SchemaVersion || document.Kind != "error" || document.Error == nil || document.Error.Code != "unknown_topic" || document.Error.Suggestion != "werkrby docs goals" {
 		t.Fatalf("error document = %#v", document)
 	}
 	for _, request := range []Request{{}, {Topic: "tasks"}, {Search: "state"}, {Topic: strings.Repeat("x", 129)}} {
@@ -146,7 +146,7 @@ func TestJSONSchemaErrorsSuggestionsAndOutputBounds(t *testing.T) {
 		t.Fatalf("section reference = %#v", section)
 	}
 	badSection, _ := Lookup(Request{Topic: "tasks#lifecycl"})
-	if badSection.Error == nil || badSection.Error.Code != "unknown_section" || badSection.Error.Suggestion != "spynel docs tasks#lifecycle" {
+	if badSection.Error == nil || badSection.Error.Code != "unknown_section" || badSection.Error.Suggestion != "werkrby docs tasks#lifecycle" {
 		t.Fatalf("section suggestion = %#v", badSection)
 	}
 	malformed, _ := Lookup(Request{Topic: "tasks#"})

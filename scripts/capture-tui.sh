@@ -45,9 +45,9 @@ done
 contact_html="$capture_dir/theme-contact-sheet.html"
 contact_png="$capture_dir/theme-contact-sheet.png"
 {
-  printf '%s\n' '<!doctype html><meta charset="utf-8"><title>Spynel stock themes</title>'
+  printf '%s\n' '<!doctype html><meta charset="utf-8"><title>Werkrby stock themes</title>'
   printf '%s\n' '<style>body{margin:0;padding:28px;background:#20242b;color:#f4f4f4;font:20px system-ui,sans-serif}h1{margin:0 0 20px}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.card{background:#303640;border-radius:10px;overflow:hidden}.label{padding:10px 14px;font-weight:700}.meta{float:right;color:#c4cad3;font-size:16px;font-weight:500}.card img{display:block;width:100%;height:auto}</style>'
-  printf '%s\n' '<h1>Spynel stock themes — identical 120 × 34 TUI fixture</h1><div class="grid">'
+  printf '%s\n' '<h1>Werkrby stock themes — identical 120 × 34 TUI fixture</h1><div class="grid">'
   for name in spynel hack-the-box github-colorblind-dark gruvbox-dark nord okabe-ito-dark gruvbox-light rose-pine-dawn tol-muted-light catppuccin-latte okabe-ito-light solarized-light; do
     case "$name" in
       gruvbox-light|rose-pine-dawn|tol-muted-light|catppuccin-latte|okabe-ito-light|solarized-light) appearance=light ;;

@@ -72,7 +72,7 @@ func runUninstallBundles(args []string) error {
 				if err != nil {
 					return err
 				}
-				fmt.Fprintln(os.Stderr, "Administrator access is required to uninstall Spynel.")
+				fmt.Fprintln(os.Stderr, "Administrator access is required to uninstall Werkrby.")
 				command := exec.CommandContext(ctx, "sudo", "--", "env", "HOME="+home, "PATH="+os.Getenv("PATH"), executable, "uninstall-bundles", "--root", *root, "--npm-root", *npmRoot, "--user-id", strconv.Itoa(*userID))
 				command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
 				return command.Run()
@@ -96,6 +96,6 @@ func runUninstallBundles(args []string) error {
 			return err
 		}
 	}
-	fmt.Fprintln(os.Stdout, "Spynel uninstalled.")
+	fmt.Fprintln(os.Stdout, "Werkrby uninstalled.")
 	return nil
 }

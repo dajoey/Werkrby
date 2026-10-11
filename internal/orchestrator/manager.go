@@ -631,7 +631,7 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 		}
 		if phase == phaseTaskReview && m.harnessSettings().Reviews == config.TaskReviewsNever {
 			target := filepath.Join(filepath.Dir(sourceDir), "todo", candidate.name)
-			note := "Independent task review is disabled by harness.reviews=never; Spynel returned this task to todo so an implementation session can record the required direct-completion evidence."
+			note := "Independent task review is disabled by harness.reviews=never; Werkrby returned this task to todo so an implementation session can record the required direct-completion evidence."
 			if err := moveDocumentWithProgress(source, target, "todo", time.Now().UTC(), note); err != nil {
 				m.log("bypass disabled task review " + source + ": " + err.Error())
 			}
@@ -1115,21 +1115,21 @@ func (m *Manager) reconcileTaskTransition(ctx context.Context, route workflowRou
 		reviewRequired := harnessSettings.EffectiveTaskReviewRequired(policy.ReviewRequired)
 		if harnessSettings.Reviews == config.TaskReviewsNever && (status == "review" || status == "reviewing") {
 			var err error
-			status, path, err = m.redirectTransition(path, statusPath(base, "todo", name), "todo", "Independent task review is disabled; Spynel returned this task to todo to record direct-completion evidence.")
+			status, path, err = m.redirectTransition(path, statusPath(base, "todo", name), "todo", "Independent task review is disabled; Werkrby returned this task to todo to record direct-completion evidence.")
 			if err != nil {
 				return status, path, err
 			}
 		}
 		if status == "reviewing" || (status == "done" && reviewRequired) {
 			var err error
-			status, path, err = m.redirectTransition(path, statusPath(base, "review", name), "review", "Implementation cannot bypass independent review; Spynel redirected this task to review.")
+			status, path, err = m.redirectTransition(path, statusPath(base, "review", name), "review", "Implementation cannot bypass independent review; Werkrby redirected this task to review.")
 			if err != nil {
 				return status, path, err
 			}
 		}
 		if !map[string]bool{"todo": true, "review": true, "waiting": true, "done": true, "failed": true, "cancelled": true}[status] {
 			var err error
-			status, path, err = m.redirectTransition(path, statusPath(base, "todo", name), "todo", "Invalid task implementation transition; Spynel returned this task to todo.")
+			status, path, err = m.redirectTransition(path, statusPath(base, "todo", name), "todo", "Invalid task implementation transition; Werkrby returned this task to todo.")
 			if err != nil {
 				return status, path, err
 			}
@@ -1140,7 +1140,7 @@ func (m *Manager) reconcileTaskTransition(ctx context.Context, route workflowRou
 				return status, path, m.skipUnreadableDocument(path, err)
 			}
 			if !hasRoutableWaitingPath(document, time.Now().UTC()) {
-				note := "Park rejected: a park in waiting/ must carry a future RFC 3339 wake_at or a joey_ask in front matter; Spynel returned this task to todo without spending an attempt."
+				note := "Park rejected: a park in waiting/ must carry a future RFC 3339 wake_at or a joey_ask in front matter; Werkrby returned this task to todo without spending an attempt."
 				credit := func(frontMatter map[string]any) {
 					frontMatter[resumeCreditField] = true
 				}
@@ -1240,7 +1240,7 @@ func (m *Manager) reconcileTaskTransition(ctx context.Context, route workflowRou
 			return status, path, m.skipUnreadableDocument(path, err)
 		}
 		if !hasRoutableWaitingPath(document, time.Now().UTC()) {
-			note := "Park rejected: a park in waiting/ must carry a future RFC 3339 wake_at or a joey_ask in front matter; Spynel returned this task to todo without spending an attempt."
+			note := "Park rejected: a park in waiting/ must carry a future RFC 3339 wake_at or a joey_ask in front matter; Werkrby returned this task to todo without spending an attempt."
 			credit := func(frontMatter map[string]any) {
 				frontMatter[resumeCreditField] = true
 			}
@@ -1290,7 +1290,7 @@ func (m *Manager) reconcileGoalTransition(_ context.Context, route workflowRoute
 		}
 		if status == "waiting" {
 			if !hasRoutableWaitingPath(document, time.Now().UTC()) {
-				note := "Park rejected: a park in waiting/ must carry a future RFC 3339 wake_at or a joey_ask in front matter; Spynel returned this goal to proposed."
+				note := "Park rejected: a park in waiting/ must carry a future RFC 3339 wake_at or a joey_ask in front matter; Werkrby returned this goal to proposed."
 				credit := func(frontMatter map[string]any) {
 					frontMatter[resumeCreditField] = true
 				}
@@ -1318,7 +1318,7 @@ func (m *Manager) reconcileGoalTransition(_ context.Context, route workflowRoute
 	}
 	if status == "waiting" {
 		if !hasRoutableWaitingPath(document, time.Now().UTC()) {
-			note := "Park rejected: a park in waiting/ must carry a future RFC 3339 wake_at or a joey_ask in front matter; Spynel returned this goal to review."
+			note := "Park rejected: a park in waiting/ must carry a future RFC 3339 wake_at or a joey_ask in front matter; Werkrby returned this goal to review."
 			credit := func(frontMatter map[string]any) {
 				frontMatter[resumeCreditField] = true
 			}

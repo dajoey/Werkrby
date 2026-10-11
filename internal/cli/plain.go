@@ -64,7 +64,7 @@ func runSendCommand(name string, args []string, version string, followupOnly boo
 	jsonOutput := flags.Bool("json", false, "emit response events as NDJSON")
 	stdin := flags.Bool("stdin", false, "read the message body from standard input")
 	var attachments stringListFlag
-	flags.Var(&attachments, "attach", "copy a file into Spynel and attach it (repeatable)")
+	flags.Var(&attachments, "attach", "copy a file into Werkrby and attach it (repeatable)")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -80,7 +80,7 @@ func runSendCommand(name string, args []string, version string, followupOnly boo
 		text, err = cliMessageText(flags.Args(), *stdin, os.Stdin)
 	}
 	if err != nil {
-		return fmt.Errorf("usage: spyjo %s [--config PATH] [--conversation NAME] [--stream|--json] [--stdin] <text>: %w", name, err)
+		return fmt.Errorf("usage: werkrby %s [--config PATH] [--conversation NAME] [--stream|--json] [--stdin] <text>: %w", name, err)
 	}
 	return runMessageMode(*configPath, *conversation, text, version, messageRunOptions{
 		RequestID: *requestID, Socket: *socket,
@@ -99,7 +99,7 @@ func runEventsCommand(args []string) error {
 		return err
 	}
 	if flags.NArg() != 0 || *socket != "" && *configPath != "" {
-		return errors.New("usage: spyjo events [--config PATH|--socket PATH] [--conversation NAME] [--after CURSOR]")
+		return errors.New("usage: werkrby events [--config PATH|--socket PATH] [--conversation NAME] [--after CURSOR]")
 	}
 	if err := app.ValidateConversationName(*conversation); err != nil {
 		return err
@@ -117,7 +117,7 @@ func runEventsCommand(args []string) error {
 			var active bool
 			client, active, err = activeWorkspaceClient(ctx, cfg)
 			if err == nil && !active {
-				err = errors.New("events requires a running primary; start spynel serve first")
+				err = errors.New("events requires a running primary; start werkrby serve first")
 			}
 		}
 	}
@@ -130,7 +130,7 @@ func runEventsCommand(args []string) error {
 func runNotifyCommand(args []string, version string) error {
 	flags := flag.NewFlagSet("notify", flag.ContinueOnError)
 	configPath := flags.String("config", "", "path to .spynel/config.yaml")
-	workdir := flags.String("workdir", "", "absolute Spynel workspace path")
+	workdir := flags.String("workdir", "", "absolute Werkrby workspace path")
 	origin := flags.String("origin", "", "stable channel/conversation origin")
 	recentAuthorized := flags.Bool("recent-authorized", false, "route to the most recently active unambiguous authorized conversation")
 	message := flags.String("message", "", "notification message")
@@ -146,7 +146,7 @@ func runNotifyCommand(args []string, version string) error {
 	})
 	text, err := notificationMessageText(flags.Args(), *stdin, messageSet, *message, os.Stdin)
 	if err != nil {
-		return fmt.Errorf("usage: spyjo notify [--workdir PATH|--config PATH] (--origin CHANNEL/CONVERSATION|--recent-authorized) --message MESSAGE: %w", err)
+		return fmt.Errorf("usage: werkrby notify [--workdir PATH|--config PATH] (--origin CHANNEL/CONVERSATION|--recent-authorized) --message MESSAGE: %w", err)
 	}
 	if (strings.TrimSpace(*origin) == "") == !*recentAuthorized {
 		return errors.New("exactly one of --origin or --recent-authorized is required")
@@ -168,7 +168,7 @@ func runNotifyCommand(args []string, version string) error {
 	if *workdir != "" {
 		absolute, _ := filepath.Abs(*workdir)
 		if filepath.Clean(cfg.Root) != filepath.Clean(absolute) {
-			return errors.New("--workdir must identify the loaded Spynel workspace root")
+			return errors.New("--workdir must identify the loaded Werkrby workspace root")
 		}
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -261,7 +261,7 @@ func runFrameworkCLICommand(command string, args []string, version string) error
 	arguments := flags.Args()
 	if command == "" {
 		if len(arguments) == 0 {
-			return errors.New("usage: spyjo command [--config PATH] [--conversation NAME] [--json] <name> [arguments]")
+			return errors.New("usage: werkrby command [--config PATH] [--conversation NAME] [--json] <name> [arguments]")
 		}
 		command = arguments[0]
 		arguments = arguments[1:]
@@ -385,7 +385,7 @@ func runStatusCLICommand(args []string, version string, output io.Writer) error 
 		return err
 	}
 	if flags.NArg() != 0 || strings.TrimSpace(*conversation) == "" {
-		return errors.New("usage: spyjo status [--config PATH] [--conversation NAME] [--json]")
+		return errors.New("usage: werkrby status [--config PATH] [--conversation NAME] [--json]")
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -442,7 +442,7 @@ type conversationBranch struct {
 
 func runConversationCommand(args []string, output io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("usage: spyjo conversations <list|show|resume> [options]")
+		return errors.New("usage: werkrby conversations <list|show|resume> [options]")
 	}
 	switch strings.ToLower(args[0]) {
 	case "list", "ls":
@@ -452,7 +452,7 @@ func runConversationCommand(args []string, output io.Writer) error {
 	case "resume", "branch":
 		return resumeCLIConversation(args[1:], output)
 	default:
-		return errors.New("usage: spyjo conversations <list|show|resume> [options]")
+		return errors.New("usage: werkrby conversations <list|show|resume> [options]")
 	}
 }
 
@@ -465,7 +465,7 @@ func listCLIConversations(args []string, output io.Writer) error {
 		return err
 	}
 	if flags.NArg() != 0 || *limit < 1 || *limit > 1000 {
-		return errors.New("usage: spyjo conversations list [--config PATH] [--limit 1..1000] [--json]")
+		return errors.New("usage: werkrby conversations list [--config PATH] [--limit 1..1000] [--json]")
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -512,7 +512,7 @@ func showCLIConversation(args []string, output io.Writer) error {
 		return err
 	}
 	if flags.NArg() != 2 || *tail < 1 || *tail > maxCLIConversationTail || *characters < 1 || *characters > maxCLIConversationRunes {
-		return fmt.Errorf("usage: spyjo conversations show [--config PATH] [--tail 1..%d] [--chars 1..%d] [--json] <channel> <conversation>", maxCLIConversationTail, maxCLIConversationRunes)
+		return fmt.Errorf("usage: werkrby conversations show [--config PATH] [--tail 1..%d] [--chars 1..%d] [--json] <channel> <conversation>", maxCLIConversationTail, maxCLIConversationRunes)
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {
@@ -556,7 +556,7 @@ func resumeCLIConversation(args []string, output io.Writer) error {
 		return err
 	}
 	if flags.NArg() != 2 {
-		return errors.New("usage: spyjo conversations resume [--config PATH] [--json] <channel> <conversation>")
+		return errors.New("usage: werkrby conversations resume [--config PATH] [--json] <channel> <conversation>")
 	}
 	cfg, err := config.Load(*configPath)
 	if err != nil {

@@ -95,7 +95,7 @@ func Settings(cfg Config) []Setting {
 		{Key: "channels.telegram.notify_messages", Section: "telegram", Description: "Show a TUI notification for incoming messages", Value: formatBool(cfg.Channels.Telegram.NotifyMessages), Choices: []string{"on", "off"}, Advanced: true},
 		{Key: "channels.telegram.attachment_max_age_hours", Section: "telegram", Description: "Downloaded attachment retention; 0 keeps files", Value: strconv.Itoa(cfg.Channels.Telegram.AttachmentMaxAgeHours), Advanced: true},
 		{Key: "channels.whatsapp.mode", Section: "whatsapp", Description: "Personal self-chat or dedicated number", Value: cfg.Channels.WhatsApp.Mode, Choices: []string{"self-chat", "dedicated"}},
-		{Key: "channels.whatsapp.allowed_numbers", Section: "whatsapp", Description: "Required when enabled; comma-separated phone numbers allowed to message Spynel", Value: strings.Join(cfg.Channels.WhatsApp.AllowedNumbers, ",")},
+		{Key: "channels.whatsapp.allowed_numbers", Section: "whatsapp", Description: "Required when enabled; comma-separated phone numbers allowed to message Werkrby", Value: strings.Join(cfg.Channels.WhatsApp.AllowedNumbers, ",")},
 		{Key: "channels.whatsapp.enabled", Section: "whatsapp", Description: "Run the WhatsApp integration", Value: formatBool(cfg.Channels.WhatsApp.Enabled), Choices: []string{"on", "off"}},
 		{Key: "channels.whatsapp.database", Section: "whatsapp", Description: "Persistent WhatsApp session database", Value: cfg.Channels.WhatsApp.Database, Advanced: true},
 		{Key: "channels.whatsapp.allow_groups", Section: "whatsapp", Description: "Respond in groups when supported", Value: formatBool(cfg.Channels.WhatsApp.AllowGroups), Choices: []string{"on", "off"}, Advanced: true},

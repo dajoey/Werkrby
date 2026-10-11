@@ -80,14 +80,14 @@ func (s *Service) channelNeedsSetup(section string) bool {
 
 func (s *Service) WelcomeScreen() core.Screen {
 	return core.Screen{
-		ID: "welcome", Title: "Welcome to SpyJo", Banner: core.SpynelASCII,
+		ID: "welcome", Title: "Welcome to Werkrby", Banner: core.SpynelASCII,
 		Subtitle: s.welcomeText("tui"), Markdown: true,
 	}
 }
 
 func (s *Service) welcomeText(channelName string) string {
 	lines := []string{
-		"👋 Hey, I'm **SpyJo** — you can call me **Spy**.", "",
+		"👋 Hey, I'm **Werkrby** — you can call me **Bee**.", "",
 		"I handle tasks and orchestrate agents. Just tell me your objectives and leave the rest to me.",
 		"Feel free to ask me for updates anytime or have me get things done. 👍",
 		"", "- type `/help` if you ever feel lost",
@@ -397,7 +397,7 @@ func (s *Service) telegramWizardScreen(step string, values map[string]string) co
 		screen.Controls = wizardActions("Open BotFather, then continue", false)
 		state = telegramWizardState(token, allowed, enabled)
 	case "create":
-		screen.Subtitle = "In the BotFather chat:\n\n1. Send `/newbot`.\n2. Choose the display name people will see.\n3. Choose a unique username ending in `bot`, such as `my_spynel_bot`.\n\nBotFather will reply with an HTTP API token. Copy that complete token."
+		screen.Subtitle = "In the BotFather chat:\n\n1. Send `/newbot`.\n2. Choose the display name people will see.\n3. Choose a unique username ending in `bot`, such as `my_werkrby_bot`.\n\nBotFather will reply with an HTTP API token. Copy that complete token."
 		screen.Controls = wizardActions("I have the token", true)
 		state = telegramWizardState(token, allowed, enabled)
 	case "token":
@@ -453,10 +453,10 @@ func (s *Service) whatsappWizardScreen(step string, values map[string]string) co
 	}
 	switch step {
 	case "mode":
-		screen.Subtitle = "Choose how the linked WhatsApp account will be used.\n\n- **Self-chat:** send requests from the account to its own chat; Spynel suppresses reply loops.\n- **Dedicated:** use a separate account as the bot number; messages sent by that linked account are ignored."
+		screen.Subtitle = "Choose how the linked WhatsApp account will be used.\n\n- **Self-chat:** send requests from the account to its own chat; Werkrby suppresses reply loops.\n- **Dedicated:** use a separate account as the bot number; messages sent by that linked account are ignored."
 		screen.Controls = []core.ScreenControl{
 			{Key: whatsappModeKey, Label: "mode", Kind: "select", Value: mode, Options: []string{"self-chat", "dedicated"}, Description: "Choose the account behavior"},
-			{Key: "next", Kind: "action", Value: "Continue", Description: "Choose who may message Spynel"},
+			{Key: "next", Kind: "action", Value: "Continue", Description: "Choose who may message Werkrby"},
 			{Key: "cancel", Kind: "action", Value: "Cancel setup", Description: "Return to WhatsApp settings without saving"},
 		}
 		state = []core.ScreenControl{
@@ -726,7 +726,7 @@ func (s *Service) HarnessScreen(required bool) core.Screen {
 	screen := core.Screen{
 		ID: "harness", Title: "Coding harness", SaveDisabled: true, Required: required,
 		Hints:    selectionScreenHints(),
-		Subtitle: "Choose the coding CLI Spynel should use. Built-in executables are detected; custom ACP uses advanced configuration.",
+		Subtitle: "Choose the coding CLI Werkrby should use. Built-in executables are detected; custom ACP uses advanced configuration.",
 	}
 	if required {
 		screen.Hints[len(screen.Hints)-1].Action = "exit"
@@ -1173,7 +1173,7 @@ func (s *Service) setSetting(message core.Message, key, value string, emit core.
 		response += " It will apply to subsequent harness turns."
 	}
 	if setting.Restart {
-		response += " Restart Spynel to apply this extension change."
+		response += " Restart Werkrby to apply this extension change."
 	}
 	return s.localReply(message, response, emit)
 }
@@ -1529,7 +1529,7 @@ func (s *Service) resolveHarnessCommand(name string) (string, error) {
 }
 
 func formatSettings(cfg config.Config, section string) string {
-	title := "SpyJo configuration"
+	title := "Werkrby configuration"
 	if section == "telegram" {
 		title = "Telegram configuration"
 	} else if section == "whatsapp" {
@@ -1591,7 +1591,7 @@ func settingsScreen(cfg config.Config, section string) core.Screen {
 		harnessName := emptyAs(cfg.Harness.Name, "Choose a harness")
 		screen.StartAtTop = true
 		screen.Controls = append(screen.Controls,
-			core.ScreenControl{Key: "harness", Section: "Core settings", Kind: "action", Value: "Coding harness · " + harnessName, Description: "Select a supported harness; Spynel detects built-in executables automatically"},
+			core.ScreenControl{Key: "harness", Section: "Core settings", Kind: "action", Value: "Coding harness · " + harnessName, Description: "Select a supported harness; Werkrby detects built-in executables automatically"},
 			modelSettingControl(cfg.Harness.Model, cfg.Harness.ReasoningEffort, cfg.Harness.ServiceMode),
 		)
 	} else if section == "telegram" || section == "whatsapp" {

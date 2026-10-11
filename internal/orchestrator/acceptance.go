@@ -360,7 +360,7 @@ func (m *Manager) acceptanceBounce(path, base, name string, now time.Time, note 
 // check round and never passes, however often it is retried.
 func (m *Manager) acceptanceRefuse(path, base, name string, now time.Time, reason string) (string, string, bool, error) {
 	note := fmt.Sprintf(
-		"ACCEPTANCE CHECK TAMPERED: %s. Spynel refused this hand-off; the check is never run and never passes while it is tampered.",
+		"ACCEPTANCE CHECK TAMPERED: %s. Werkrby refused this hand-off; the check is never run and never passes while it is tampered.",
 		reason)
 	return m.acceptanceBounce(path, base, name, now, note, nil)
 }

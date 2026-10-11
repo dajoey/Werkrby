@@ -323,7 +323,7 @@ const (
 	minComposerHeight = 1
 	maxComposerHeight = 10
 	userChatLabel     = "You"
-	agentChatLabel    = "Spy"
+	agentChatLabel    = "Bee"
 	errorChatLabel    = "Err"
 	chatContentColumn = 4
 	maxCommandRows    = 7
@@ -348,7 +348,7 @@ const (
 const transcriptOmitted = "Older messages are omitted from the live display; use /history for the complete conversation file."
 
 const (
-	composerPlaceholder = "Message SpyJo, / for commands"
+	composerPlaceholder = "Message Werkrby, / for commands"
 	emptyConversation   = "A fresh start."
 )
 

@@ -45,13 +45,13 @@ func parseDocsArgs(args []string) (agentdocs.Request, error) {
 		case argument == "--format":
 			index++
 			if index >= len(args) {
-				return request, fmt.Errorf("usage: spynel docs [TOPIC|search QUERY] [page NUMBER] [--format text|json]")
+				return request, fmt.Errorf("usage: werkrby docs [TOPIC|search QUERY] [page NUMBER] [--format text|json]")
 			}
 			request.Format = args[index]
 		case strings.HasPrefix(argument, "--format="):
 			request.Format = strings.TrimPrefix(argument, "--format=")
 		case argument == "--help" || argument == "-h":
-			return request, fmt.Errorf("usage: spynel docs [TOPIC|search QUERY] [page NUMBER] [--format text|json]")
+			return request, fmt.Errorf("usage: werkrby docs [TOPIC|search QUERY] [page NUMBER] [--format text|json]")
 		case strings.HasPrefix(argument, "-"):
 			return request, fmt.Errorf("unknown docs option %q; use --format text or --format json", argument)
 		default:
@@ -63,7 +63,7 @@ func parseDocsArgs(args []string) (agentdocs.Request, error) {
 	}
 	if positional[0] == "page" {
 		if len(positional) != 2 {
-			return request, fmt.Errorf("usage: spynel docs page NUMBER")
+			return request, fmt.Errorf("usage: werkrby docs page NUMBER")
 		}
 		page, err := positivePage(positional[1])
 		if err != nil {
@@ -84,7 +84,7 @@ func parseDocsArgs(args []string) (agentdocs.Request, error) {
 		}
 		request.Search = strings.TrimSpace(strings.Join(positional, " "))
 		if request.Search == "" {
-			return request, fmt.Errorf("usage: spynel docs search QUERY [page NUMBER]")
+			return request, fmt.Errorf("usage: werkrby docs search QUERY [page NUMBER]")
 		}
 		return request, nil
 	}
@@ -93,7 +93,7 @@ func parseDocsArgs(args []string) (agentdocs.Request, error) {
 		return request, nil
 	}
 	if len(positional) != 3 || positional[1] != "page" {
-		return request, fmt.Errorf("usage: spynel docs TOPIC [page NUMBER]")
+		return request, fmt.Errorf("usage: werkrby docs TOPIC [page NUMBER]")
 	}
 	page, err := positivePage(positional[2])
 	if err != nil {

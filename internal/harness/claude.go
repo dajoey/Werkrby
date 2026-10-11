@@ -300,7 +300,7 @@ func (c *Claude) SendWithInference(ctx context.Context, key, prompt string, sele
 		return "", false, errors.New("harness prompt is empty")
 	}
 	if selection.ServiceMode != "" {
-		return "", false, errors.New("Claude Code does not support a Spynel service mode; reset harness.service_mode to inherit")
+		return "", false, errors.New("Claude Code does not support a Werkrby service mode; reset harness.service_mode to inherit")
 	}
 	if err := ValidateInferenceSelection(nil, selection); err != nil {
 		return "", false, err

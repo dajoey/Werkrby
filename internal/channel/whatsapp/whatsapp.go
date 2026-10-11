@@ -79,7 +79,7 @@ type incomingMessage struct {
 	id       types.MessageID
 }
 
-const whatsAppDeviceName = "Spynel"
+const whatsAppDeviceName = "Werkrby"
 
 var errWhatsAppRuntimeAuthorization = errors.New("WhatsApp runtime authorization is unavailable: allowed_numbers has no valid number")
 
@@ -822,7 +822,7 @@ func (c *Client) messageWorker(ctx context.Context) {
 			}
 			text, err := c.prepareMessage(ctx, incoming)
 			if err != nil {
-				_ = c.send(ctx, incoming.chat, channel.ErrorResponse("Spynel attachment error: "+err.Error()))
+				_ = c.send(ctx, incoming.chat, channel.ErrorResponse("Werkrby attachment error: "+err.Error()))
 				continue
 			}
 			if err := c.requireRuntimeAuthorization(); err != nil {
@@ -995,7 +995,7 @@ func (c *Client) handleWithReplyID(received time.Time, chat types.JID, sender, t
 		}
 		for _, attachment := range event.Attachments {
 			if err := c.sendAttachment(ctx, chat, attachment); err != nil {
-				_ = c.send(ctx, chat, channel.ErrorResponse("Spynel attachment delivery error: "+err.Error()))
+				_ = c.send(ctx, chat, channel.ErrorResponse("Werkrby attachment delivery error: "+err.Error()))
 			}
 		}
 	}

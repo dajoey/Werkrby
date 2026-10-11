@@ -4,7 +4,7 @@ set -euo pipefail
 UPSTREAM="${1:-upstream/main}"
 
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
-    echo "ERROR: ejecutar dentro del repositorio Spynel."
+    echo "ERROR: ejecutar dentro del repositorio Werkrby."
     exit 1
 fi
 

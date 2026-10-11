@@ -827,7 +827,7 @@ func (s *Service) wrapEmit(message core.Message, jobID int, downstream core.Emit
 				cleaned, attachments, err := media.ParseOutbound(text, maxBytes)
 				if err != nil {
 					event.Kind = core.EventError
-					text = "Spynel outbound attachment error: " + err.Error()
+					text = "Werkrby outbound attachment error: " + err.Error()
 					event.FinalText = &text
 					event.Attachments = nil
 				} else {
@@ -837,7 +837,7 @@ func (s *Service) wrapEmit(message core.Message, jobID int, downstream core.Emit
 						finalText, finalAttachments, finalErr := media.ParseOutbound(*event.FinalText, maxBytes)
 						if finalErr != nil {
 							event.Kind = core.EventError
-							text = "Spynel outbound attachment error: " + finalErr.Error()
+							text = "Werkrby outbound attachment error: " + finalErr.Error()
 							event.FinalText = &text
 							event.Attachments = nil
 						} else {
@@ -906,7 +906,7 @@ func (s *Service) handleCommand(ctx context.Context, message core.Message, emit 
 	if message.Channel == "telegram" {
 		command = strings.SplitN(command, "@", 2)[0]
 		if command == "start" {
-			return s.localReply(message, "SpyJo is running.", emit)
+			return s.localReply(message, "Werkrby is running.", emit)
 		}
 	}
 	remainder := strings.TrimSpace(strings.TrimPrefix(commandLine, parts[0]))
@@ -1036,7 +1036,7 @@ func (s *Service) handleCommand(ctx context.Context, message core.Message, emit 
 		s.commitRecoveryCancellation(key, message.Channel, message.Conversation, cancellation)
 		return s.localReply(message, "Stop requested for the active execution.", emit)
 	case "restart":
-		if err := s.localReply(message, "Restarting SpyJo...", emit); err != nil {
+		if err := s.localReply(message, "Restarting Werkrby...", emit); err != nil {
 			return err
 		}
 		s.requestRestart()
@@ -1509,7 +1509,7 @@ func (s *Service) requestUpdate(result updater.Result) {
 
 func (s *Service) updateCommand(ctx context.Context, message core.Message, remainder string, emit core.Emit) error {
 	if s.Updates == nil {
-		return s.localReply(message, "Updates are unavailable in this build. Install Spynel through npm or the install script to use `/update`.", emit)
+		return s.localReply(message, "Updates are unavailable in this build. Install Werkrby through npm or the install script to use `/update`.", emit)
 	}
 	action := strings.ToLower(strings.TrimSpace(remainder))
 	if action != "" && action != "install" && action != "check" {
@@ -1520,20 +1520,20 @@ func (s *Service) updateCommand(ctx context.Context, message core.Message, remai
 		return s.localReply(message, "Update check skipped: "+err.Error()+". Try `/update` again later.", emit)
 	}
 	if result.Source == "" {
-		return s.localReply(message, "This Spynel binary is unmanaged. Download a newer release using the same installation method.", emit)
+		return s.localReply(message, "This Werkrby binary is unmanaged. Download a newer release using the same installation method.", emit)
 	}
 	if !result.Available && action == "check" {
 		latest := result.Latest
 		if latest == "" {
 			latest = result.Current
 		}
-		return s.localReply(message, fmt.Sprintf("Spynel %s is current; %s also reports %s.", result.Current, result.Source, latest), emit)
+		return s.localReply(message, fmt.Sprintf("Werkrby %s is current; %s also reports %s.", result.Current, result.Source, latest), emit)
 	}
 	if action == "check" {
 		if result.CanAutoInstall {
-			return s.localReply(message, fmt.Sprintf("Spynel %s is installed through %s; %s is available. Run `/update` to update and restart all instances of this installation.", result.Current, result.Source, result.Latest), emit)
+			return s.localReply(message, fmt.Sprintf("Werkrby %s is installed through %s; %s is available. Run `/update` to update and restart all instances of this installation.", result.Current, result.Source, result.Latest), emit)
 		}
-		return s.localReply(message, fmt.Sprintf("Spynel %s is installed through npm; %s is available. Run `%s`, then `/restart`. This process was not launched by the npm wrapper, so it cannot replace itself safely.", result.Current, result.Latest, result.Command), emit)
+		return s.localReply(message, fmt.Sprintf("Werkrby %s is installed through npm; %s is available. Run `%s`, then `/restart`. This process was not launched by the npm wrapper, so it cannot replace itself safely.", result.Current, result.Latest, result.Command), emit)
 	}
 	if !result.CanAutoInstall {
 		return s.localReply(message, fmt.Sprintf("Run `%s`, then `/restart`. Updating in place is unavailable because this process was not launched by the npm wrapper.", result.Command), emit)
@@ -1541,9 +1541,9 @@ func (s *Service) updateCommand(ctx context.Context, message core.Message, remai
 	if err := s.Updates.PrepareUpdate(ctx, result); err != nil {
 		return err
 	}
-	notice := fmt.Sprintf("Restarting all instances of this installation at Spynel %s.", result.Current)
+	notice := fmt.Sprintf("Restarting all instances of this installation at Werkrby %s.", result.Current)
 	if result.Available {
-		notice = fmt.Sprintf("Updating Spynel from %s to %s with %s, then restarting all instances of this installation.", result.Current, result.Latest, result.Source)
+		notice = fmt.Sprintf("Updating Werkrby from %s to %s with %s, then restarting all instances of this installation.", result.Current, result.Latest, result.Source)
 	}
 	if err := s.localReply(message, notice, emit); err != nil {
 		return err
@@ -1878,7 +1878,7 @@ func (s *Service) extensionCommand(ctx context.Context, message core.Message, re
 		if err := extensions.Remove(directory, parts[1]); err != nil {
 			return err
 		}
-		return s.localReply(message, "Removed extension "+parts[1]+". This cannot be recovered from Spynel; reinstall the Git repository if needed.", emit)
+		return s.localReply(message, "Removed extension "+parts[1]+". This cannot be recovered from Werkrby; reinstall the Git repository if needed.", emit)
 	default:
 		return s.localReply(message, "Usage: /extension [list|install <git-url> [name]|remove <name>]", emit)
 	}
@@ -1913,7 +1913,7 @@ func emptyAs(value, fallback string) string {
 
 var slashCommands = []core.SlashCommand{
 	{Value: "/help", Usage: "/help", Description: "Show the help topic index"},
-	{Value: "/help about", Usage: "/help about", Description: "Learn what SpyJo does and where it stores state"},
+	{Value: "/help about", Usage: "/help about", Description: "Learn what Werkrby does and where it stores state"},
 	{Value: "/help commands", Usage: "/help commands", Description: "Show the complete slash-command reference"},
 	{Value: "/help extensions", Usage: "/help extensions", Description: "Learn how trusted project extensions work"},
 	{Value: "/help config", Usage: "/help config", Description: "Understand .spynel/config.yaml and path resolution"},
@@ -1921,8 +1921,8 @@ var slashCommands = []core.SlashCommand{
 	{Value: "/help workflows", Usage: "/help workflows", Description: "Learn how tasks, goals, and scans work"},
 	{Value: "/status", Usage: "/status", Description: "Show work, runtime, channel, and orchestrator state"},
 	{Value: "/primary", Usage: "/primary", Description: "Safely make this TUI instance the workspace primary"},
-	{Value: "/welcome", Usage: "/welcome", Description: "Print the SpyJo welcome guide in this conversation"},
-	{Value: "/config", Usage: "/config", Description: "Open or show SpyJo configuration"},
+	{Value: "/welcome", Usage: "/welcome", Description: "Print the Werkrby welcome guide in this conversation"},
+	{Value: "/config", Usage: "/config", Description: "Open or show Werkrby configuration"},
 	{Value: "/config get ", Usage: "/config get <key>", Description: "Read one configuration value"},
 	{Value: "/config set ", Usage: "/config set <key> <value>", Description: "Persist one configuration value"},
 	{Value: "/harness ", Usage: "/harness [name]", Description: "Show or select the coding harness"},
@@ -1941,7 +1941,7 @@ var slashCommands = []core.SlashCommand{
 	{Value: "/title ", Usage: "/title <name>", Description: "Rename and persist this TUI window"},
 	{Value: "/new", Usage: "/new", Description: "Start a distinct TUI conversation and preserve this one"},
 	{Value: "/stop", Usage: "/stop", Description: "Stop the active execution for this conversation"},
-	{Value: "/restart", Usage: "/restart", Description: "Restart SpyJo and restore saved state"},
+	{Value: "/restart", Usage: "/restart", Description: "Restart Werkrby and restore saved state"},
 	{Value: "/update", Usage: "/update", Description: "Update and restart all instances of this installation"},
 	{Value: "/update check", Usage: "/update check", Description: "Check versions without updating or restarting"},
 	{Value: "/history", Usage: "/history", Description: "Show the complete history file"},
@@ -1983,8 +1983,8 @@ var helpTopics = []struct {
 }{
 	{
 		name:        "about",
-		description: "What SpyJo does and where it stores state",
-		body:        "# About SpyJo\n\n**Simplicity at scale.** SpyJo is a classic, non-AI program that coordinates external coding agents through one assistant-facing relationship. It combines a communication interface, Markdown task management, and agentic planning, implementation, review, and debugging loops. The harness supplies intelligence and tools; SpyJo supplies deterministic orchestration and oversight.\n\n**One human → one agent → infinite agents.** The middle agent is the assistant relationship, not SpyJo itself, and infinite expresses scalable leverage rather than a literal resource guarantee. Use SpyJo from a terminal or channels such as Telegram on a phone.\n\nThe project configuration is `.spynel/config.yaml`. Runtime state, histories, harness sessions, attachments, and local UI preferences live beside it in the fixed private `.spynel` directory.\n\n**Simplicity. Leverage. Quality.**",
+		description: "What Werkrby does and where it stores state",
+		body:        "# About Werkrby\n\n**Simplicity at scale.** Werkrby is a classic, non-AI program that coordinates external coding agents through one assistant-facing relationship. It combines a communication interface, Markdown task management, and agentic planning, implementation, review, and debugging loops. The harness supplies intelligence and tools; Werkrby supplies deterministic orchestration and oversight.\n\n**One human → one agent → infinite agents.** The middle agent is the assistant relationship, not Werkrby itself, and infinite expresses scalable leverage rather than a literal resource guarantee. Use Werkrby from a terminal or channels such as Telegram on a phone.\n\nThe project configuration is `.spynel/config.yaml`. Runtime state, histories, harness sessions, attachments, and local UI preferences live beside it in the fixed private `.spynel` directory.\n\n**Simplicity. Leverage. Quality.**",
 	},
 	{
 		name:        "commands",
@@ -2004,7 +2004,7 @@ var helpTopics = []struct {
 	{
 		name:        "channels",
 		description: "The TUI, Telegram, and WhatsApp",
-		body:        "# Channels\n\nThe TUI, each Telegram chat, and each WhatsApp chat keep independent durable histories and harness threads. All channels share the application slash commands and Markdown-aware responses.\n\nUse `/status` to inspect shared connection, runtime, harness, instance, and orchestrator indicators. From an idle local TUI, `/primary` safely hands workspace ownership to that TUI instance. Use `/history` to locate the current conversation's history file, `/clear` to erase that history and discard its harness thread, `/stop` to interrupt its active execution, and `/new` to switch the TUI to a distinct conversation while preserving the prior one for `/resume`. `/restart` acknowledges the request, cleanly stops the current runtime, and relaunches SpyJo with saved configuration and histories intact. `/update` updates the owning installation and restarts all its running instances across workspaces. `/update check` only checks versions, with a ten-second deadline. The shell command `spyjo killall` stops all running SpyJo instances, preserving saved workspace state and future autostart registrations. `/log` shows bounded runtime diagnostics. `/jobs` lists active executions and `/jobs recent` lists archived executions by the same numeric reference; `/job info <number>` and `/job output <number>` inspect bounded metadata or captured output. `/tasks` and `/goals` list open durable work by default. `/job message <number> <text>` sends nonterminal guidance through the existing job session, `/job ping <number>` requests a durable progress update, and `/job kill <number>` stops one live job.",
+		body:        "# Channels\n\nThe TUI, each Telegram chat, and each WhatsApp chat keep independent durable histories and harness threads. All channels share the application slash commands and Markdown-aware responses.\n\nUse `/status` to inspect shared connection, runtime, harness, instance, and orchestrator indicators. From an idle local TUI, `/primary` safely hands workspace ownership to that TUI instance. Use `/history` to locate the current conversation's history file, `/clear` to erase that history and discard its harness thread, `/stop` to interrupt its active execution, and `/new` to switch the TUI to a distinct conversation while preserving the prior one for `/resume`. `/restart` acknowledges the request, cleanly stops the current runtime, and relaunches Werkrby with saved configuration and histories intact. `/update` updates the owning installation and restarts all its running instances across workspaces. `/update check` only checks versions, with a ten-second deadline. The shell command `werkrby killall` stops all running Werkrby instances, preserving saved workspace state and future autostart registrations. `/log` shows bounded runtime diagnostics. `/jobs` lists active executions and `/jobs recent` lists archived executions by the same numeric reference; `/job info <number>` and `/job output <number>` inspect bounded metadata or captured output. `/tasks` and `/goals` list open durable work by default. `/job message <number> <text>` sends nonterminal guidance through the existing job session, `/job ping <number>` requests a durable progress update, and `/job kill <number>` stops one live job.",
 	},
 	{
 		name:        "workflows",
@@ -2031,9 +2031,9 @@ func formatCommandHelp(commands []core.SlashCommand) string {
 
 func formatHelpOverview() string {
 	lines := []string{
-		"# SpyJo help",
+		"# Werkrby help",
 		"",
-		"SpyJo is a classic, non-AI program coordinating external coding agents through one assistant relationship and durable Markdown workflows.",
+		"Werkrby is a classic, non-AI program coordinating external coding agents through one assistant relationship and durable Markdown workflows.",
 		"",
 		"Choose a help topic:",
 		"",

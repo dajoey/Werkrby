@@ -397,7 +397,7 @@ func (c *Client) request(ctx context.Context, method, path string, body []byte) 
 		return nil, err
 	}
 	if lease.EnvironmentID != "" && lease.EnvironmentID != c.Election.EnvironmentID() {
-		return nil, fmt.Errorf("%w: the workspace primary is active in another host/container environment, so its loopback API is unreachable here; stop that primary or run Spynel in the same environment, then retry", ErrForeignLoopback)
+		return nil, fmt.Errorf("%w: the workspace primary is active in another host/container environment, so its loopback API is unreachable here; stop that primary or run Werkrby in the same environment, then retry", ErrForeignLoopback)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(body))
 	if err != nil {

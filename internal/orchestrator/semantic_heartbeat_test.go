@@ -94,7 +94,7 @@ func TestSemanticHeartbeatIgnoresProviderProseWithoutFrameworkState(t *testing.T
 	target.mu.Lock()
 	prompt := target.prompt
 	target.mu.Unlock()
-	if !strings.Contains(prompt, "final-response payload") || !strings.Contains(prompt, "tasks") || !strings.Contains(prompt, "command /trigger orchestrator") || !strings.Contains(prompt, "agents do the work") || !strings.Contains(prompt, "spynel notify --recent-authorized") {
+	if !strings.Contains(prompt, "final-response payload") || !strings.Contains(prompt, "tasks") || !strings.Contains(prompt, "command /trigger orchestrator") || !strings.Contains(prompt, "agents do the work") || !strings.Contains(prompt, "werkrby notify --recent-authorized") {
 		t.Fatalf("heartbeat prompt omitted worker/CLI guidance: %q", prompt)
 	}
 	if strings.Contains(prompt, "HEARTBEAT_ACTION_COMMAND") || strings.Contains(prompt, "spynel.semantic-heartbeat/v1") || strings.Contains(prompt, "Finish with only one JSON") {
@@ -139,7 +139,7 @@ Record findings with {{HEARTBEAT_ACTION_COMMAND}} and finish with exactly one au
 			t.Fatalf("heartbeat prompt retained obsolete rule %q: %q", obsolete, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "agents do the work") || !strings.Contains(prompt, "spynel notify --recent-authorized") || !strings.Contains(prompt, "append the successful send") {
+	if !strings.Contains(prompt, "agents do the work") || !strings.Contains(prompt, "werkrby notify --recent-authorized") || !strings.Contains(prompt, "append the successful send") {
 		t.Fatalf("heartbeat prompt omitted current worker boundary: %q", prompt)
 	}
 }

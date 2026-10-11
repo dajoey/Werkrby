@@ -112,7 +112,7 @@ func readProcess(path string) (ProcessRegistration, error) {
 		return record, err
 	}
 	if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 || info.Size() > 4096 {
-		return record, errors.New("invalid private Spynel process record")
+		return record, errors.New("invalid private Werkrby process record")
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -121,7 +121,7 @@ func readProcess(path string) (ProcessRegistration, error) {
 	defer file.Close()
 	err = json.NewDecoder(io.LimitReader(file, 4097)).Decode(&record)
 	if err != nil || record.PID <= 1 || len(record.Generation) != 32 || !filepath.IsAbs(record.Executable) || record.Installation != "" && !filepath.IsAbs(record.Installation) || filepath.Base(path) != strconv.Itoa(record.PID)+".json" {
-		return record, errors.New("invalid Spynel process identity")
+		return record, errors.New("invalid Werkrby process identity")
 	}
 	return record, nil
 }
@@ -153,7 +153,7 @@ func processRecords(ids []int) ([]ProcessRegistration, error) {
 	}
 	own, ok := debug.ReadBuildInfo()
 	if !ok {
-		return nil, errors.New("cannot verify Spynel executable identity")
+		return nil, errors.New("cannot verify Werkrby executable identity")
 	}
 	var records []ProcessRegistration
 	for _, pid := range ids {
@@ -163,7 +163,7 @@ func processRecords(ids []int) ([]ProcessRegistration, error) {
 		path, err := installationProcessPath(pid)
 		if err != nil {
 			if _, recordErr := readProcess(filepath.Join(directory, strconv.Itoa(pid)+".json")); recordErr == nil && processAlive(pid) {
-				return nil, fmt.Errorf("cannot verify executable of registered Spynel process %d: %w", pid, err)
+				return nil, fmt.Errorf("cannot verify executable of registered Werkrby process %d: %w", pid, err)
 			}
 			continue
 		}
@@ -201,10 +201,10 @@ func processRecords(ids []int) ([]ProcessRegistration, error) {
 func (m *Manager) CheckRestartable() error {
 	root := m.InstallationRoot()
 	if root == "" {
-		return errors.New("updates require a managed Spynel installation")
+		return errors.New("updates require a managed Werkrby installation")
 	}
 	if m.PackageRoot != "" && !m.CoordinatedUpdates {
-		return errors.New("this npm launcher does not support coordinated updates; run the installed spynel killall command once, then relaunch Spynel")
+		return errors.New("this npm launcher does not support coordinated updates; run the installed werkrby killall command once, then relaunch Werkrby")
 	}
 	records, err := liveProcesses()
 	if err != nil {
@@ -212,7 +212,7 @@ func (m *Manager) CheckRestartable() error {
 	}
 	for _, record := range records {
 		if (record.Installation == root || m.ownsProcessPath(root, record.Executable)) && (record.Generation == "" || record.Installation != root || m.PackageRoot != "" && !record.CoordinatedUpdates) {
-			return fmt.Errorf("Spynel process %d has no valid coordinated-restart registration; run spynel killall once, then launch the current version", record.PID)
+			return fmt.Errorf("Werkrby process %d has no valid coordinated-restart registration; run werkrby killall once, then launch the current version", record.PID)
 		}
 	}
 	return nil
@@ -262,7 +262,7 @@ func (m *Manager) RestartInstances(ctx context.Context, version string) (int, er
 		case <-ctx.Done():
 			return count, ctx.Err()
 		case <-deadline.C:
-			return count, fmt.Errorf("%d Spynel instance(s) did not restart into %s", len(pending), version)
+			return count, fmt.Errorf("%d Werkrby instance(s) did not restart into %s", len(pending), version)
 		case <-ticker.C:
 		}
 	}
@@ -280,7 +280,7 @@ func signalRegisteredProcess(record ProcessRegistration, signal os.Signal) error
 		return err
 	}
 	if !processMatches(record, path) {
-		return errors.New("Spynel process identity changed before signal delivery")
+		return errors.New("Werkrby process identity changed before signal delivery")
 	}
 	return process.Signal(signal)
 }
@@ -315,7 +315,7 @@ func stopProcessRecords(ctx context.Context, records []ProcessRegistration) erro
 				break
 			}
 			if time.Now().After(deadline) {
-				return fmt.Errorf("Spynel process %d did not stop", record.PID)
+				return fmt.Errorf("Werkrby process %d did not stop", record.PID)
 			}
 			if time.Now().After(killAt) {
 				if err := signalRegisteredProcess(record, os.Kill); !processGone(err) {

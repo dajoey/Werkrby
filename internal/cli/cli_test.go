@@ -394,8 +394,8 @@ func TestWorkflowListAliasPreservesSharedAndListOptions(t *testing.T) {
 
 func TestWorkflowListAliasesAreDocumentedForExternalPrograms(t *testing.T) {
 	for _, want := range []string{
-		"spyjo tasks [flags] [VIEW]",
-		"spyjo goals [flags] [VIEW]",
+		"werkrby tasks [flags] [VIEW]",
+		"werkrby goals [flags] [VIEW]",
 		"open|recent|active|review|waiting|done|failed|all",
 		"--config PATH",
 		"--conversation NAME",
@@ -791,7 +791,7 @@ func TestOfflineUpdateInstallReturnsControlToNPMLauncher(t *testing.T) {
 	t.Setenv("SPYNEL_NPM_COORDINATED_UPDATES", "1")
 	err = runFrameworkMessageMode(config.PathForRoot(root), "updates", "/update install", "1.2.0", messageRunOptions{Output: &output})
 	exit, ok := err.(interface{ ExitCode() int })
-	if !ok || exit.ExitCode() != npmUpdateExitCode || !strings.Contains(output.String(), "Updating Spynel") {
+	if !ok || exit.ExitCode() != npmUpdateExitCode || !strings.Contains(output.String(), "Updating Werkrby") {
 		t.Fatalf("offline update = %T %v, output %q", err, err, output.String())
 	}
 }
@@ -826,13 +826,13 @@ func TestInitNoStartCreatesWorkspaceWithoutEnteringTUI(t *testing.T) {
 }
 
 func TestSendCommandValidatesScriptableArguments(t *testing.T) {
-	if err := run([]string{"send"}, "test"); err == nil || !strings.Contains(err.Error(), "usage: spyjo send") {
+	if err := run([]string{"send"}, "test"); err == nil || !strings.Contains(err.Error(), "usage: werkrby send") {
 		t.Fatalf("missing send text error = %v", err)
 	}
 	if err := run([]string{"send", "--conversation", "", "hello"}, "test"); err == nil || !strings.Contains(err.Error(), "cannot be empty") {
 		t.Fatalf("empty conversation error = %v", err)
 	}
-	if !strings.Contains(helpText, "spyjo send") || !strings.Contains(helpText, "--conversation") {
+	if !strings.Contains(helpText, "werkrby send") || !strings.Contains(helpText, "--conversation") {
 		t.Fatalf("send command is not documented in CLI help:\n%s", helpText)
 	}
 }
@@ -1426,7 +1426,7 @@ func TestStartupConnectionStatusIsVisibleBoundedAndOptional(t *testing.T) {
 	status := newStartupConnectionStatus(&output, true)
 	status.connecting()
 	status.connected()
-	want := "Connecting to the existing Spynel primary…\nConnected to the existing Spynel primary.\n"
+	want := "Connecting to the existing Werkrby primary…\nConnected to the existing Werkrby primary.\n"
 	if output.String() != want {
 		t.Fatalf("successful startup status = %q", output.String())
 	}
@@ -1796,14 +1796,14 @@ func TestTaskGoalCreateGuardsHelpFlagsAndReadonlyAliases(t *testing.T) {
 		wantOut    string
 		wantCreate bool
 	}{
-		{name: "task --help", args: []string{"task", "--help"}, wantOut: "usage: spyjo task [--no-review] <request>"},
-		{name: "task -h", args: []string{"task", "-h"}, wantOut: "usage: spyjo task [--no-review] <request>"},
-		{name: "task help", args: []string{"task", "help"}, wantOut: "usage: spyjo task [--no-review] <request>"},
-		{name: "goal --help", args: []string{"goal", "--help"}, wantOut: "usage: spyjo goal [--no-review] <request>"},
-		{name: "task --bogus", args: []string{"task", "--bogus"}, wantErr: `unknown flag "--bogus"; usage: spyjo task [--no-review] <request>`},
-		{name: "task list", args: []string{"task", "list"}, wantErr: "did you mean `spyjo tasks`?"},
-		{name: "task status id", args: []string{"task", "status", "tasks-20260921-example"}, wantErr: "did you mean `spyjo tasks tasks-20260921-example`?"},
-		{name: "no-review --help", args: []string{"task", "--no-review", "--help"}, wantOut: "usage: spyjo task [--no-review] <request>"},
+		{name: "task --help", args: []string{"task", "--help"}, wantOut: "usage: werkrby task [--no-review] <request>"},
+		{name: "task -h", args: []string{"task", "-h"}, wantOut: "usage: werkrby task [--no-review] <request>"},
+		{name: "task help", args: []string{"task", "help"}, wantOut: "usage: werkrby task [--no-review] <request>"},
+		{name: "goal --help", args: []string{"goal", "--help"}, wantOut: "usage: werkrby goal [--no-review] <request>"},
+		{name: "task --bogus", args: []string{"task", "--bogus"}, wantErr: `unknown flag "--bogus"; usage: werkrby task [--no-review] <request>`},
+		{name: "task list", args: []string{"task", "list"}, wantErr: "did you mean `werkrby tasks`?"},
+		{name: "task status id", args: []string{"task", "status", "tasks-20260921-example"}, wantErr: "did you mean `werkrby tasks tasks-20260921-example`?"},
+		{name: "no-review --help", args: []string{"task", "--no-review", "--help"}, wantOut: "usage: werkrby task [--no-review] <request>"},
 		{name: "multi-word list request", args: []string{"task", "list", "the", "stale", "leases", "in", "waiting/"}, wantCreate: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -1840,5 +1840,41 @@ func TestTaskGoalCreateGuardsHelpFlagsAndReadonlyAliases(t *testing.T) {
 	}
 	if countDocs()-before != 1 {
 		t.Fatalf("net docs created across cases = %d, want 1", countDocs()-before)
+	}
+}
+
+func TestVersionAndHelpNameWerkrby(t *testing.T) {
+	capture := func(args ...string) string {
+		t.Helper()
+		old := os.Stdout
+		r, w, err := os.Pipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		os.Stdout = w
+		runErr := run(args, "1.2.3")
+		_ = w.Close()
+		os.Stdout = old
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		_ = r.Close()
+		if runErr != nil {
+			t.Fatalf("%v: %v", args, runErr)
+		}
+		return buf.String()
+	}
+	if got := capture("version"); got != "werkrby 1.2.3\n" {
+		t.Fatalf("version output = %q, want %q", got, "werkrby 1.2.3\n")
+	}
+	for _, flag := range []string{"help", "--help", "-h"} {
+		help := capture(flag)
+		if !strings.HasPrefix(help, "Werkrby - ") || !strings.Contains(help, "\n  werkrby serve") {
+			t.Fatalf("%s output does not lead with the Werkrby name:\n%s", flag, help)
+		}
+		for _, retired := range []string{"SpyJo", "Spynel", "spyjo ", "spynel "} {
+			if strings.Contains(help, retired) {
+				t.Fatalf("%s output still names %q:\n%s", flag, retired, help)
+			}
+		}
 	}
 }

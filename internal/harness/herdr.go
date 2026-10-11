@@ -562,7 +562,7 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 		sanitized = "worker"
 	}
 	workerName = fitHerdrWorkerName("sj-", sanitized, sanitized)
-	tabLabel = fmt.Sprintf("SpyJo (%s)", model)
+	tabLabel = fmt.Sprintf("Werkrby (%s)", model)
 	return
 }
 
@@ -1062,15 +1062,15 @@ var (
 		regexp.MustCompile(`(?m)^\s*context:\s*\d+%.*$`),
 		regexp.MustCompile(`(?m)^\s*⚕\s+k\d+.*$`),
 		regexp.MustCompile(`(?m)^\s*❯\s+Ask anything.*$`),
-		regexp.MustCompile(`(?m)^.*Message (?:Antigravity|agy|SpyJo).*$`),
+		regexp.MustCompile(`(?m)^.*Message (?:Antigravity|agy|SpyJo|Werkrby).*$`),
 		regexp.MustCompile(`(?m)^\s*▄▄[↵\^].*$`),
 		regexp.MustCompile(`(?m)^\s*───{5,}.*$`),
 	}
-	herdrThoughtPattern = regexp.MustCompile(`(?s)(?:^|\n)\s*Thought:\s*[^\n]+\n+(.*?)(?:\n\s*\n\s*([^\s].*)|$)`)
+	herdrThoughtPattern   = regexp.MustCompile(`(?s)(?:^|\n)\s*Thought:\s*[^\n]+\n+(.*?)(?:\n\s*\n\s*([^\s].*)|$)`)
 	hermesBoxPattern      = regexp.MustCompile(`(?s)╭─\s*[⚕☤]\s*Hermes[^\n]*\n(.*?)\n╰[─]+╯`)
 	hermesReasoningBox    = regexp.MustCompile(`(?s)┌─\s*Reasoning[^\n]*\n.*?└[─]+┘\n*`)
 	kimiInputBoxPattern   = regexp.MustCompile(`(?s)╭[─]+╮\s*\n\s*│\s*>\s*\n\s*╰[─]+╯`)
-	agyInputBoxPattern    = regexp.MustCompile(`(?s)(?:╭─+╮\s*\n\s*│\s*Message (?:Antigravity|agy|SpyJo)[^\n]*\n\s*╰─+╯|─{5,}\s*\n[ \t]*>[^\n]*\n[ \t]*─{5,}(?:\s*\n[^\n]*\? for shortcuts[^\n]*)?)`)
+	agyInputBoxPattern    = regexp.MustCompile(`(?s)(?:╭─+╮\s*\n\s*│\s*Message (?:Antigravity|agy|SpyJo|Werkrby)[^\n]*\n\s*╰─+╯|─{5,}\s*\n[ \t]*>[^\n]*\n[ \t]*─{5,}(?:\s*\n[^\n]*\? for shortcuts[^\n]*)?)`)
 	hermesComposerPattern = regexp.MustCompile(`(?s)(?:─{5,}\s*\n[ \t]*(?:[\w.-]+[ \t]+)?❯.*?\n[ \t]*─{5,}|[⚕☤]\s+\S+\s+│[^\n]*\n[ \t]*─{5,}\s*\n.*?\n[ \t]*─{5,})`)
 )
 

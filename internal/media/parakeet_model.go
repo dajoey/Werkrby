@@ -82,7 +82,7 @@ func defaultParakeetModels() map[string]parakeetModel {
 				"joiner.int8.onnx":  {SHA256: "3164c13fc2821009440d20fcb5fdc78bff28b4db2f8d0f0b329101719c0948b3", Bytes: 6355277},
 				"tokens.txt":        {SHA256: "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d", Bytes: 93939},
 			},
-			Notice: "NVIDIA Parakeet TDT 0.6B v3\nCopyright NVIDIA Corporation\nLicensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n\nDownloaded as the k2-fsa converted and INT8-quantized ONNX form; Spynel does not modify the weights.\n",
+			Notice: "NVIDIA Parakeet TDT 0.6B v3\nCopyright NVIDIA Corporation\nLicensed under CC BY 4.0: https://creativecommons.org/licenses/by/4.0/\n\nDownloaded as the k2-fsa converted and INT8-quantized ONNX form; Werkrby does not modify the weights.\n",
 		},
 	}
 }

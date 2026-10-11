@@ -74,7 +74,7 @@ func TestHerdrReporterLifecycle(t *testing.T) {
 			t.Fatalf("expected pane.report_metadata, got %v", msg["method"])
 		}
 		params := msg["params"].(map[string]any)
-		if params["display_agent"] != "SpyJo" {
+		if params["display_agent"] != "Werkrby" {
 			t.Fatalf("unexpected display_agent: %#v", params)
 		}
 	case <-time.After(2 * time.Second):

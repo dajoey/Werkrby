@@ -191,7 +191,7 @@ func TestClientStreamsIndependentTUIConversationsThroughOwner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("register live TUI: %v", err)
 	}
-	if registeredState.Title != "Spynel" || len(registeredState.Connections) != 2 {
+	if registeredState.Title != "Werkrby" || len(registeredState.Connections) != 2 {
 		t.Fatalf("registration state = %#v", registeredState)
 	}
 	if err := client.UnregisterLiveTUI(context.Background()); err != nil {
@@ -233,7 +233,7 @@ func TestClientStreamsIndependentTUIConversationsThroughOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stateSnapshot.Title != "Spynel" || len(stateSnapshot.Connections) != 2 || stateSnapshot.DurableWork != (core.DurableWorkCounts{Tasks: 1, Goals: 1}) || len(stateSnapshot.WorkDiagnostics) != 1 {
+	if stateSnapshot.Title != "Werkrby" || len(stateSnapshot.Connections) != 2 || stateSnapshot.DurableWork != (core.DurableWorkCounts{Tasks: 1, Goals: 1}) || len(stateSnapshot.WorkDiagnostics) != 1 {
 		t.Fatalf("shared state = %#v", stateSnapshot)
 	}
 	_ = server

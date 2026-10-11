@@ -170,14 +170,14 @@ notify:
 
 ## Objective
 
-Make `+"`%s`"+` parse again so Spynel stops skipping it, changing nothing about the
+Make `+"`%s`"+` parse again so Werkrby stops skipping it, changing nothing about the
 work it describes.
 
 ## Context
 
-Spynel could not read this %s document's YAML front matter, so every scan skips it
+Werkrby could not read this %s document's YAML front matter, so every scan skips it
 and the work behind it does not advance. The document is at `+"`%s`"+` in this
-workspace. Spynel filed this repair itself and did not touch the corrupt file.
+workspace. Werkrby filed this repair itself and did not touch the corrupt file.
 Parse error:
 
     %s
@@ -200,6 +200,6 @@ Parse error:
 
 ## Progress
 
-- %s - Filed by Spynel: %s would not parse (%s), so it was being skipped in silence.
+- %s - Filed by Werkrby: %s would not parse (%s), so it was being skipped in silence.
 `, id, name, stamp, stamp, name, name, kind, relative, detail, stamp, name, detail)
 }

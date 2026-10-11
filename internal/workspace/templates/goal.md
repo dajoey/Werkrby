@@ -1,4 +1,4 @@
-You are Spynel's goal planner. The claimed goal at `{{FILE}}` is in the leased `planning` phase.
+You are Werkrby's goal planner. The claimed goal at `{{FILE}}` is in the leased `planning` phase.
 
 {{SPYNEL_DOCS_GUIDANCE}}
 

@@ -167,7 +167,7 @@ func TestTranscriptSelectionModesAndRenderedCells(t *testing.T) {
 		want := strings.Join([]string{m.output[0].layout.Text, m.output[1].layout.Text, m.output[2].layout.Text}, "\n\n")
 		got := m.selectedOutput()
 		if labels {
-			if !strings.HasPrefix(got, "Spy Alpha bold") || !strings.Contains(got, "\n\nYou   genuine indentation") || !strings.HasSuffix(got, "Spy Another reply") {
+			if !strings.HasPrefix(got, "Bee Alpha bold") || !strings.Contains(got, "\n\nYou   genuine indentation") || !strings.HasSuffix(got, "Bee Another reply") {
 				t.Fatalf("label copy=%q", got)
 			}
 		} else if got != want {
@@ -199,7 +199,7 @@ func TestTranscriptSelectionModesAndRenderedCells(t *testing.T) {
 	if !strings.Contains(view, m.styles.selectedCommand.Render("ab ")) {
 		t.Fatalf("highlight doesn't match range: %q", view)
 	}
-	if strings.Contains(view, m.styles.selectedCommand.Render("Spy")) {
+	if strings.Contains(view, m.styles.selectedCommand.Render("Bee")) {
 		t.Fatal("content mode highlighted label")
 	}
 	// Scrollbar cannot begin a selection.
@@ -566,7 +566,7 @@ func TestTranscriptCodeBoundaryWhitespaceCopiesInBothModes(t *testing.T) {
 		m.selection = outputSelection{active: true, labels: labels, anchor: textPoint{1, 4}, caret: textPoint{0, 0}}
 		want := "\n  hello\n\n\nnext"
 		if labels {
-			want = "Spy \n      hello\n    \n\nYou next"
+			want = "Bee \n      hello\n    \n\nYou next"
 		}
 		if got := m.selectedOutput(); got != want {
 			t.Fatalf("labels=%t copied=%q want=%q", labels, got, want)
@@ -794,7 +794,7 @@ func TestMultiClickContentCells(t *testing.T) {
 	for range 3 {
 		clickAt(&m, 1, 2)
 	}
-	if !m.selection.labels || m.selectedOutput() != "Spy a cd" {
+	if !m.selection.labels || m.selectedOutput() != "Bee a cd" {
 		t.Fatalf("label selection changed: %q", m.selectedOutput())
 	}
 }
