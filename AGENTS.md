@@ -89,7 +89,7 @@ Update parent docs when parent-level structure, ownership, workflow, or child in
 ## Verification
 
 - Run `scripts/dev.sh dox` after changing repository structure or any `AGENTS.md`; the smoke test also runs this deterministic coverage and index gate through the pinned Go toolchain.
-- Run `go test ./...`, `go vet ./...`, and `mkdir -p .tmp-bin && go build -o .tmp-bin/spynel ./cmd/spynel` before handoff after Go changes.
+- Run `go test ./...`, `go vet ./...`, and `mkdir -p .tmp-bin && go build -o .tmp-bin/werkrby ./cmd/werkrby` before handoff after Go changes.
 - `scripts/dev.sh test` also checks the locally replaced Bubble Tea module, whose nested tests are excluded by `./...`; changes to that terminal boundary require its race tests plus the real TUI PTY test.
 - Run `scripts/smoke.sh` after changes to initialization, configuration, harness dispatch, extension loading, channel lifecycle, or orchestration.
 - Run `node npm/test.js` after npm launcher or release-layout changes.

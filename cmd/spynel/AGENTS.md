@@ -1,8 +1,10 @@
-# Spynel Command Package DOX
+# spynel Compatibility Entry Point DOX
 
 ## Purpose
 
-- Own process entry-point wiring for the `spynel` executable.
+- `main.go` keeps `go build ./cmd/spynel` working: a compatibility entry point
+  with the same body as `cmd/werkrby` (same behavior and `werkrby:` error
+  prefix).
 
 ## Local Contracts
 

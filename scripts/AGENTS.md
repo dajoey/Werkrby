@@ -2,15 +2,15 @@
 
 ## Purpose
 
-- Own reproducible development, smoke-test, and release helper scripts for Spynel.
+- Own reproducible development, smoke-test, and release helper scripts for Werkrby.
 
 ## Local Contracts
 
 - Scripts resolve paths relative to themselves and must not depend on the caller's working directory.
 - Keep repository-local disposable script state only in purpose-specific ignored `.tmp*` directories: `.tmp-bin/` for development binaries, `.tmp-toolchains/` for the fallback Go distribution, `.tmp-tui-captures/` for default visual outputs, and `.tmp-artifacts/` for explicitly retained cross-review evidence. Every such directory must remain safe to remove wholesale.
-- `dev.sh build` writes the repository development executable only to ignored `.tmp-bin/spynel`; no generated root `bin/` directory or root `spynel` file is allowed.
+- `dev.sh build` writes the repository development executable only to ignored `.tmp-bin/werkrby` (built from `./cmd/werkrby`), with `.tmp-bin/spyjo` and `.tmp-bin/spynel` compatibility symlinks beside it, and prints the `werkrby` path; no generated root `bin/` directory or root `spynel` file is allowed.
 - `dev.sh test` includes the locally replaced Bubble Tea package explicitly alongside `./...` for both tests and vet, since Go excludes nested modules from that pattern.
-- `install-dev.sh` reuses that disposable build, atomically installs the executable into `$SPYNEL_DEV_BIN_DIR` or the conventional per-user `$HOME/.local/bin`, never edits shell profiles, and reports exact PATH setup or shadowing guidance so later terminals can resolve the development build safely. Because swapping the binary under a running instance wedges it on a deleted executable, the script best-effort restarts any active `spynel-*` user service after installing, without failing the install when no service is active or restart is unavailable.
+- `install-dev.sh` reuses that disposable build, atomically installs the executable as `werkrby` (with `spyjo` and `spynel` symlinks to it) into `$WERKRBY_DEV_BIN_DIR`, else `$SPYNEL_DEV_BIN_DIR`, else the conventional per-user `$HOME/.local/bin`, never edits shell profiles, and reports exact PATH setup or shadowing guidance so later terminals can resolve the development build safely. Because swapping the binary under a running instance wedges it on a deleted executable, the script best-effort restarts any active `spynel-*` user service after installing, without failing the install when no service is active or restart is unavailable.
 - Smoke tests use temporary projects and must not invoke live Codex, Claude Code, Pi, ACP agents, Telegram, or WhatsApp services; CLI-only smoke paths should avoid constructing a harness entirely.
 - Keep Go-based developer-script policy tests in `dev_test.go`, not in an unrelated runtime package.
 - The smoke test covers the user-bin development installer in an isolated target, canonical `.spynel/config.yaml` initialization without `workspace.state_dir`, exactly five valid persistent role-instruction files and content-free inspection, offline agent-readable docs, harness-independent plain CLI status, shared deterministic commands, every default-open and semantic task/goal view plus detailed and NDJSON output through their direct automation aliases, bounded conversation list/show/resume, strict inactive-follow-up rejection, every typed task/goal status folder, user-overridable prompt assets and workflow contracts, reviewed and explicit no-review task inspection, and harness-free direct task/goal helper output.

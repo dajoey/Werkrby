@@ -14,7 +14,7 @@ func main() {
 		if exit, ok := err.(interface{ ExitCode() int }); ok {
 			os.Exit(exit.ExitCode())
 		}
-		fmt.Fprintln(os.Stderr, "spyjo:", err)
+		fmt.Fprintln(os.Stderr, "werkrby:", err)
 		os.Exit(1)
 	}
 }

@@ -29,8 +29,8 @@ if [ "$#" -gt 0 ]; then shift; fi
 case "$action" in
   build)
     mkdir -p "$project_dir/.tmp-bin"
-    (cd "$project_dir" && CGO_ENABLED=1 "$go_bin" build -o .tmp-bin/spyjo ./cmd/spyjo && ln -sf spyjo .tmp-bin/spynel)
-    echo "$project_dir/.tmp-bin/spyjo"
+    (cd "$project_dir" && CGO_ENABLED=1 "$go_bin" build -o .tmp-bin/werkrby ./cmd/werkrby && ln -sf werkrby .tmp-bin/spyjo && ln -sf werkrby .tmp-bin/spynel)
+    echo "$project_dir/.tmp-bin/werkrby"
     ;;
   test)
     (cd "$project_dir" && CGO_ENABLED=1 "$go_bin" test ./... github.com/charmbracelet/bubbletea && CGO_ENABLED=1 "$go_bin" vet ./... github.com/charmbracelet/bubbletea)
@@ -40,10 +40,10 @@ case "$action" in
     ;;
   run)
     "$script_dir/dev.sh" build >/dev/null
-    exec "$project_dir/.tmp-bin/spynel" "$@"
+    exec "$project_dir/.tmp-bin/werkrby" "$@"
     ;;
   *)
-    echo "usage: $0 [build|test|dox|run [spynel arguments...]]" >&2
+    echo "usage: $0 [build|test|dox|run [werkrby arguments...]]" >&2
     exit 2
     ;;
 esac

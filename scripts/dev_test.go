@@ -16,7 +16,7 @@ func TestDeveloperVerificationPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"shared user cache", "scripts/cold-cache.sh", ".tmp-bin/spynel", ".tmp-artifacts/<task-id>/"} {
+	for _, required := range []string{"shared user cache", "scripts/cold-cache.sh", ".tmp-bin/werkrby", ".tmp-artifacts/<task-id>/"} {
 		if !strings.Contains(string(rootDOX), required) {
 			t.Errorf("canonical repository AGENTS.md is missing %q", required)
 		}
@@ -25,7 +25,7 @@ func TestDeveloperVerificationPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{"cold-cache.sh", "dedicated process group", "complete owned process tree", ".tmp-bin/spynel"} {
+	for _, required := range []string{"cold-cache.sh", "dedicated process group", "complete owned process tree", ".tmp-bin/werkrby"} {
 		if !strings.Contains(string(scriptDOX), required) {
 			t.Errorf("repository-only cold-cache contract is missing %q", required)
 		}
@@ -58,6 +58,90 @@ func TestDeveloperVerificationPaths(t *testing.T) {
 				t.Errorf("obsolete root build output ignore remains: %q", obsolete)
 			}
 		}
+	}
+}
+
+// TestInstallDevInstallsWerkrbyWithCompatibilityAliases runs a copy of
+// install-dev.sh beside a stub dev.sh, with a stub systemctl first on PATH so
+// the installer's best-effort service restart can never reach a live unit.
+func TestInstallDevInstallsWerkrbyWithCompatibilityAliases(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell installer")
+	}
+	source, err := os.ReadFile("install-dev.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptsDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(scriptsDir, "install-dev.sh"), source, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	built := filepath.Join(t.TempDir(), "werkrby")
+	if err := os.WriteFile(built, []byte("#!/bin/sh\necho werkrby-dev-build\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "dev.sh"), []byte("#!/bin/sh\nprintf '%s\\n' '"+built+"'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stubBin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stubBin, "systemctl"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	baseEnv := []string{}
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "PATH=") || strings.HasPrefix(entry, "WERKRBY_DEV_BIN_DIR=") || strings.HasPrefix(entry, "SPYNEL_DEV_BIN_DIR=") {
+			continue
+		}
+		baseEnv = append(baseEnv, entry)
+	}
+	baseEnv = append(baseEnv, "PATH="+stubBin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	install := func(extra ...string) string {
+		t.Helper()
+		command := exec.Command("sh", filepath.Join(scriptsDir, "install-dev.sh"))
+		command.Env = append(append([]string{}, baseEnv...), extra...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("install-dev.sh failed: %v\n%s", err, output)
+		}
+		return string(output)
+	}
+	assertInstalled := func(binDir string) {
+		t.Helper()
+		target := filepath.Join(binDir, "werkrby")
+		info, err := os.Lstat(target)
+		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			t.Fatalf("werkrby is not an installed executable file: %v %v", info, err)
+		}
+		if data, err := os.ReadFile(target); err != nil || !strings.Contains(string(data), "werkrby-dev-build") {
+			t.Fatalf("werkrby does not hold the development build: %q %v", data, err)
+		}
+		for _, alias := range []string{"spyjo", "spynel"} {
+			link, err := os.Readlink(filepath.Join(binDir, alias))
+			if err != nil || link != target {
+				t.Fatalf("%s = %q (%v), want a symlink to %s", alias, link, err, target)
+			}
+		}
+	}
+
+	preferred := filepath.Join(t.TempDir(), "preferred bin")
+	legacy := filepath.Join(t.TempDir(), "legacy bin")
+	output := install("WERKRBY_DEV_BIN_DIR="+preferred, "SPYNEL_DEV_BIN_DIR="+legacy)
+	assertInstalled(preferred)
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("SPYNEL_DEV_BIN_DIR was used although WERKRBY_DEV_BIN_DIR was set: %v", err)
+	}
+	if !strings.Contains(output, "Installed development build: "+filepath.Join(preferred, "werkrby")) {
+		t.Fatalf("install output does not name the werkrby target:\n%s", output)
+	}
+
+	install("SPYNEL_DEV_BIN_DIR=" + legacy)
+	assertInstalled(legacy)
+
+	usage := exec.Command("sh", filepath.Join(scriptsDir, "install-dev.sh"), "--help")
+	usage.Env = baseEnv
+	help, err := usage.CombinedOutput()
+	if err != nil || !strings.Contains(string(help), "WERKRBY_DEV_BIN_DIR") || !strings.Contains(string(help), "install it as werkrby") {
+		t.Fatalf("usage text does not describe the werkrby install: %v\n%s", err, help)
 	}
 }
 

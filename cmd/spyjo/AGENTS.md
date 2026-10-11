@@ -1,16 +1,17 @@
-# SpyJo CLI DOX
+# spyjo Compatibility Entry Point DOX
 
 ## Purpose
 
-- `main.go` is the `spyjo` launcher: a thin alias over the shared `internal/cli`
-  entry point (same behavior, binary name, and error prefixes as `cmd/spynel`).
+- `main.go` keeps `go build ./cmd/spyjo` working: a compatibility entry point
+  with the same body as `cmd/werkrby` (same behavior and `werkrby:` error
+  prefix).
 - It holds no logic of its own; all command parsing and lifecycle live in
   `internal/cli`.
 
 ## Local Contracts
 
-- Keep this launcher a thin alias: never add argument parsing, feature
-  detection, or output formatting here.
+- Keep this entry point byte-for-byte equivalent to `cmd/werkrby/main.go`;
+  never add argument parsing, feature detection, or output formatting here.
 
 ## Child DOX Index
 
