@@ -6,7 +6,7 @@
 
 ## Local Contracts
 
-- Resolve relative paths from the workspace root, keep `.spynel` fixed, and ignore unused configuration keys on load without modifying the file; canonical saves emit only current settings. Validate all recognized values, types, and duplicate YAML keys; explicit setting commands still reject unknown names.
+- Resolve relative paths from the workspace root, resolve the state directory (.werkrby when present, falling back to .spynel), and ignore unused configuration keys on load without modifying the file; canonical saves emit only current settings. Validate all recognized values, types, and duplicate YAML keys; explicit setting commands still reject unknown names.
 - Validate settings before saving, atomically replace private configuration, reload the saved canonical file into the shared process snapshot before returning, and never expose secret values in public descriptions or status.
 - Render the catalog as JSON through the one shared `SettingsJSON` projection so the loopback settings endpoint and the offline settings-metadata helper cannot drift as catalog fields change.
 - `startup.enabled` remains the saved autostart preference and text-command input. The application renders one action selected from native registration state and validates OS registration/removal for every explicit request; a saved preference alone is not registration evidence.
