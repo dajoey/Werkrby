@@ -1220,6 +1220,33 @@ func TestCLIJoinsWorkspaceOwnerAndStrictlySteersActiveConversation(t *testing.T)
 	}
 }
 
+func TestBuildServiceWithWerkrbyStateDirAndCompatSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	oldState := filepath.Join(root, ".spynel")
+	newState := filepath.Join(root, ".werkrby")
+	if err := os.Rename(oldState, newState); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(".werkrby", oldState); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(filepath.Join(newState, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := buildService(cfg, "test")
+	if err != nil {
+		t.Fatalf("buildService failed on migrated workspace: %v", err)
+	}
+	defer service.Close()
+	if service.Config.StatePath() != newState {
+		t.Fatalf("StatePath = %q; want %q", service.Config.StatePath(), newState)
+	}
+}
+
 func TestOwnerlessCLICleanupFencesConcurrentPrimaryStartup(t *testing.T) {
 	root := t.TempDir()
 	if err := workspace.Init(root, false); err != nil {

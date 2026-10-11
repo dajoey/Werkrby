@@ -116,6 +116,33 @@ func TestLoadRejectsSymlinkedStateAndInstructionsDirectories(t *testing.T) {
 	}
 }
 
+func TestLoadAndAppendWithWerkrbyStateDirAndCompatSymlink(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	stateRoot := filepath.Join(workspaceRoot, ".werkrby")
+	if err := os.MkdirAll(filepath.Join(stateRoot, "instructions"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	compatLink := filepath.Join(workspaceRoot, ".spynel")
+	if err := os.Symlink(".werkrby", compatLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	path := filepath.Join(stateRoot, "instructions", "agent-chat.md")
+	content := "Werkrby chat instruction content."
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, status, err := Load(stateRoot, Chat)
+	if err != nil || !status.Valid || loaded != content {
+		t.Fatalf("Load(.werkrby) = %q, %#v, %v; want %q", loaded, status, err, content)
+	}
+
+	appended, err := Append("initial prompt", stateRoot, Chat)
+	if err != nil || !strings.Contains(appended, content) {
+		t.Fatalf("Append(.werkrby) = %q, %v; want to contain %q", appended, err, content)
+	}
+}
+
 func TestLoadRejectsUnknownRolesAndUnsafeWritePermissions(t *testing.T) {
 	root := stateRoot(t)
 	if _, _, err := Load(root, Role("../history")); err == nil {
