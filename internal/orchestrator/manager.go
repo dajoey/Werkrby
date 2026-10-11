@@ -114,6 +114,8 @@ type Manager struct {
 	ownerID                     string
 	scanNow                     chan struct{}
 	scanTimerMu                 sync.Mutex
+	holdLogMu                   sync.Mutex
+	holdLogged                  map[string]time.Time
 	scanTimer                   *time.Timer
 	scanTimerGeneration         uint64
 	scanNext                    time.Time
@@ -617,6 +619,12 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 			return leaseErr
 		}
 		if m.isInflight(key) || m.leaseExists(key) || documentLeased {
+			continue
+		}
+		// A paced seat's work waits where it is (no claim, no attempt, no fallback) until
+		// its hold lifts. Checked before capacity so held goal work never pauses a running
+		// standalone task for a slot it will not use.
+		if m.rosterHeld(route, phase, candidate.name, document) {
 			continue
 		}
 		if !m.canAdmitClaim() {
@@ -2026,6 +2034,38 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 	if doc, err := ReadDocument(lease.File); err == nil {
 		frontMatter = doc.FrontMatter
 	}
+	name, ok := rosterSeat(staffing, stateDir, phase, frontMatter, filepath.Base(lease.File), m.log)
+	if !ok {
+		return "", false
+	}
+	assigned, err := staffing.Assign(stateDir, name, lease.SessionKey, time.Now())
+	if err != nil {
+		m.log("roster usage: " + err.Error())
+		if assigned == "" {
+			return "", false
+		}
+	}
+	if assigned != name {
+		m.log("roster: " + name + " is at its daily cap; " + filepath.Base(lease.File) + " goes to " + assigned)
+	}
+	if phase == phaseTaskImplementation {
+		// The seat that actually runs the work, after caps and stops, is who wrote it: a later
+		// review picks a different model family from this one.
+		if err := roster.RecordImplementer(stateDir, filepath.Base(lease.File), assigned, time.Now()); err != nil {
+			m.log("roster implementer: " + err.Error())
+		}
+	}
+	return staffing.Model(assigned), true
+}
+
+// rosterSeat is the staff a document's dispatch asks the roster for, before daily caps and
+// stops: the role's staff, a review's cross-family alternate, a task's staff pin, the attempt
+// ladder and a seat's own escalation. ok is false when the roster does not route this document
+// (an explicit legacy runner pin, or no staff for the role). logf may be nil.
+func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map[string]any, fileName string, logf func(string)) (string, bool) {
+	if logf == nil {
+		logf = func(string) {}
+	}
 	text := func(key string) string {
 		value, _ := frontMatter[key].(string)
 		return strings.TrimSpace(value)
@@ -2052,9 +2092,9 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 		// than the seat that wrote the work: use the first alternate when the role's own staff
 		// shares the implementer's family. An unknown implementer keeps the role's staff.
 		if alternates := staffing.RoleAlternates[role]; name != "" && len(alternates) > 0 {
-			if implementer, ok := roster.ImplementedBy(stateDir, filepath.Base(lease.File)); ok {
+			if implementer, ok := roster.ImplementedBy(stateDir, fileName); ok {
 				if picked := staffing.PickDifferentFamily(name, alternates, implementer); picked != name {
-					m.log("roster: " + role + " review of " + filepath.Base(lease.File) + " moves from " + name + " to " + picked + " (the work was written on " + implementer + ", the same model family)")
+					logf("roster: " + role + " review of " + fileName + " moves from " + name + " to " + picked + " (the work was written on " + implementer + ", the same model family)")
 					name = picked
 				}
 			}
@@ -2075,7 +2115,7 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 				if staffing.Has(staff) {
 					name = staff
 				} else {
-					m.log("roster: unknown staff " + strconv.Quote(staff) + " in " + filepath.Base(lease.File))
+					logf("roster: unknown staff " + strconv.Quote(staff) + " in " + fileName)
 				}
 			}
 		}
@@ -2090,7 +2130,7 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 		if name != "" {
 			attempt := int(numberValue(frontMatter["attempt"]))
 			if escalated := staffing.EscalatedStaff(name, attempt); escalated != name {
-				m.log("roster: " + name + " escalates to " + escalated + " at attempt " + strconv.Itoa(attempt) + ": " + filepath.Base(lease.File))
+				logf("roster: " + name + " escalates to " + escalated + " at attempt " + strconv.Itoa(attempt) + ": " + fileName)
 				name = escalated
 			}
 		}
@@ -2100,24 +2140,59 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 	if name == "" {
 		return "", false
 	}
-	assigned, err := staffing.Assign(stateDir, name, lease.SessionKey, time.Now())
-	if err != nil {
-		m.log("roster usage: " + err.Error())
-		if assigned == "" {
-			return "", false
-		}
+	return name, true
+}
+
+// rosterHeld reports whether a queued document's session would start on a seat the quota gate
+// is holding (runtime/roster-holds.json, roster.HeldUntil). The seat is found the way dispatch
+// finds it (rosterSeat, then Assign's fallback walk past caps and stops) without counting a
+// session. A held document is logged at most once an hour.
+func (m *Manager) rosterHeld(route workflowRoute, phase, name string, document Document) bool {
+	stateDir := m.Config.StatePath()
+	now := time.Now()
+	if !roster.AnyHeld(stateDir, now) {
+		return false
 	}
-	if assigned != name {
-		m.log("roster: " + name + " is at its daily cap; " + filepath.Base(lease.File) + " goes to " + assigned)
+	staffing, err := roster.Load(stateDir)
+	if err != nil || staffing == nil {
+		return false
 	}
-	if phase == phaseTaskImplementation {
-		// The seat that actually runs the work, after caps and stops, is who wrote it: a later
-		// review picks a different model family from this one.
-		if err := roster.RecordImplementer(stateDir, filepath.Base(lease.File), assigned, time.Now()); err != nil {
-			m.log("roster implementer: " + err.Error())
-		}
+	phase = normalizeLeasePhase(route.Name, phase)
+	// Route on the attempt the claim would record (claimAttempt), as dispatch does after the
+	// claim: a retry that escalates onto a held seat must wait too.
+	frontMatter := make(map[string]any, len(document.FrontMatter)+1)
+	scratch := make(map[string]any, len(document.FrontMatter))
+	for key, value := range document.FrontMatter {
+		frontMatter[key] = value
+		scratch[key] = value
 	}
-	return staffing.Model(assigned), true
+	if field := phaseAttemptField(phase); field != "" {
+		frontMatter[field], _ = claimAttempt(scratch, field)
+	}
+	asked, ok := rosterSeat(staffing, stateDir, phase, frontMatter, name, nil)
+	if !ok {
+		return false
+	}
+	seat := staffing.Landing(stateDir, asked, now)
+	until, reason, held := roster.HeldUntil(stateDir, seat, now)
+	if !held {
+		return false
+	}
+	// The gate rewrites `until` every tick, so log a held document at most once an hour.
+	key := name + "\x00" + phase
+	m.holdLogMu.Lock()
+	if m.holdLogged == nil {
+		m.holdLogged = map[string]time.Time{}
+	}
+	due := now.Sub(m.holdLogged[key]) >= time.Hour
+	if due {
+		m.holdLogged[key] = now
+	}
+	m.holdLogMu.Unlock()
+	if due {
+		m.log("roster: " + seat + " is held (" + reason + ") until " + until.UTC().Format(time.RFC3339) + "; " + name + " (" + phase + ") waits unclaimed")
+	}
+	return true
 }
 
 func (m *Manager) resolveLegacyTargetModel(route workflowRoute, lease Lease) string {

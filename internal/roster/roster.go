@@ -471,18 +471,7 @@ func (r *Roster) Assign(stateDir, name, sessionKey string, now time.Time) (strin
 		return prior, nil
 	}
 
-	chosen := name
-	for hop := 0; hop < maxFallback; hop++ {
-		s := r.Staff[chosen]
-		if s.Fallback == "" {
-			break
-		}
-		halted := s.DailyCap > 0 && u.Counts[chosen] >= s.DailyCap && decided[chosen] != DecisionContinue
-		if !halted && decided[chosen] != DecisionStop {
-			break
-		}
-		chosen = s.Fallback
-	}
+	chosen := r.follow(name, u.Counts, decided)
 	u.Counts[chosen]++
 	if s := r.Staff[chosen]; s.NotifyAt > 0 && u.Counts[chosen] >= s.NotifyAt && !u.Notified[chosen] && decided[chosen] == "" {
 		if err := writeCapAsk(stateDir, chosen, s, u.Counts[chosen], now); err == nil {
