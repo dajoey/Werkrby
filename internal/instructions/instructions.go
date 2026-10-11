@@ -42,7 +42,7 @@ Never persist one-off directions, ordinary feedback, transient decisions, inferr
 
 const chatTranscriptionGuidanceMarker = "Speech transcription can render Werkrby"
 
-const chatTranscriptionGuidance = chatTranscriptionGuidanceMarker + " (pronounced \"worker bee\") as `worker bee`, `worker b`, `werker bee`, `work ruby`, or other phonetically similar words. When the surrounding context clearly refers to the Werkrby framework, interpret those variants as `Werkrby`. Preserve the literal meaning when the context instead indicates an unrelated use, such as a literal reference to a `worker bee`; contextual confidence is required."
+const chatTranscriptionGuidance = chatTranscriptionGuidanceMarker + " (pronounced \"worker bee\") as `worker bee`, `worker b`, `werker bee`, `work ruby`, or other phonetically similar words. When the surrounding context clearly refers to the Werkrby framework, interpret those variants as `Werkrby`. Preserve the literal meaning when the context instead indicates an unrelated use, such as a literal reference to a `worker bee`; contextual confidence is required. Its former names SpyJo and Spynel (often transcribed as `spy jo`, `spinal`, `spinel` or `spy nell`) refer to the same framework under the same rule."
 
 type Role string
 

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime/debug"
 	"strconv"
@@ -173,7 +174,7 @@ func processRecords(ids []int) ([]ProcessRegistration, error) {
 			if err != nil {
 				info, err = buildinfo.ReadFile(record.Executable)
 			}
-			if err == nil && info.Path == own.Path {
+			if err == nil && sameProductBuild(info.Path, own.Path) {
 				records = append(records, record)
 				continue
 			}
@@ -182,7 +183,7 @@ func processRecords(ids []int) ([]ProcessRegistration, error) {
 			continue
 		}
 		info, err := buildinfo.ReadFile(processImagePath(pid, path))
-		if err == nil && info.Path == own.Path {
+		if err == nil && sameProductBuild(info.Path, own.Path) {
 			executable := strings.TrimSuffix(path, " (deleted)")
 			root := npmRootFromExecutable(executable)
 			if strings.HasPrefix(filepath.Base(root), ".spynel-") {
@@ -334,4 +335,19 @@ func stopProcessRecords(ctx context.Context, records []ProcessRegistration) erro
 
 func processGone(err error) bool {
 	return err == nil || errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH) || errors.Is(err, os.ErrNotExist)
+}
+
+// productCommands are the entry points that build the same program: werkrby and its
+// spyjo and spynel aliases.
+var productCommands = map[string]bool{"werkrby": true, "spyjo": true, "spynel": true}
+
+// sameProductBuild reports whether two main-package paths build the same program, so a
+// werkrby build still recognises processes started from a spyjo or spynel build.
+func sameProductBuild(a, b string) bool {
+	if a == b {
+		return true
+	}
+	da, ca := path.Split(a)
+	db, cb := path.Split(b)
+	return da == db && strings.HasSuffix(da, "/cmd/") && productCommands[ca] && productCommands[cb]
 }

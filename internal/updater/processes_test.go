@@ -239,3 +239,22 @@ func TestRestartAfterRunningExecutableIsUnlinked(t *testing.T) {
 		t.Fatalf("restart after executable replacement: %d %v", count, err)
 	}
 }
+
+func TestSameProductBuildAcceptsTheCommandAliases(t *testing.T) {
+	const module = "github.com/agent0ai/spynel/cmd/"
+	for _, tc := range []struct {
+		a, b string
+		want bool
+	}{
+		{module + "werkrby", module + "werkrby", true},
+		{module + "werkrby", module + "spyjo", true},
+		{module + "spynel", module + "werkrby", true},
+		{module + "werkrby", module + "other", false},
+		{"example.com/fork/cmd/werkrby", module + "werkrby", false},
+		{module + "werkrby", "github.com/agent0ai/spynel/internal/werkrby", false},
+	} {
+		if got := sameProductBuild(tc.a, tc.b); got != tc.want {
+			t.Errorf("sameProductBuild(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
+	}
+}
