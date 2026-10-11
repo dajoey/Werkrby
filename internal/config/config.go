@@ -333,9 +333,19 @@ func PathForRoot(root string) string {
 	return filepath.Join(root, filepath.FromSlash(FileName))
 }
 
+// StateDir returns the state directory for root, returning <root>/.werkrby
+// when that directory exists, else <root>/.spynel.
+func StateDir(root string) string {
+	werkrby := filepath.Join(root, ".werkrby")
+	if fi, err := os.Stat(werkrby); err == nil && fi.IsDir() {
+		return werkrby
+	}
+	return filepath.Join(root, StateDirectoryName)
+}
+
 func rootForConfigPath(path string) string {
 	directory := filepath.Dir(path)
-	if filepath.Base(path) == filepath.Base(filepath.FromSlash(FileName)) && filepath.Base(directory) == StateDirectoryName {
+	if filepath.Base(path) == filepath.Base(filepath.FromSlash(FileName)) && (filepath.Base(directory) == StateDirectoryName || filepath.Base(directory) == ".werkrby") {
 		return filepath.Dir(directory)
 	}
 	return directory
@@ -616,7 +626,7 @@ func (c Config) Resolve(path string) string {
 }
 
 func (c Config) StatePath(parts ...string) string {
-	base := filepath.Join(c.Root, StateDirectoryName)
+	base := StateDir(c.Root)
 	return filepath.Join(append([]string{base}, parts...)...)
 }
 

@@ -473,3 +473,48 @@ func TestStoreUpdateSavesAndReloadsSharedSnapshot(t *testing.T) {
 		t.Fatalf("shared snapshot was not refreshed: update=%q snapshot=%q", updated.Channels.Telegram.Name, store.Snapshot().Channels.Telegram.Name)
 	}
 }
+
+func TestStateDirResolution(t *testing.T) {
+	// (a) only .spynel -> expect .spynel
+	rootA := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootA, ".spynel"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := StateDir(rootA); got != filepath.Join(rootA, ".spynel") {
+		t.Fatalf("StateDir(only .spynel) = %q, want %q", got, filepath.Join(rootA, ".spynel"))
+	}
+	cfgA := Config{Root: rootA}
+	if got := cfgA.StatePath("tasks"); got != filepath.Join(rootA, ".spynel", "tasks") {
+		t.Fatalf("StatePath(only .spynel) = %q, want %q", got, filepath.Join(rootA, ".spynel", "tasks"))
+	}
+
+	// (b) only .werkrby -> expect .werkrby
+	rootB := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootB, ".werkrby"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := StateDir(rootB); got != filepath.Join(rootB, ".werkrby") {
+		t.Fatalf("StateDir(only .werkrby) = %q, want %q", got, filepath.Join(rootB, ".werkrby"))
+	}
+	cfgB := Config{Root: rootB}
+	if got := cfgB.StatePath("tasks"); got != filepath.Join(rootB, ".werkrby", "tasks") {
+		t.Fatalf("StatePath(only .werkrby) = %q, want %q", got, filepath.Join(rootB, ".werkrby", "tasks"))
+	}
+
+	// (c) both -> expect .werkrby
+	rootC := t.TempDir()
+	if err := os.Mkdir(filepath.Join(rootC, ".spynel"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(rootC, ".werkrby"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := StateDir(rootC); got != filepath.Join(rootC, ".werkrby") {
+		t.Fatalf("StateDir(both) = %q, want %q", got, filepath.Join(rootC, ".werkrby"))
+	}
+	cfgC := Config{Root: rootC}
+	if got := cfgC.StatePath("tasks"); got != filepath.Join(rootC, ".werkrby", "tasks") {
+		t.Fatalf("StatePath(both) = %q, want %q", got, filepath.Join(rootC, ".werkrby", "tasks"))
+	}
+}
+

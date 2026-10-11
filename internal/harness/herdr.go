@@ -265,8 +265,7 @@ func (h *Herdr) resolveCallerContext(ctx context.Context, cwd string) (string, s
 			}
 			if json.Unmarshal(outWorkspaces, &wResp) == nil {
 				for _, ws := range wResp.Result.Workspaces {
-					lower := strings.ToLower(ws.Label)
-					if strings.Contains(lower, "[sj-worker]") {
+					if isWorkerWorkspaceLabel(ws.Label) {
 						workspaceID = ws.WorkspaceID
 						break
 					}
@@ -315,6 +314,26 @@ func workerWorkspaceLabel(subject string) string {
 		subject = "tasks"
 	}
 	return fmt.Sprintf("[sj-worker] %s", subject)
+}
+
+func isWorkerWorkspaceLabel(label string) bool {
+	lower := strings.ToLower(label)
+	return strings.Contains(lower, "[sj-worker]") || strings.Contains(lower, "[wk-worker]")
+}
+
+func hasWorkerPrefix(name string) bool {
+	return strings.HasPrefix(name, "sj-") || strings.HasPrefix(name, "wk-") || strings.HasPrefix(name, "spyjo-")
+}
+
+func isOrphanWorkerName(name string) bool {
+	return strings.HasPrefix(name, "sj-t-") ||
+		strings.HasPrefix(name, "sj-r-") ||
+		strings.HasPrefix(name, "sj-o-") ||
+		strings.HasPrefix(name, "sj-hb-") ||
+		strings.HasPrefix(name, "wk-t-") ||
+		strings.HasPrefix(name, "wk-r-") ||
+		strings.HasPrefix(name, "wk-o-") ||
+		strings.HasPrefix(name, "wk-hb-")
 }
 
 func (h *Herdr) resolveDedicatedWorkspace(ctx context.Context, subject string, cwd string) (string, error) {
@@ -618,7 +637,7 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 		if json.Unmarshal(out, &listResp) == nil {
 			for _, a := range listResp.Result.Agents {
 				inWorkspace := workspaceID == "" || a.WorkspaceID == workspaceID || strings.HasPrefix(a.PaneID, workspaceID+":")
-				isSpyJoWorker := a.Name == expectedWorkerName || strings.HasPrefix(a.Name, "spyjo-") || strings.HasPrefix(a.Name, "sj-")
+				isSpyJoWorker := a.Name == expectedWorkerName || hasWorkerPrefix(a.Name)
 
 				// STRICT IMMUNITY: Never touch external fleet panes (w1, w2, w4, w5, etc.)!
 				if !inWorkspace && !isSpyJoWorker {
@@ -1884,7 +1903,7 @@ func (h *Herdr) sweepOrphanedWorkers(ctx context.Context) {
 		}
 		if json.Unmarshal(outW, &wResp) == nil {
 			for _, ws := range wResp.Result.Workspaces {
-				if strings.Contains(strings.ToLower(ws.Label), "[sj-worker]") {
+				if isWorkerWorkspaceLabel(ws.Label) {
 					workerWorkspaceIDs[ws.WorkspaceID] = true
 				}
 			}
@@ -1900,12 +1919,8 @@ func (h *Herdr) sweepOrphanedWorkers(ctx context.Context) {
 		return
 	}
 	for _, a := range listResp.Result.Agents {
-		// Only sweep background worker agents (not chat sj-c-*, not external agents)
-		isOrphanWorker := strings.HasPrefix(a.Name, "sj-t-") ||
-			strings.HasPrefix(a.Name, "sj-r-") ||
-			strings.HasPrefix(a.Name, "sj-o-") ||
-			strings.HasPrefix(a.Name, "sj-hb-")
-		if !isOrphanWorker {
+		// Only sweep background worker agents (not chat sj-c-*/wk-c-*, not external agents)
+		if !isOrphanWorkerName(a.Name) {
 			continue
 		}
 

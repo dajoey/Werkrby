@@ -552,3 +552,69 @@ func TestAgyComposerPatternsAcceptLegacyAndWerkrbyNames(t *testing.T) {
 		}
 	}
 }
+
+func TestDualFormMatchers(t *testing.T) {
+	// 1. isWorkerWorkspaceLabel
+	labelCases := []struct {
+		label string
+		want  bool
+	}{
+		{"[sj-worker] subject", true},
+		{"[wk-worker] subject", true},
+		{"[SJ-WORKER] TASKS", true},
+		{"[WK-WORKER] TASKS", true},
+		{"workspace-main", false},
+		{"[other-worker] subject", false},
+	}
+	for _, tc := range labelCases {
+		if got := isWorkerWorkspaceLabel(tc.label); got != tc.want {
+			t.Errorf("isWorkerWorkspaceLabel(%q) = %v, want %v", tc.label, got, tc.want)
+		}
+	}
+
+	// 2. hasWorkerPrefix
+	prefixCases := []struct {
+		name string
+		want bool
+	}{
+		{"sj-t-a1-x-abc123", true},
+		{"wk-t-a1-x-abc123", true},
+		{"spyjo-foo", true},
+		{"hermes", false},
+		{"claude", false},
+		{"random-worker", false},
+	}
+	for _, tc := range prefixCases {
+		if got := hasWorkerPrefix(tc.name); got != tc.want {
+			t.Errorf("hasWorkerPrefix(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// 3. isOrphanWorkerName
+	orphanCases := []struct {
+		name string
+		want bool
+	}{
+		{"sj-t-a1-x-abc123", true},
+		{"wk-t-a1-x-abc123", true},
+		{"sj-r-a1-rec-1", true},
+		{"wk-r-a1-rec-1", true},
+		{"sj-o-op-1", true},
+		{"wk-o-op-1", true},
+		{"sj-hb-heartbeat", true},
+		{"wk-hb-heartbeat", true},
+		// Negative cases: chat panes and other agents stay out of orphan sweep
+		{"sj-c-telegram-123", false},
+		{"wk-c-telegram-123", false},
+		{"sj-c-cli-probe", false},
+		{"wk-c-cli-probe", false},
+		{"spyjo-foo", false},
+		{"external-agent", false},
+	}
+	for _, tc := range orphanCases {
+		if got := isOrphanWorkerName(tc.name); got != tc.want {
+			t.Errorf("isOrphanWorkerName(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
