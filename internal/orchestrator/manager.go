@@ -115,7 +115,7 @@ type Manager struct {
 	scanNow                     chan struct{}
 	scanTimerMu                 sync.Mutex
 	holdLogMu                   sync.Mutex
-	holdLogged                  map[string]string
+	holdLogged                  map[string]time.Time
 	scanTimer                   *time.Timer
 	scanTimerGeneration         uint64
 	scanNext                    time.Time
@@ -2146,7 +2146,7 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 // rosterHeld reports whether a queued document's session would start on a seat the quota gate
 // is holding (runtime/roster-holds.json, roster.HeldUntil). The seat is found the way dispatch
 // finds it (rosterSeat, then Assign's fallback walk past caps and stops) without counting a
-// session. Each held document is logged once per hold.
+// session. A held document is logged at most once an hour.
 func (m *Manager) rosterHeld(route workflowRoute, phase, name string, document Document) bool {
 	stateDir := m.Config.StatePath()
 	now := time.Now()
@@ -2178,16 +2178,19 @@ func (m *Manager) rosterHeld(route workflowRoute, phase, name string, document D
 	if !held {
 		return false
 	}
-	stamp := until.UTC().Format(time.RFC3339)
+	// The gate rewrites `until` every tick, so log a held document at most once an hour.
+	key := name + "\x00" + phase
 	m.holdLogMu.Lock()
 	if m.holdLogged == nil {
-		m.holdLogged = map[string]string{}
+		m.holdLogged = map[string]time.Time{}
 	}
-	first := m.holdLogged[name+"\x00"+phase] != stamp
-	m.holdLogged[name+"\x00"+phase] = stamp
+	due := now.Sub(m.holdLogged[key]) >= time.Hour
+	if due {
+		m.holdLogged[key] = now
+	}
 	m.holdLogMu.Unlock()
-	if first {
-		m.log("roster: " + seat + " is held (" + reason + ") until " + stamp + "; " + name + " (" + phase + ") waits unclaimed")
+	if due {
+		m.log("roster: " + seat + " is held (" + reason + ") until " + until.UTC().Format(time.RFC3339) + "; " + name + " (" + phase + ") waits unclaimed")
 	}
 	return true
 }
