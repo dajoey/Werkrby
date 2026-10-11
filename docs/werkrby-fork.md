@@ -25,7 +25,7 @@ No published Werkrby releases exist. The upstream `install.sh` / npm paths insta
 
 ```sh
 git clone https://github.com/dajoey/Werkrby.git
-cd SpyJo
+cd Werkrby
 ./scripts/dev.sh build        # produces .tmp-bin/werkrby (+ spyjo and spynel symlinks)
 ./scripts/install-dev.sh      # installs werkrby (and spyjo/spynel aliases) to ~/.local/bin
 ```
