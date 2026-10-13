@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -25,12 +26,17 @@ type headlessResultLine struct {
 	Result    string `json:"result"`
 }
 
+// headlessResultGrace is how long a headless turn waits for `claude -p` to exit after its result
+// line before killing the process group and using the result.
+var headlessResultGrace = 30 * time.Second
+
 // sendHeadless runs one turn of a `headless: true` roster staff as `claude -p --output-format
 // stream-json` in the workspace instead of typing the prompt into an interactive Herdr pane. It keeps
 // the Herdr turn contract: it blocks until the turn ends, emits status at the Herdr cadence (status
 // events feed the job lease heartbeat), emits one final or error event with Done set, and returns the
-// Claude session id. Each turn is a fresh session, as a freshly spawned Herdr worker is. The caller
-// holds the key lock.
+// Claude session id. A follow-up turn on the same key resumes the remembered session when its Claude
+// transcript exists, so continuations and operator messages keep their context. The caller holds the
+// key lock.
 func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string, staff roster.Staff, cfg HarnessConfig, emit core.Emit) (string, bool, error) {
 	command := h.headlessCommand
 	if command == "" {
@@ -50,9 +56,22 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		close(turn.done)
 	}()
 
-	args := append([]string{"-p", "--output-format", "stream-json", "--verbose"}, claudePermissionArgs(cfg)...)
-	args = append(args, staff.Args...)
-	cmd := exec.CommandContext(turnContext, command, args...)
+	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
+	h.mu.Lock()
+	previous := h.sessions[key]
+	h.mu.Unlock()
+	if path := transcriptPath("claude", previous, cfg.Cwd); path != "" {
+		if _, err := os.Stat(path); err == nil {
+			args = append(args, "--resume", previous)
+		}
+	}
+	args = append(append(args, claudePermissionArgs(cfg)...), staff.Args...)
+	// procContext ends the process; turnContext ends the turn. They differ once a result is in:
+	// a process still running headlessResultGrace after its result line is killed, and the
+	// result stands.
+	procContext, procCancel := context.WithCancel(turnContext)
+	defer procCancel()
+	cmd := exec.CommandContext(procContext, command, args...)
 	cmd.Dir = cfg.Cwd
 	cmd.Stdin = strings.NewReader(prompt)
 	// Claude Code starts tool and MCP children that can inherit stdout. On cancel the whole process
@@ -108,6 +127,9 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 			}
 			if msg.Type == "result" {
 				result := msg
+				if final == nil {
+					time.AfterFunc(headlessResultGrace, procCancel)
+				}
 				final = &result
 			}
 		}
@@ -128,7 +150,9 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		}
 		return threadID, false, turnContext.Err()
 	}
-	if final == nil || final.IsError || waitErr != nil {
+	// A success result stands whatever the exit status: the process may have been killed after
+	// its result, or exited non-zero while shutting down.
+	if final == nil || final.IsError || final.Subtype != "success" {
 		detail := headlessFailureDetail(final, waitErr, stderr.String())
 		emitHeadlessError(emit, threadID, detail)
 		return threadID, false, fmt.Errorf("runner turn failed: %s", detail)
@@ -147,11 +171,12 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	return threadID, false, nil
 }
 
-// headlessFailureDetail names why a headless turn failed, preferring Claude Code's own result text
-// (for example a provider 429 or "Credit balance is too low", which the orchestrator's quota handling
-// reads) over the exit status.
+// headlessFailureDetail names why a headless turn failed. The result text is used only when Claude
+// Code marked it an error (for example a provider 429 or "Credit balance is too low", which the
+// orchestrator's quota handling reads): a non-error result is the agent's own reply, and quoting it
+// could make a reply that mentions a 429 read as a quota wall.
 func headlessFailureDetail(final *headlessResultLine, waitErr error, stderrTail string) string {
-	if final != nil && strings.TrimSpace(final.Result) != "" {
+	if final != nil && final.IsError && strings.TrimSpace(final.Result) != "" {
 		return strings.TrimSpace(final.Result)
 	}
 	if tail := strings.TrimSpace(stderrTail); tail != "" {

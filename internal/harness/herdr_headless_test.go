@@ -203,3 +203,68 @@ func TestHerdrPaneStaffDoesNotRunHeadless(t *testing.T) {
 		t.Fatal("a staff without headless ran the headless command")
 	}
 }
+
+func TestHerdrHeadlessSuccessThenNonZeroExitSucceeds(t *testing.T) {
+	h, _, _ := headlessFixture(t, `cat >/dev/null
+echo '{"type":"result","subtype":"success","is_error":false,"result":"DONE","session_id":"s1"}'
+exit 3
+`)
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@credits", nil); err != nil {
+		t.Fatalf("a success result must stand over the exit status: %v", err)
+	}
+}
+
+func TestHerdrHeadlessNonErrorResultTextNeverBecomesTheFailure(t *testing.T) {
+	h, _, _ := headlessFixture(t, `cat >/dev/null
+echo '{"type":"result","subtype":"error_during_execution","is_error":false,"result":"Fixed the 429 rate limit handling","session_id":"s2"}'
+exit 1
+`)
+	_, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@credits", nil)
+	if err == nil || strings.Contains(err.Error(), "429") || !strings.Contains(err.Error(), "error_during_execution") {
+		t.Fatalf("err = %v, want a failure naming the subtype and not quoting the reply", err)
+	}
+}
+
+func TestHerdrHeadlessProcessLingeringAfterResultIsCut(t *testing.T) {
+	old := headlessResultGrace
+	headlessResultGrace = 200 * time.Millisecond
+	defer func() { headlessResultGrace = old }()
+	h, _, _ := headlessFixture(t, `cat >/dev/null
+echo '{"type":"result","subtype":"success","is_error":false,"result":"DONE","session_id":"s3"}'
+exec sleep 30
+`)
+	start := time.Now()
+	_, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@credits", nil)
+	if err != nil || time.Since(start) > 10*time.Second {
+		t.Fatalf("err = %v after %s; want the result used once the grace ran out", err, time.Since(start))
+	}
+}
+
+func TestHerdrHeadlessFollowUpResumesItsSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	h, root, argvFile := headlessFixture(t, `printf '%s\n' "$@" > "$(dirname "$0")/argv"
+cat >/dev/null
+echo '{"type":"system","subtype":"init","session_id":"sess-A"}'
+echo '{"type":"result","subtype":"success","is_error":false,"result":"DONE","session_id":"sess-A"}'
+`)
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "first", "@credits", nil); err != nil {
+		t.Fatal(err)
+	}
+	if argv, _ := os.ReadFile(argvFile); strings.Contains(string(argv), "--resume") {
+		t.Fatalf("a first turn has nothing to resume: %q", argv)
+	}
+	transcript := transcriptPath("claude", "sess-A", root)
+	if err := os.MkdirAll(filepath.Dir(transcript), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(transcript, []byte("{}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "follow-up", "@credits", nil); err != nil {
+		t.Fatal(err)
+	}
+	if argv, _ := os.ReadFile(argvFile); !strings.Contains(string(argv), "--resume\nsess-A\n") {
+		t.Fatalf("follow-up argv = %q, want --resume sess-A", argv)
+	}
+}

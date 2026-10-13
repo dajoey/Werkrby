@@ -2882,7 +2882,10 @@ func isQuotaError(err error) bool {
 		strings.Contains(msg, "rate_limit") ||
 		strings.Contains(msg, "quota limit") ||
 		strings.Contains(msg, "resource_exhausted") ||
-		strings.Contains(msg, "too many requests")
+		strings.Contains(msg, "too many requests") ||
+		// A prepaid API credit that is spent ("Credit balance is too low") walls the seat too.
+		strings.Contains(msg, "credit balance is too low") ||
+		strings.Contains(msg, "credit balance too low")
 }
 
 func resolveRunnerName(document Document, lease Lease) string {
