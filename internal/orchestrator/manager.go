@@ -2902,12 +2902,16 @@ func leaseID(route, path string) string {
 	return hex.EncodeToString(hash[:12])
 }
 
+// httpTooManyRequestsRegex matches 429 only as a whole token (the HTTP status), never as digits
+// inside a path ("fix-issue-429.md"), a date ("20260429"), a version ("1.429.0") or an id.
+var httpTooManyRequestsRegex = regexp.MustCompile(`(?:^|[^0-9a-z_./-])429(?:$|[^0-9a-z_/-]|\.(?:$|[^0-9a-z]))`)
+
 func isQuotaError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "429") ||
+	return httpTooManyRequestsRegex.MatchString(msg) ||
 		strings.Contains(msg, "rate limit") ||
 		strings.Contains(msg, "rate_limit") ||
 		strings.Contains(msg, "quota limit") ||

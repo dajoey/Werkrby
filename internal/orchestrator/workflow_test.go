@@ -1822,3 +1822,69 @@ func TestCreditExhaustionParksLikeAQuotaWall(t *testing.T) {
 		}
 	}
 }
+
+func TestIsQuotaErrorMatches429OnlyAsAWholeToken(t *testing.T) {
+	for _, msg := range []string{
+		"herdr prompt failed: 429 You've reached your weekly usage limit",
+		"429 Too Many Requests",
+		"API Error: 429 {\"type\":\"error\"}",
+		"HTTP/1.1 429",
+		"status=429",
+		"request failed (429)",
+		"upstream returned error 429.",
+		"rate limit exceeded",
+	} {
+		if !isQuotaError(errors.New(msg)) {
+			t.Errorf("isQuotaError(%q) = false, want true", msg)
+		}
+	}
+	for _, msg := range []string{
+		"read tasks/todo/fix-issue-429.md: no such file or directory",
+		"open /var/log/20260429.log: permission denied",
+		"worker sj-t-a1-4291 never answered",
+		"build 1429 failed",
+		"version 1.429.0 not found",
+		"/api/v1/429/items returned bad json",
+		"job_429abc exited",
+	} {
+		if isQuotaError(errors.New(msg)) {
+			t.Errorf("isQuotaError(%q) = true, want false", msg)
+		}
+	}
+}
+
+func TestPathDigitsInErrorAreNotAQuotaWall(t *testing.T) {
+	// An error that merely mentions "429" inside a path or a date is an ordinary dispatch
+	// error: it counts toward the 3-error failed/ path and is never parked as a quota wall.
+	cfg, fake, manager := workflowTestManager(t)
+	route := workflowRoutes()[0]
+	task, err := Create(cfg, "tasks", "task with digits in its error", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(task)
+	base := filepath.Dir(cfg.Resolve(route.Source))
+	fake.sendErrs = []error{errors.New("runner turn failed: read tasks/todo/fix-issue-429.md 20260429: no such file")}
+
+	scanAndWait(t, manager)
+
+	if _, err := ReadDocument(filepath.Join(base, "waiting", name)); err == nil {
+		t.Fatalf("task was parked in waiting/ as a quota wall")
+	}
+	leases, err := manager.loadLeases()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leases) != 1 || leases[0].State != "error" || leases[0].RecoveryCount != 1 {
+		t.Fatalf("lease = %+v, want one lease in error state with RecoveryCount 1", leases)
+	}
+	// recordError writes the autopsy on a detached goroutine; wait for it so it cannot race
+	// t.TempDir cleanup.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if matches, _ := filepath.Glob(filepath.Join(cfg.StatePath("diagnostics"), "err-*.json")); len(matches) > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
