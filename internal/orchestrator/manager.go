@@ -1765,6 +1765,9 @@ func (m *Manager) advanceActiveGoals() error {
 			continue
 		}
 		if err := m.validateGoalActivation(document); err != nil {
+			if m.skipUnreadableRoundTask(err) {
+				continue
+			}
 			target := filepath.Join(base, "proposed", entry.Name())
 			if _, _, moveErr := m.redirectTransition(path, target, "proposed", "Invalid active goal returned to planning queue: "+err.Error()); moveErr != nil {
 				return moveErr
@@ -1773,6 +1776,9 @@ func (m *Manager) advanceActiveGoals() error {
 		}
 		tasks, err := m.goalRoundTasks(document)
 		if err != nil {
+			if m.skipUnreadableRoundTask(err) {
+				continue
+			}
 			return err
 		}
 		settled := len(tasks) > 0
@@ -1812,6 +1818,17 @@ func (m *Manager) advanceActiveGoals() error {
 		m.log("goal round ready for review: " + target)
 	}
 	return nil
+}
+
+// skipUnreadableRoundTask files the repair for an unreadable round task and reports whether err
+// was that case: the goal then keeps its status and is read again on the next scan.
+func (m *Manager) skipUnreadableRoundTask(err error) bool {
+	var unreadable *unreadableRoundTaskError
+	if !errors.As(err, &unreadable) {
+		return false
+	}
+	m.reportUnparseableDocument(unreadable.Path, unreadable.Err)
+	return true
 }
 
 func (m *Manager) validateGoalActivation(document Document) error {
