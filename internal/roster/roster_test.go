@@ -45,12 +45,13 @@ func TestLoadMissingIsLegacy(t *testing.T) {
 
 func TestLoadRejectsBadRosters(t *testing.T) {
 	for name, body := range map[string]string{
-		"no staff":         "roles: {}",
-		"unknown role":     "staff: {a: {runner: pi}}\nroles: {task_review: b}",
-		"unknown fallback": "staff: {a: {runner: pi, fallback: b}}",
-		"cap no fallback":  "staff: {a: {runner: pi, daily_cap: 1}}",
-		"bad runner":       "staff: {a: {runner: \"pi; rm\"}}",
-		"bad escalation":   "staff: {a: {runner: pi}}\nescalation: {after_attempt: 0, staff: a}",
+		"no staff":            "roles: {}",
+		"unknown role":        "staff: {a: {runner: pi}}\nroles: {task_review: b}",
+		"unknown fallback":    "staff: {a: {runner: pi, fallback: b}}",
+		"cap no fallback":     "staff: {a: {runner: pi, daily_cap: 1}}",
+		"bad runner":          "staff: {a: {runner: \"pi; rm\"}}",
+		"bad escalation":      "staff: {a: {runner: pi}}\nescalation: {after_attempt: 0, staff: a}",
+		"headless not claude": "staff: {a: {runner: pi, headless: true}}",
 	} {
 		if _, err := Load(write(t, body)); err == nil {
 			t.Errorf("%s: expected an error", name)
@@ -485,5 +486,29 @@ func TestImplementerIsRemembered(t *testing.T) {
 	}
 	if seat, ok := ImplementedBy(dir, "t3.md"); !ok || seat != "ops" {
 		t.Fatalf("t3 = %q %v", seat, ok)
+	}
+}
+
+func TestHeadlessStaffKeepsItsNameAndExpands(t *testing.T) {
+	dir := write(t, "staff:\n  credits: {runner: claude, headless: true}\n  plain: {runner: claude}\n  argsed: {runner: claude, headless: true, args: [\"--model\", \"sonnet\"]}\n")
+	r, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Model("credits"); got != "@credits" {
+		t.Fatalf("headless staff without args = %q, want @credits so the harness can see it is headless", got)
+	}
+	if got := r.Model("plain"); got != "claude" {
+		t.Fatalf("plain staff = %q", got)
+	}
+	s, ok, err := ExpandStaff(dir, "@argsed")
+	if err != nil || !ok || !s.Headless || s.Runner != "claude" || len(s.Args) != 2 || s.Args[1] != "sonnet" {
+		t.Fatalf("ExpandStaff = %+v %v %v", s, ok, err)
+	}
+	if _, ok, err := ExpandStaff(dir, "claude"); ok || err != nil {
+		t.Fatalf("a bare runner is not staff: ok=%v err=%v", ok, err)
+	}
+	if _, ok, err := ExpandStaff(dir, "@nobody"); !ok || err == nil {
+		t.Fatalf("unknown staff: ok=%v err=%v", ok, err)
 	}
 }

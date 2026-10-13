@@ -53,7 +53,11 @@ type Staff struct {
 	// derive it from the --model launch argument; see FamilyOf. Review picks a reviewer from a
 	// different family than the seat that wrote the work.
 	Family string `yaml:"family,omitempty"`
-	Note   string `yaml:"note,omitempty"`
+	// Headless runs each turn of a `runner: claude` staff as `claude -p` (stream-json) in the workspace
+	// instead of an interactive Herdr pane. Anthropic bills the Max plan's monthly API credit only for
+	// headless (Agent SDK) Claude Code runs, so a seat paid by that credit must set it.
+	Headless bool   `yaml:"headless,omitempty"`
+	Note     string `yaml:"note,omitempty"`
 }
 
 type Escalation struct {
@@ -240,6 +244,9 @@ func (r *Roster) validate() error {
 		if !namePattern.MatchString(s.Runner) {
 			return fmt.Errorf("staff %s: runner %q is invalid", name, s.Runner)
 		}
+		if s.Headless && s.Runner != "claude" {
+			return fmt.Errorf("staff %s: headless needs runner claude, not %q", name, s.Runner)
+		}
 		if s.DailyCap < 0 {
 			return fmt.Errorf("staff %s: daily_cap cannot be negative", name)
 		}
@@ -352,11 +359,11 @@ func (r *Roster) ForRole(role string) string {
 }
 
 // Model renders the harness model string for staff: the bare runner when no
-// launch arguments are needed, otherwise the "@name" form a roster-aware
-// harness expands.
+// launch arguments or headless mode are needed, otherwise the "@name" form a
+// roster-aware harness expands.
 func (r *Roster) Model(name string) string {
 	s := r.Staff[name]
-	if len(s.Args) == 0 {
+	if len(s.Args) == 0 && !s.Headless {
 		return s.Runner
 	}
 	return StaffPrefix + name
@@ -378,6 +385,25 @@ func Expand(stateDir, model string) (string, []string, error) {
 	}
 	s := r.Staff[name]
 	return s.Runner, append([]string(nil), s.Args...), nil
+}
+
+// ExpandStaff is Expand for callers that need the whole staff entry: ok is false when model does not
+// name roster staff.
+func ExpandStaff(stateDir, model string) (s Staff, ok bool, err error) {
+	if !strings.HasPrefix(model, StaffPrefix) {
+		return Staff{}, false, nil
+	}
+	name := strings.TrimPrefix(model, StaffPrefix)
+	r, err := Load(stateDir)
+	if err != nil {
+		return Staff{}, true, err
+	}
+	if !r.Has(name) {
+		return Staff{}, true, fmt.Errorf("roster staff %q is not defined", name)
+	}
+	s = r.Staff[name]
+	s.Args = append([]string(nil), s.Args...)
+	return s, true, nil
 }
 
 type usage struct {

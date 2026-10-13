@@ -39,6 +39,8 @@ type Herdr struct {
 	idleStabilityCount    int
 	idleStabilityInterval time.Duration
 	composerWaitTimeout   time.Duration
+	// headlessCommand is the Claude Code executable for `headless: true` staff (default "claude").
+	headlessCommand string
 }
 
 type herdrTurn struct {
@@ -49,6 +51,8 @@ type herdrTurn struct {
 	cmd       *exec.Cmd
 	cancel    context.CancelFunc
 	done      chan struct{}
+	// headless marks a `claude -p` turn (sendHeadless): there is no pane to type into or close.
+	headless bool
 }
 
 type herdrAgentItem struct {
@@ -774,6 +778,12 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 	h.mu.Unlock()
 
 	cfg.Model = h.rosterModelForKey(key, cfg)
+	// A `headless: true` staff runs as `claude -p`, not in a pane. A roster error falls through to
+	// resolveTarget, which reports it.
+	if staff, ok, err := roster.ExpandStaff(filepath.Join(cfg.Cwd, roster.StateDirName), strings.TrimSpace(cfg.Model)); ok && err == nil && staff.Headless {
+		name := strings.TrimPrefix(strings.TrimSpace(cfg.Model), roster.StaffPrefix)
+		return h.sendHeadless(ctx, key, prompt, name, staff, cfg, emit)
+	}
 	target, paneID, tabID, isDynamic, threadID, err := h.resolveTarget(ctx, key, cfg.Model, cfg.Cwd)
 	if err != nil {
 		return "", false, fmt.Errorf("herdr target resolution: %w", err)
@@ -1529,6 +1539,9 @@ func (h *Herdr) Interrupt(ctx context.Context, key string) (bool, error) {
 	}
 
 	turn.cancel()
+	if turn.headless {
+		return true, nil
+	}
 	_ = exec.CommandContext(ctx, h.config.Command, "agent", "send-keys", turn.target, "ctrl+c").Run()
 	go h.teardownWorker(key, turn.tabID, turn.paneID, turn.target, true)
 	return true, nil
@@ -1549,6 +1562,9 @@ func (h *Herdr) PromptLive(ctx context.Context, key, prompt string) error {
 	h.mu.Unlock()
 	if turn == nil {
 		return errors.New("herdr turn is no longer active")
+	}
+	if turn.headless {
+		return errors.New("a headless turn takes no live prompt; deliver it as the next turn")
 	}
 	promptCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
