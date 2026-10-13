@@ -1793,3 +1793,32 @@ roles:
 		}
 	}
 }
+
+func TestCreditExhaustionParksLikeAQuotaWall(t *testing.T) {
+	// A headless credit seat whose prepaid API credit is spent fails with Claude Code's
+	// "Credit balance is too low": a quota wall, not the task's fault.
+	cfg, fake, manager := workflowTestManager(t)
+	route := workflowRoutes()[0]
+	task, err := Create(cfg, "tasks", "task on a spent credit", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(task)
+	base := filepath.Dir(cfg.Resolve(route.Source))
+	fake.sendErrs = []error{errors.New("runner turn failed: Credit balance is too low")}
+
+	scanAndWait(t, manager)
+
+	doc, err := ReadDocument(filepath.Join(base, "waiting", name))
+	if err != nil {
+		t.Fatalf("task was not parked in waiting/: %v", err)
+	}
+	if !strings.Contains(doc.Body, "attempt not spent") {
+		t.Fatalf("progress note missing: %s", doc.Body)
+	}
+	for _, msg := range []string{"Credit balance too low · Add funds", "Your credit balance is too low to access the Anthropic API"} {
+		if !isQuotaError(errors.New(msg)) {
+			t.Errorf("isQuotaError(%q) = false", msg)
+		}
+	}
+}
