@@ -464,3 +464,54 @@ func TestClaudeModelsUseStableAliasesAndCustomSelection(t *testing.T) {
 		}
 	}
 }
+
+// A turn that overrides the model must record its session under that turn's
+// policy, so the next turn with the same override resumes instead of starting
+// a fresh conversation.
+func TestBugClaudePerSendModelOverrideLosesResume(t *testing.T) {
+	command, root, logPath := portableHarnessFixture(t, "claude-stream")
+	claude, err := NewClaude(HarnessConfig{Command: command, Cwd: root, Model: "sonnet", Effort: "high", ApprovalPolicy: "never"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := claude.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer claude.Close()
+	for turn := 0; turn < 2; turn++ {
+		done := make(chan struct{})
+		if _, _, err := claude.SendWithModel(ctx, "job:override", "test prompt", "opus", func(event core.Event) {
+			if event.Done {
+				close(done)
+			}
+		}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			t.Fatalf("turn %d timed out waiting for Claude result", turn+1)
+		}
+	}
+	if err := claude.Close(); err != nil {
+		t.Fatal(err)
+	}
+	invocations, resumed := 0, 0
+	for _, record := range readFixtureRecords(t, logPath) {
+		if record.Kind != "invocation" || containsArgument(record.Args, "--help") {
+			continue
+		}
+		invocations++
+		if args := strings.Join(record.Args, " "); strings.Contains(args, "--resume claude-session") {
+			resumed++
+		}
+	}
+	if invocations != 2 {
+		t.Fatalf("invocations = %d, want 2", invocations)
+	}
+	if resumed != 1 {
+		t.Fatalf("second turn on same key resumed %d times, want 1", resumed)
+	}
+}

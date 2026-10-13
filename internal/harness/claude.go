@@ -55,6 +55,7 @@ type claudeTurn struct {
 	readyOnce  sync.Once
 	doneOnce   sync.Once
 	sessionID  string
+	policy     string
 	text       strings.Builder
 	finalText  strings.Builder
 	sawText    bool
@@ -428,7 +429,7 @@ func (c *Claude) startTurn(ctx, baseContext context.Context, key, prompt, previo
 	}
 	stderr := newTailBuffer(64 * 1024)
 	turn := &claudeTurn{
-		key: key, executable: cfg.Command, cmd: cmd, cancel: cancel, emit: emit, stdin: stdin, accepting: streamingInput,
+		key: key, policy: claudeSessionPolicy(cfg), executable: cfg.Command, cmd: cmd, cancel: cancel, emit: emit, stdin: stdin, accepting: streamingInput,
 		ready: make(chan error, 1), done: make(chan struct{}), stderr: stderr,
 	}
 	diagnosticOutput := io.Writer(stderr)
@@ -617,7 +618,7 @@ func (c *Claude) runTurn(turn *claudeTurn, reader io.Reader) {
 		}
 		if event.Type == "system" && event.Subtype == "init" && event.SessionID != "" && turn.sessionID == "" {
 			turn.sessionID = event.SessionID
-			c.rememberSession(turn.key, event.SessionID)
+			c.rememberSession(turn.key, event.SessionID, turn.policy)
 			turn.readyOnce.Do(func() { turn.ready <- nil })
 			turn.emitEvent(core.Event{Kind: core.EventStatus, Text: "Claude Code turn started", ThreadID: event.SessionID,
 				Execution: &core.ExecutionStatus{State: "running"}})
@@ -735,9 +736,9 @@ func (c *Claude) finishClaudeTurn(turn *claudeTurn, event core.Event) {
 	})
 }
 
-func (c *Claude) rememberSession(key, sessionID string) {
+func (c *Claude) rememberSession(key, sessionID, policy string) {
 	c.mu.Lock()
-	c.sessions[key] = claudeSession{ID: sessionID, Policy: claudeSessionPolicy(c.config)}
+	c.sessions[key] = claudeSession{ID: sessionID, Policy: policy}
 	err := c.saveSessionsLocked()
 	c.mu.Unlock()
 	if err != nil && c.config.Stderr != nil {
