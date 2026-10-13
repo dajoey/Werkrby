@@ -1037,3 +1037,36 @@ func TestTransientProviderErrorRetriesInPlace(t *testing.T) {
 		})
 	}
 }
+
+func TestRaisedParallelLimitAdmitsEveryWaitingAcquirer(t *testing.T) {
+	cfg := config.Default()
+	cfg.Orchestrator.MaxParallel = 1
+	manager := New(cfg, newFakeRecipient(), extensions.Runner{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if !manager.acquireCapacity(ctx) {
+		t.Fatal("initial capacity was unavailable")
+	}
+	admitted := make(chan struct{}, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			if manager.acquireCapacity(ctx) {
+				admitted <- struct{}{}
+			}
+		}()
+	}
+	select {
+	case <-admitted:
+		t.Fatal("limit one admitted overlapping work")
+	case <-time.After(50 * time.Millisecond):
+	}
+	cfg.Orchestrator.MaxParallel = 3
+	manager.ApplyRuntimeConfig(cfg)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-admitted:
+		case <-time.After(time.Second):
+			t.Fatalf("%d waiter(s) admitted after raising the limit to three, want 2", i)
+		}
+	}
+}

@@ -109,7 +109,7 @@ type Manager struct {
 	capacityMu                  sync.Mutex
 	capacityActive              int
 	capacityLimit               int
-	capacityChanged             chan struct{}
+	capacityChanged             chan struct{} // closed and replaced under capacityMu to wake every waiter
 	Outbox                      *Outbox
 	ownerID                     string
 	scanNow                     chan struct{}
@@ -206,8 +206,8 @@ func (m *Manager) ApplyRuntimeConfig(cfg config.Config) {
 	if previous.Orchestrator.MaxParallel != cfg.Orchestrator.MaxParallel {
 		m.capacityMu.Lock()
 		m.capacityLimit = max(1, cfg.Orchestrator.MaxParallel)
+		m.broadcastCapacityChangedLocked()
 		m.capacityMu.Unlock()
-		m.signalCapacityChanged()
 		if cfg.Orchestrator.MaxParallel > previous.Orchestrator.MaxParallel {
 			m.requestScan()
 		}
@@ -255,7 +255,7 @@ func New(cfg config.Config, target harness.Harness, hooks extensions.Runner) *Ma
 		Outbox:                 &Outbox{Directory: cfg.StatePath("runtime", "outbox")},
 		ownerID:                fmt.Sprintf("%d-%d-%s", os.Getpid(), time.Now().UTC().UnixNano(), randomSuffix()),
 		scanNow:                make(chan struct{}, 1),
-		capacityChanged:        make(chan struct{}, 1),
+		capacityChanged:        make(chan struct{}),
 		scanTimerChanged:       make(chan struct{}, 1),
 		heartbeatConfigChanged: make(chan struct{}, 1),
 		heartbeatManual:        make(chan heartbeatManualRequest),
@@ -433,11 +433,12 @@ func (m *Manager) scanInterval() time.Duration {
 	return time.Duration(seconds) * time.Second
 }
 
-func (m *Manager) signalCapacityChanged() {
-	select {
-	case m.capacityChanged <- struct{}{}:
-	default:
-	}
+// broadcastCapacityChangedLocked wakes every acquireCapacity waiter. The caller
+// holds capacityMu. A single buffered token would wake only one waiter, leaving
+// the others asleep after the limit is raised by more than one.
+func (m *Manager) broadcastCapacityChangedLocked() {
+	close(m.capacityChanged)
+	m.capacityChanged = make(chan struct{})
 }
 
 func (m *Manager) acquireCapacity(ctx context.Context) bool {
@@ -448,11 +449,12 @@ func (m *Manager) acquireCapacity(ctx context.Context) bool {
 			m.capacityMu.Unlock()
 			return true
 		}
+		changed := m.capacityChanged
 		m.capacityMu.Unlock()
 		select {
 		case <-ctx.Done():
 			return false
-		case <-m.capacityChanged:
+		case <-changed:
 		}
 	}
 }
@@ -462,8 +464,8 @@ func (m *Manager) releaseCapacity() {
 	if m.capacityActive > 0 {
 		m.capacityActive--
 	}
+	m.broadcastCapacityChangedLocked()
 	m.capacityMu.Unlock()
-	m.signalCapacityChanged()
 }
 
 func (m *Manager) requestScan() {
