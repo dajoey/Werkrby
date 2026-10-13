@@ -1793,3 +1793,35 @@ roles:
 		}
 	}
 }
+
+func TestMalformedDispatchDateIsNotDue(t *testing.T) {
+	for _, field := range []string{"not_before", "next_dispatch_at"} {
+		cfg, fake, manager := workflowTestManager(t)
+		var logged []string
+		manager.Log = func(message string) { logged = append(logged, message) }
+		route := workflowRoutes()[0]
+		base := filepath.Dir(cfg.Resolve(route.Source))
+		path := filepath.Join(base, "todo", route.Name+"-malformed.md")
+		document := Document{FrontMatter: map[string]any{
+			"id": route.Name + "-malformed", "title": "malformed date", "status": "todo",
+			"created_at": time.Now().UTC().Format(time.RFC3339), "updated_at": time.Now().UTC().Format(time.RFC3339),
+			field: "2099-01-01T09:00:00", // no zone: not RFC 3339
+		}, Body: "# Malformed date\n"}
+		if err := WriteDocument(path, document); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.scanPhaseQueue(context.Background(), route, filepath.Dir(path), filepath.Join(base, "working"), phaseTaskImplementation); err != nil {
+			t.Fatal(err)
+		}
+		manager.Wait()
+		if fake.calls != 0 {
+			t.Fatalf("%s: a malformed date dispatched %d times, want 0", field, fake.calls)
+		}
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("%s: task left todo/: %v", field, err)
+		}
+		if len(logged) == 0 || !strings.Contains(strings.Join(logged, "\n"), field) {
+			t.Fatalf("%s: no log line naming the field: %q", field, logged)
+		}
+	}
+}

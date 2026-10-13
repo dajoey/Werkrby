@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestParseDocumentSanitizesUnquotedColons(t *testing.T) {
@@ -132,5 +133,25 @@ Markdown content here
 	}
 	if doc.FrontMatter["already_quoted"] != "this has: colons: but is quoted" {
 		t.Fatalf("unexpected already_quoted: %v", doc.FrontMatter["already_quoted"])
+	}
+}
+
+func TestMalformedScheduleIsNotDue(t *testing.T) {
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	for _, field := range []string{"not_before", "next_dispatch_at"} {
+		for _, value := range []string{"2099-01-01T09:00:00", "tomorrow"} {
+			document := Document{FrontMatter: map[string]any{field: value}}
+			due, err := documentDue(document, now, phaseTaskImplementation)
+			if due || err == nil {
+				t.Fatalf("%s=%q: due=%v err=%v, want not due with an error", field, value, due, err)
+			}
+		}
+	}
+	// A well-formed past date and a blank value stay due.
+	for _, value := range []string{"2020-01-01T09:00:00Z", ""} {
+		document := Document{FrontMatter: map[string]any{"not_before": value}}
+		if due, err := documentDue(document, now, phaseTaskImplementation); !due || err != nil {
+			t.Fatalf("not_before=%q: due=%v err=%v, want due", value, due, err)
+		}
 	}
 }

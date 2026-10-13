@@ -357,12 +357,14 @@ func documentDueForPhase(path string, now time.Time, phase string) (bool, error)
 	if err != nil {
 		return false, err
 	}
-	return documentDue(document, now, phase), nil
+	return documentDue(document, now, phase)
 }
 
 // documentDue is the parse-free half of documentDueForPhase: the claim loop
 // already read the document, so eligibility must not trigger a second read.
-func documentDue(document Document, now time.Time, phase string) bool {
+// A non-blank date that is not RFC 3339 makes the document not due, with an
+// error naming the field, so it fails closed like scheduledWake does.
+func documentDue(document Document, now time.Time, phase string) (bool, error) {
 	fields := []string{"not_before", "next_dispatch_at", "next_review_at"}
 	switch phase {
 	case phaseTaskImplementation, phaseGoalPlanning:
@@ -377,7 +379,14 @@ func documentDue(document Document, now time.Time, phase string) bool {
 		var when time.Time
 		switch value := document.FrontMatter[field].(type) {
 		case string:
-			when, _ = time.Parse(time.RFC3339, value)
+			if strings.TrimSpace(value) == "" {
+				continue
+			}
+			parsed, err := time.Parse(time.RFC3339, value)
+			if err != nil {
+				return false, fmt.Errorf("%s must be RFC 3339", field)
+			}
+			when = parsed
 		case time.Time:
 			when = value
 		}
@@ -385,10 +394,10 @@ func documentDue(document Document, now time.Time, phase string) bool {
 			continue
 		}
 		if when.After(now) {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }
 
 // documentIsGoalDerived reports whether a document belongs to a goal: a task

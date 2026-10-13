@@ -570,7 +570,12 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 			m.reportUnparseableDocument(source, readErr)
 			continue
 		}
-		if !documentDue(document, time.Now(), phase) {
+		due, dueErr := documentDue(document, time.Now(), phase)
+		if dueErr != nil {
+			m.log("dispatch schedule " + source + ": " + dueErr.Error())
+			continue
+		}
+		if !due {
 			continue
 		}
 		candidates = append(candidates, queueCandidate{name: entry.Name(), document: document})
