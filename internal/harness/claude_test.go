@@ -464,3 +464,36 @@ func TestClaudeModelsUseStableAliasesAndCustomSelection(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeOversizedStreamLineEndsTurn(t *testing.T) {
+	command, root, _ := portableHarnessFixture(t, "claude-oversize")
+	claude, err := NewClaude(HarnessConfig{Command: command, Cwd: root, ApprovalPolicy: "never"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := claude.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer claude.Close()
+	done := make(chan core.Event, 1)
+	if _, _, err := claude.Send(ctx, "chat", "test", func(event core.Event) {
+		if event.Done {
+			done <- event
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-done:
+		if event.Kind != core.EventError {
+			t.Fatalf("terminal event = %#v", event)
+		}
+	case <-time.After(8 * time.Second):
+		t.Fatalf("no terminal event 8s after a >16MiB stream line; IsActive=%t", claude.IsActive("chat"))
+	}
+	if claude.IsActive("chat") {
+		t.Fatal("Claude turn remained active after an oversized stream line")
+	}
+}

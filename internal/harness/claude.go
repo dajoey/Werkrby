@@ -682,6 +682,13 @@ func (c *Claude) runTurn(turn *claudeTurn, reader io.Reader) {
 			turn.closeInput()
 		}
 	}
+	scanErr := scanner.Err()
+	if scanErr != nil {
+		// The reader stopped (for example a line past the buffer cap), so the
+		// child would block on a full stdout pipe and never exit. End it
+		// before Wait so the turn reaches a terminal event.
+		turn.cancel()
+	}
 	waitErr := turn.cmd.Wait()
 	turn.cancel()
 	if completed {
@@ -693,7 +700,7 @@ func (c *Claude) runTurn(turn *claudeTurn, reader io.Reader) {
 		c.finishClaudeTurn(turn, terminal)
 		return
 	}
-	err := scanner.Err()
+	err := scanErr
 	if err == nil {
 		err = waitErr
 	}

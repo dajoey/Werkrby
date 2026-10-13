@@ -2,6 +2,7 @@ package harness
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -167,7 +168,7 @@ func runHarnessFixture(mode string) int {
 	switch mode {
 	case "codex-lifecycle", "codex-interrupt", "codex-models", "codex-init-missing-method", "codex-resume-missing-method", "codex-resume-error", "codex-stream-overflow", "codex-thread-changed-field", "codex-terminal-changed-status":
 		return runCodexFixture(mode)
-	case "claude-stream", "claude-steer", "claude-text", "claude-interrupt", "claude-help-missing-flag", "claude-init-changed-event", "claude-terminal-error", "claude-result-nonzero", "claude-hook-events-before-init":
+	case "claude-stream", "claude-steer", "claude-text", "claude-interrupt", "claude-help-missing-flag", "claude-init-changed-event", "claude-terminal-error", "claude-result-nonzero", "claude-hook-events-before-init", "claude-oversize":
 		return runClaudeFixture(mode)
 	case "pi-lifecycle", "pi-steer", "pi-interrupt", "pi-state-missing-session", "pi-model-capabilities", "pi-off-default", "pi-extension-ui":
 		return runPiFixture(mode)
@@ -578,6 +579,12 @@ func runClaudeFixture(mode string) int {
 		stream(session, "working")
 		for scanner.Scan() {
 		}
+		return 0
+	} else if mode == "claude-oversize" {
+		// One stdout line past the reader's 16 MiB cap, then keep writing so a
+		// parent that stops reading leaves this process blocked on a full pipe.
+		_, _ = os.Stdout.Write(bytes.Repeat([]byte("x"), 20*1024*1024))
+		_, _ = os.Stdout.Write([]byte("\n"))
 		return 0
 	} else if mode == "claude-terminal-error" {
 		write(map[string]any{"type": "result", "subtype": "error_max_turns", "session_id": session, "is_error": true, "result": "maximum turns exceeded"})
