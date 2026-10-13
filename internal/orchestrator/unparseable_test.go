@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,6 +166,9 @@ func TestScanOnceFilesRepairTasksForUnparseableDocuments(t *testing.T) {
 		}
 		if enabled, _ := notify["enabled"].(bool); !enabled {
 			t.Fatalf("repair task notify.enabled = %#v", notify["enabled"])
+		}
+		if _, err := NotificationFromDocument(document); err != nil {
+			t.Fatalf("repair task notify is unusable: %v", err)
 		}
 		outcomes, ok := notify["on"].([]any)
 		if !ok || len(outcomes) != 3 {
@@ -428,5 +432,60 @@ func TestReportUnparseableDocumentSkipsVanishedDocument(t *testing.T) {
 	}
 	if !foundSkipLog {
 		t.Fatalf("no log line recorded skip; log lines: %v", logLines)
+	}
+}
+
+// The repair task's terminal notification is what reaches Joey when a repair
+// cannot be made, so its notify block must be usable: enabled with an origin
+// NotificationFromDocument accepts. Without an origin the notification was
+// only logged as "prompt rejected".
+func TestUnparseableRepairTaskNotifyIsUsable(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*config.Config)
+		origin string
+	}{
+		{"no remote channel falls back to the local CLI origin", func(*config.Config) {}, "cli/local"},
+		{"a single authorized Telegram user is the origin", func(cfg *config.Config) {
+			cfg.Channels.Telegram.Enabled = true
+			cfg.Channels.Telegram.AllowedUsers = []string{"1701167661"}
+		}, "telegram/TG-1701167661"},
+		{"a Telegram username cannot form an origin, so fall back", func(cfg *config.Config) {
+			cfg.Channels.Telegram.Enabled = true
+			cfg.Channels.Telegram.AllowedUsers = []string{"@someone"}
+		}, "cli/local"},
+		{"several authorized users are ambiguous, so fall back", func(cfg *config.Config) {
+			cfg.Channels.Telegram.Enabled = true
+			cfg.Channels.Telegram.AllowedUsers = []string{"1701167661", "42"}
+		}, "cli/local"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, cfg := newScratchWorkspace(t)
+			tc.mutate(&cfg)
+			corrupt := cfg.StatePath("tasks", "todo", "tasks-scratch-corrupt.md")
+			manager := New(cfg, newFakeRecipient(), extensions.Runner{Directory: t.TempDir()})
+			filed, err := manager.fileUnparseableRepairTask(corrupt, errors.New("yaml: line 9: did not find expected key"))
+			if err != nil || !filed {
+				t.Fatalf("repair task not filed: %v, %v", filed, err)
+			}
+			data, err := os.ReadFile(cfg.StatePath("tasks", "todo", unparseableRepairID(corrupt)+".md"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			document, err := ParseDocument(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy, err := NotificationFromDocument(document)
+			if err != nil {
+				t.Fatalf("repair task notify is unusable: %v\n%s", err, data)
+			}
+			if !policy.Enabled || !policy.Outcomes["failed"] || !policy.Outcomes["done"] || !policy.Outcomes["cancelled"] {
+				t.Fatalf("repair task notify policy = %#v", policy)
+			}
+			if got := policy.Origin.Channel + "/" + policy.Origin.Conversation; got != tc.origin {
+				t.Fatalf("repair task notify origin = %q, want %q", got, tc.origin)
+			}
+		})
 	}
 }

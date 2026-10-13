@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/agent0ai/spynel/internal/config"
 	"github.com/agent0ai/spynel/internal/fsx"
 )
 
@@ -120,7 +121,7 @@ func (m *Manager) fileUnparseableRepairTask(path string, parseErr error) (bool, 
 		return false, nil
 	}
 
-	document := unparseableRepairDocument(id, path, m.workspaceRelative(path), parseErr, time.Now().UTC())
+	document := unparseableRepairDocument(id, path, m.workspaceRelative(path), parseErr, time.Now().UTC(), m.repairNotifyOrigin())
 	if err := fsx.AtomicCreateFile(taskPath, []byte(document), 0o600); err != nil {
 		if _, statErr := os.Stat(taskPath); statErr == nil {
 			return false, nil
@@ -139,7 +140,23 @@ func (m *Manager) workspaceRelative(path string) string {
 	return filepath.Base(path)
 }
 
-func unparseableRepairDocument(id, path, relative string, parseErr error, now time.Time) string {
+// repairNotifyOrigin picks where a repair task's terminal notification goes. The
+// notify block is only usable with an origin, so a repair filed without one could
+// never reach anybody. With exactly one authorized numeric Telegram user that
+// user's private chat is the origin; otherwise the local CLI conversation, which
+// the CLI already uses as its default.
+func (m *Manager) repairNotifyOrigin() string {
+	telegram := m.Config.Channels.Telegram
+	if telegram.Enabled && len(telegram.AllowedUsers) == 1 {
+		id := config.NormalizeTelegramUser(telegram.AllowedUsers[0])
+		if id != "" && strings.Trim(id, "0123456789") == "" {
+			return "telegram/TG-" + id
+		}
+	}
+	return "cli/local"
+}
+
+func unparseableRepairDocument(id, path, relative string, parseErr error, now time.Time, origin string) string {
 	kind := "task"
 	if strings.Contains(filepath.ToSlash(path), "/goals/") || strings.HasPrefix(filepath.Base(path), "goals-") {
 		kind = "goal"
@@ -160,6 +177,7 @@ updated_at: "%s"
 review_required: false
 notify:
     enabled: true
+    origin: %s
     "on":
         - done
         - failed
@@ -201,5 +219,5 @@ Parse error:
 ## Progress
 
 - %s - Filed by Werkrby: %s would not parse (%s), so it was being skipped in silence.
-`, id, name, stamp, stamp, name, name, kind, relative, detail, stamp, name, detail)
+`, id, name, stamp, stamp, origin, name, name, kind, relative, detail, stamp, name, detail)
 }
