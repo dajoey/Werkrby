@@ -703,6 +703,9 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 	return nil
 }
 
+// planningHoldDeferredField marks a goal whose fresh planning round was deferred by a pace hold.
+const planningHoldDeferredField = "planning_hold_deferred"
+
 func (m *Manager) startExistingClaim(ctx context.Context, route workflowRoute, path, phase string, recovery, incrementAttempt bool) error {
 	document, err := ReadDocument(path)
 	if err != nil {
@@ -715,6 +718,28 @@ func (m *Manager) startExistingClaim(ctx context.Context, route workflowRoute, p
 	key := leaseID(route.Name+":"+phase, id)
 	if m.leaseExists(key) || m.hasLeaseForFile(path) || m.isInflight(key) {
 		return nil
+	}
+	// A goal reaching planning outside scanPhaseQueue (review -> planning, a planning wake, an
+	// orphaned planning claim) honors the pace hold here: no attempt, no lease, no session. A
+	// deferred fresh round is marked so the start that follows once the hold lifts
+	// (recoverOrphanClaims, every scan) is that fresh round, not a recovery.
+	if phase == phaseGoalPlanning {
+		deferred, _ := document.FrontMatter[planningHoldDeferredField].(bool)
+		if deferred {
+			recovery, incrementAttempt = false, true
+		}
+		if m.rosterHeld(route, phase, filepath.Base(path), document) {
+			if incrementAttempt && !deferred {
+				note := "Spynel deferred this goal's planning round: its seat is on a quota pace hold. No attempt was spent; planning starts when the hold lifts."
+				if err := updateDocumentProgressWithUpdate(path, time.Now().UTC(), note, func(frontMatter map[string]any) {
+					frontMatter[planningHoldDeferredField] = true
+				}); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+		delete(document.FrontMatter, planningHoldDeferredField)
 	}
 	field := phaseAttemptField(phase)
 	attempt := numberValue(document.FrontMatter[field])
@@ -1689,6 +1714,11 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 				targetStatus = stringField(document, "resume_status")
 				if targetStatus != "planning" && targetStatus != "review" {
 					targetStatus = "review"
+				}
+				// A goal resuming planning on a paced seat stays parked: no move, no note, no
+				// attempt. It is due again every scan and wakes once the hold lifts.
+				if targetStatus == "planning" && m.rosterHeld(route, phaseGoalPlanning, entry.Name(), document) {
+					continue
 				}
 			}
 			target := filepath.Join(base, targetStatus, entry.Name())
