@@ -180,6 +180,28 @@ type linkedTask struct {
 	Status string
 }
 
+// unreadableRoundTaskError reports a task document that cannot be parsed but names the goal
+// whose round is being read. It matches errUnreadableDocument so callers skip that one goal for
+// the scan instead of treating the round as smaller than declared.
+type unreadableRoundTaskError struct {
+	Path string
+	Err  error
+}
+
+func (e *unreadableRoundTaskError) Error() string {
+	return "round task " + e.Path + " is unreadable: " + e.Err.Error()
+}
+
+func (e *unreadableRoundTaskError) Unwrap() error { return e.Err }
+
+func (e *unreadableRoundTaskError) Is(target error) bool { return target == errUnreadableDocument }
+
+// unreadableNamesGoal reports whether the raw text of an unparseable document mentions goalID.
+func unreadableNamesGoal(path, goalID string) bool {
+	raw, err := os.ReadFile(path)
+	return err == nil && goalID != "" && strings.Contains(string(raw), goalID)
+}
+
 func linkedRoundTasks(tasksBase, goalID string, round int) ([]linkedTask, error) {
 	statuses := []string{"todo", "working", "review", "reviewing", "waiting", "done", "failed", "cancelled"}
 	var found []linkedTask
@@ -199,6 +221,11 @@ func linkedRoundTasks(tasksBase, goalID string, round int) ([]linkedTask, error)
 			path := filepath.Join(directory, entry.Name())
 			document, err := ReadDocument(path)
 			if err != nil {
+				// An unreadable task that names this goal may be one of its round tasks, so the
+				// round cannot be counted. Anything else is not this goal's business.
+				if unreadableNamesGoal(path, goalID) {
+					return nil, &unreadableRoundTaskError{Path: path, Err: err}
+				}
 				continue
 			}
 			if stringField(document, "goal_id") == goalID && numberValue(document.FrontMatter["goal_round"]) == round {
