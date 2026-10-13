@@ -146,6 +146,38 @@ func TestNotificationAcknowledgementPreservesDeltasReceivedInFlight(t *testing.T
 	}
 }
 
+func TestLateNotificationAckAfterUserSendDoesNotDuplicateCommittedText(t *testing.T) {
+	m := notificationTestModel()
+	m.handler = channel.Handler(func(context.Context, core.Message, core.Emit) error { return nil })
+	m.ackNotification = func(string, int) error { return nil }
+	m.working = true
+	m.streaming = "Hello "
+	m.responseText = "Hello "
+	m.deltaSequence = 1
+	m.pendingNotifications = []channel.Notification{{ID: "n1", Text: "Task complete"}}
+	updated, _ := m.Update(notificationPauseMsg{sequence: 1})
+	m = updated.(model)
+	updated, _ = m.Update(uiEvent{event: core.Event{Kind: core.EventDelta, Text: "world and more"}})
+	m = updated.(model)
+	// The user sends while the acknowledgement is still in flight: the whole
+	// stream is committed before the ack for the earlier boundary lands.
+	m.dispatchMessage("next", "next")
+	updated, _ = m.Update(notificationAckMsg{ids: []string{"n1"}, after: 6})
+	m = updated.(model)
+	if m.streaming != "" {
+		t.Fatalf("committed text came back as live stream: %q", m.streaming)
+	}
+	want := []string{"Hello world and more", "next", "Task complete"}
+	if len(m.transcript) != len(want) {
+		t.Fatalf("transcript = %#v", m.transcript)
+	}
+	for i, text := range want {
+		if m.transcript[i].text != text {
+			t.Fatalf("transcript[%d] = %q, want %q", i, m.transcript[i].text, text)
+		}
+	}
+}
+
 func TestNotificationNoPauseFallbackAndMultipleQueue(t *testing.T) {
 	m := notificationTestModel()
 	m.working = true

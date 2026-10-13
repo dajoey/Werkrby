@@ -1890,6 +1890,11 @@ func (m *model) commitStreamingPrefix(afterChars int) {
 	response := []rune(m.responseText)
 	afterChars = min(max(afterChars, 0), len(response))
 	committedChars := len([]rune(m.responseText[:m.responseCommit]))
+	if afterChars < committedChars {
+		// A late acknowledgement for a boundary the transcript already passed
+		// (the user sent and committed the stream) must not rewind the commit.
+		return
+	}
 	if afterChars > committedChars {
 		m.appendTranscript(transcriptEntry{role: "assistant", text: string(response[committedChars:afterChars])})
 	}
