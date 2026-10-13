@@ -1367,13 +1367,8 @@ func hasRoutableWaitingPath(document Document, now time.Time) bool {
 			return true
 		}
 	}
-	wakeAtStr := stringField(document, "wake_at")
-	if wakeAtStr != "" {
-		if due, err := time.Parse(time.RFC3339, wakeAtStr); err == nil {
-			if due.After(now) {
-				return true
-			}
-		}
+	if due, ok := frontMatterTime(document.FrontMatter["wake_at"]); ok && due.After(now) {
+		return true
 	}
 	return false
 }
@@ -1473,12 +1468,8 @@ func requiresTaskNotificationDecision(document Document, status string, now time
 	case "done", "failed", "cancelled":
 		return true
 	case "waiting":
-		wakeAt := strings.TrimSpace(stringField(document, "wake_at"))
-		if wakeAt == "" {
-			return true
-		}
-		due, err := time.Parse(time.RFC3339, wakeAt)
-		return err != nil || !due.After(now)
+		due, ok := frontMatterTime(document.FrontMatter["wake_at"])
+		return !ok || !due.After(now)
 	default:
 		return false
 	}
