@@ -284,7 +284,11 @@ func (s *Supervisor) DeliverEvent(ctx context.Context, name, conversation, event
 }
 
 func (s *Supervisor) runOne(ctx context.Context, name string, running *runningChannel, instance Channel) {
+	// Run returned, so nothing may stay keyed on this generation's context.
+	// Cancelling releases its child goroutines and clients on every exit path;
+	// the checks below still see the pre-cancel ctx.Err().
 	err := instance.Run(ctx, s.handler)
+	defer running.cancel()
 	if authorizer, ok := instance.(RuntimeAuthorizer); ok && err != nil && ctx.Err() == nil {
 		if authorizationErr := authorizer.ValidateRuntimeAuthorization(); authorizationErr != nil {
 			if !s.isCurrent(name, running) {
