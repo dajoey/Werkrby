@@ -451,3 +451,48 @@ drain:
 		t.Fatalf("Pi extension UI response = %#v", response)
 	}
 }
+
+// piRetryTerminal runs one prompt against a fixture Pi and returns the terminal event.
+func piRetryTerminal(t *testing.T, mode string) core.Event {
+	t.Helper()
+	command, root, _ := portableHarnessFixture(t, mode)
+	pi, err := NewPi(HarnessConfig{Command: command, Cwd: root, Model: "fixture/model-a", Sandbox: "read-only", SessionsFile: filepath.Join(root, "sessions.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := pi.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer pi.Close()
+	done := make(chan core.Event, 1)
+	if _, _, err := pi.Send(ctx, "chat", "prompt", func(event core.Event) {
+		if event.Done {
+			done <- event
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case event := <-done:
+		return event
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for Pi terminal event")
+	}
+	return core.Event{}
+}
+
+func TestBugPiRetrySucceededButTurnReportsError(t *testing.T) {
+	event := piRetryTerminal(t, "pi-retry-success")
+	if event.Kind != core.EventFinal || event.Text != "recovered" {
+		t.Fatalf("terminal event after successful auto-retry = %s %q, want final \"recovered\"", event.Kind, event.Text)
+	}
+}
+
+func TestPiRetryExhaustedStillReportsError(t *testing.T) {
+	event := piRetryTerminal(t, "pi-retry-fail")
+	if event.Kind != core.EventError || event.Text != "529 overloaded" {
+		t.Fatalf("terminal event after exhausted auto-retry = %s %q, want error \"529 overloaded\"", event.Kind, event.Text)
+	}
+}

@@ -169,7 +169,7 @@ func runHarnessFixture(mode string) int {
 		return runCodexFixture(mode)
 	case "claude-stream", "claude-steer", "claude-text", "claude-interrupt", "claude-help-missing-flag", "claude-init-changed-event", "claude-terminal-error", "claude-result-nonzero", "claude-hook-events-before-init":
 		return runClaudeFixture(mode)
-	case "pi-lifecycle", "pi-steer", "pi-interrupt", "pi-state-missing-session", "pi-model-capabilities", "pi-off-default", "pi-extension-ui":
+	case "pi-lifecycle", "pi-steer", "pi-interrupt", "pi-state-missing-session", "pi-model-capabilities", "pi-off-default", "pi-extension-ui", "pi-retry-success", "pi-retry-fail":
 		return runPiFixture(mode)
 	case "acp-lifecycle", "acp-interrupt", "acp-version-mismatch", "acp-session-error":
 		return runACPFixture(mode)
@@ -269,6 +269,23 @@ func runPiFixture(mode string) int {
 			if mode == "pi-extension-ui" {
 				write(map[string]any{"type": "extension_ui_request", "id": "ui-1", "method": "confirm", "title": "Run project-local agents?", "message": "Agents: demo"})
 				write(map[string]any{"type": "extension_ui_request", "id": "ui-2", "method": "notify", "message": "fire-and-forget"})
+			} else if mode == "pi-retry-success" || mode == "pi-retry-fail" {
+				// Event order taken from Pi's agent-session: the failed attempt ends with
+				// stopReason error, then auto_retry_start; on success the retried message
+				// ends and auto_retry_end success:true follows; on exhaustion
+				// auto_retry_end success:false carries finalError.
+				write(map[string]any{"type": "message_end", "message": map[string]any{"role": "assistant", "stopReason": "error", "errorMessage": "529 overloaded", "content": []any{}}})
+				write(map[string]any{"type": "auto_retry_start", "attempt": 1, "maxAttempts": 3, "delayMs": 1, "errorMessage": "529 overloaded"})
+				if mode == "pi-retry-success" {
+					messageStart()
+					delta("recovered")
+					messageEnd("recovered", "stop")
+					write(map[string]any{"type": "auto_retry_end", "success": true, "attempt": 1})
+				} else {
+					write(map[string]any{"type": "auto_retry_end", "success": false, "attempt": 1, "finalError": "529 overloaded"})
+				}
+				write(map[string]any{"type": "agent_end"})
+				write(map[string]any{"type": "agent_settled"})
 			} else if mode == "pi-steer" {
 				delta("first")
 			} else if mode == "pi-interrupt" {

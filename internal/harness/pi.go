@@ -800,6 +800,16 @@ func (process *piProcess) handleEvent(kind string, event map[string]json.RawMess
 	case "auto_retry_start", "summarization_retry_scheduled":
 		turn.emitEvent(core.Event{Kind: core.EventStatus, Text: "Pi is retrying", ThreadID: process.session.ID,
 			Execution: &core.ExecutionStatus{State: "reconnecting"}})
+	case "auto_retry_end":
+		// A retry that succeeded retried the failed attempt's error away;
+		// success:false keeps it as the turn's final error.
+		var success bool
+		_ = json.Unmarshal(event["success"], &success)
+		if success {
+			turn.mu.Lock()
+			turn.errorText = ""
+			turn.mu.Unlock()
+		}
 	case "agent_settled":
 		process.finishTurn(turn)
 	}
