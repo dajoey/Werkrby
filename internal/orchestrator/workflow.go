@@ -129,7 +129,30 @@ func goalReviewProvesDone(document Document) error {
 	return nil
 }
 
+// hasJoeyAsk reports whether the document carries a non-empty joey_ask: it is
+// parked on Joey's answer, which no clock can supply.
+func hasJoeyAsk(document Document) bool {
+	switch typed := document.FrontMatter["joey_ask"].(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case map[string]any:
+		return len(typed) > 0
+	case map[any]any:
+		return len(typed) > 0
+	default:
+		return true
+	}
+}
+
+// scheduledWake reports whether a waiting document's date has come. A document
+// parked on a joey_ask is never due by date: a wake_at or not_before left over
+// from an earlier clock park must not return Joey's question to the queue.
 func scheduledWake(document Document, now time.Time) (bool, error) {
+	if hasJoeyAsk(document) {
+		return false, nil
+	}
 	for _, field := range []string{"wake_at", "not_before", "next_dispatch_at"} {
 		value, exists := document.FrontMatter[field]
 		if !exists {
