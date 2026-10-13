@@ -1676,6 +1676,11 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 				continue
 			}
 			targetStatus := "todo"
+			if route.Name == "tasks" && stringField(document, "resume_status") == "review" {
+				// A quota wall parked the task during review: its implementation
+				// is done, so it resumes review rather than re-running the work.
+				targetStatus = "review"
+			}
 			if route.Name == "goals" {
 				targetStatus = stringField(document, "resume_status")
 				if targetStatus != "planning" && targetStatus != "review" {
@@ -1684,7 +1689,9 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 			}
 			target := filepath.Join(base, targetStatus, entry.Name())
 			note := fmt.Sprintf("Spynel resumed this %s from waiting because its scheduled wake condition became due; it returned to %s for a fresh agent decision.", strings.TrimSuffix(route.Name, "s"), targetStatus)
-			if err := moveDocumentWithProgress(path, target, targetStatus, now, note); err != nil {
+			if err := moveDocumentWithUpdate(path, target, targetStatus, now, note, func(fm map[string]any) {
+				delete(fm, "resume_status")
+			}); err != nil {
 				return err
 			}
 			if route.Name == "goals" && targetStatus == "planning" {
@@ -3093,10 +3100,25 @@ func (m *Manager) recordQuotaError(lease Lease, err error) {
 	base := filepath.Dir(m.Config.Resolve(route.Source))
 	waitingTarget := filepath.Join(base, "waiting", filepath.Base(lease.File))
 	note := fmt.Sprintf("quota wall on %s; parked until %s; attempt not spent", runner, resetTimeStr)
+	// The wake returns the document to the phase the wall interrupted: review
+	// and planning parks record it, an implementation park leaves it absent so
+	// a stale value cannot misroute the wake.
+	resumeStatus := ""
+	switch normalizeLeasePhase(lease.Route, lease.Phase) {
+	case phaseTaskReview, phaseGoalReview:
+		resumeStatus = "review"
+	case phaseGoalPlanning:
+		resumeStatus = "planning"
+	}
 	update := func(fm map[string]any) {
 		fm["quota_reset_at"] = resetTimeStr
 		fm["wake_at"] = resetTimeStr
 		fm[resumeCreditField] = true
+		if resumeStatus != "" {
+			fm["resume_status"] = resumeStatus
+		} else {
+			delete(fm, "resume_status")
+		}
 	}
 	if moveErr := moveDocumentWithUpdate(lease.File, waitingTarget, "waiting", now, note, update); moveErr != nil {
 		m.log("move quota error document to waiting: " + moveErr.Error())
