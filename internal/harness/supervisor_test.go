@@ -542,6 +542,86 @@ func TestSupervisorCommitsModelDuringActiveTurnAndUsesItForQueuedContinuation(t 
 	target.finish("chat")
 }
 
+func TestBugSupervisorQueuedControlDropsPerSendModelOverride(t *testing.T) {
+	target := &supervisorHarness{name: "herdr", followUp: FollowUpQueue, active: map[string]bool{}, emits: map[string]core.Emit{}, configuredModel: "opencode"}
+	registry := NewRegistry()
+	registry.Register("herdr", func(HarnessConfig) (Harness, error) { return target, nil })
+	supervisor := NewSupervisor(registry, HarnessConfig{Name: "herdr", Model: "opencode"})
+	if err := supervisor.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := supervisor.SendWithModel(context.Background(), "job", "original", "claude", nil); err != nil {
+		t.Fatal(err)
+	}
+	if result, err := supervisor.SendControl(context.Background(), "job", ControlRequest{ID: "control-1", Prompt: "guidance"}); err != nil || !result.Queued {
+		t.Fatalf("control result = %#v, %v", result, err)
+	}
+	target.finish("job")
+	waitSupervisorState(t, func() bool { target.mu.Lock(); defer target.mu.Unlock(); return len(target.models["job"]) == 2 })
+	target.mu.Lock()
+	models := append([]string(nil), target.models["job"]...)
+	target.mu.Unlock()
+	if !reflect.DeepEqual(models, []string{"claude", "claude"}) {
+		t.Fatalf("dispatch models = %v", models)
+	}
+	target.finish("job")
+}
+
+func TestBugSupervisorControlContinuationDropsPerSendModelOverride(t *testing.T) {
+	target := &supervisorHarness{name: "claude", followUp: FollowUpSteer, active: map[string]bool{}, emits: map[string]core.Emit{}, configuredModel: "opencode"}
+	registry := NewRegistry()
+	registry.Register("claude", func(HarnessConfig) (Harness, error) { return target, nil })
+	supervisor := NewSupervisor(registry, HarnessConfig{Name: "claude", Model: "opencode"})
+	if err := supervisor.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := supervisor.SendWithModel(context.Background(), "job", "original", "claude", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supervisor.SendControl(context.Background(), "job", ControlRequest{ID: "control-1", Prompt: "guidance", ContinuationPrompt: "continue original"}); err != nil {
+		t.Fatal(err)
+	}
+	target.finish("job")
+	waitSupervisorState(t, func() bool { target.mu.Lock(); defer target.mu.Unlock(); return len(target.models["job"]) == 2 })
+	target.mu.Lock()
+	models := append([]string(nil), target.models["job"]...)
+	target.mu.Unlock()
+	if !reflect.DeepEqual(models, []string{"claude", "claude"}) {
+		t.Fatalf("dispatch models = %v", models)
+	}
+	target.finish("job")
+}
+
+func TestSupervisorQueuedSendKeepsItsOwnModelOverrideAndLaterTurnsRevert(t *testing.T) {
+	target := &supervisorHarness{name: "herdr", followUp: FollowUpQueue, active: map[string]bool{}, emits: map[string]core.Emit{}, configuredModel: "opencode"}
+	registry := NewRegistry()
+	registry.Register("herdr", func(HarnessConfig) (Harness, error) { return target, nil })
+	supervisor := NewSupervisor(registry, HarnessConfig{Name: "herdr", Model: "opencode"})
+	if err := supervisor.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := supervisor.Send(context.Background(), "chat", "active", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, queued, err := supervisor.SendWithModel(context.Background(), "chat", "queued", "claude", nil); err != nil || !queued {
+		t.Fatalf("queue = %t, %v", queued, err)
+	}
+	target.finish("chat")
+	waitSupervisorState(t, func() bool { target.mu.Lock(); defer target.mu.Unlock(); return len(target.models["chat"]) == 2 })
+	target.finish("chat")
+	waitSupervisorState(t, func() bool { return !supervisor.IsActive("chat") })
+	if _, _, err := supervisor.Send(context.Background(), "chat", "fresh", nil); err != nil {
+		t.Fatal(err)
+	}
+	target.mu.Lock()
+	models := append([]string(nil), target.models["chat"]...)
+	target.mu.Unlock()
+	if !reflect.DeepEqual(models, []string{"opencode", "claude", "opencode"}) {
+		t.Fatalf("dispatch models = %v", models)
+	}
+	target.finish("chat")
+}
+
 func TestSupervisorSnapshotsAllInferencePropertiesAcrossQueuedContinuation(t *testing.T) {
 	base := &supervisorHarness{name: "codex", followUp: FollowUpQueue, active: map[string]bool{}, emits: map[string]core.Emit{}}
 	target := &inferenceSupervisorHarness{supervisorHarness: base, selection: InferenceSelection{Model: "old", Effort: "medium", LegacyEffort: true, ServiceMode: "default"}}

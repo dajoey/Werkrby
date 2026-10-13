@@ -35,6 +35,7 @@ type Supervisor struct {
 	startErr          error
 	active            map[string]int
 	pending           map[string][]pendingSend
+	dispatchModel     map[string]string
 	controlEmit       map[string]core.Emit
 	controls          map[string]*controlState
 	seenControl       map[string]map[string]time.Time
@@ -54,6 +55,9 @@ type pendingSend struct {
 	preserveEmitter bool
 	generation      uint64
 	release         []core.Emit
+	// modelOverride is the per-send model the caller asked for; it outlives the
+	// queue so the later dispatch does not fall back to the configured model.
+	modelOverride string
 }
 
 type controlState struct {
@@ -67,7 +71,7 @@ type controlState struct {
 
 func NewSupervisor(registry *Registry, cfg HarnessConfig) *Supervisor {
 	return &Supervisor{
-		registry: registry, config: cfg, active: map[string]int{}, pending: map[string][]pendingSend{},
+		registry: registry, config: cfg, active: map[string]int{}, pending: map[string][]pendingSend{}, dispatchModel: map[string]string{},
 		controlEmit: map[string]core.Emit{}, controls: map[string]*controlState{}, seenControl: map[string]map[string]time.Time{},
 		controlGeneration: map[string]uint64{}, controlOps: map[string]*sync.Mutex{},
 		ready: make(chan struct{}, 1),
@@ -348,7 +352,7 @@ func (s *Supervisor) send(ctx context.Context, key, prompt, message, modelOverri
 	logicalActive := s.active[key] > 0
 	if (!wasActive && logicalActive) || (wasActive && followUpMode(target) == FollowUpQueue) {
 		threadID := target.ThreadID(key)
-		s.pending[key] = append(s.pending[key], pendingSend{prompt: prompt, message: message, emit: emit})
+		s.pending[key] = append(s.pending[key], pendingSend{prompt: prompt, message: message, emit: emit, modelOverride: modelOverride})
 		s.mu.Unlock()
 		operation.Unlock()
 		if emit != nil {
@@ -358,6 +362,11 @@ func (s *Supervisor) send(ctx context.Context, key, prompt, message, modelOverri
 	}
 	if !wasActive {
 		s.active[key] = 1
+		if modelOverride != "" {
+			s.dispatchModel[key] = modelOverride
+		} else {
+			delete(s.dispatchModel, key)
+		}
 	}
 	wrapper := s.executionEmit(key, target, emit)
 	s.controlEmit[key] = wrapper
@@ -619,6 +628,7 @@ func (s *Supervisor) executionEmit(key string, target Harness, emit core.Emit) c
 					delete(s.active, key)
 					delete(s.controls, key)
 					delete(s.controlEmit, key)
+					delete(s.dispatchModel, key)
 				}
 				s.mu.Unlock()
 				if next != nil {
@@ -630,6 +640,7 @@ func (s *Supervisor) executionEmit(key string, target Harness, emit core.Emit) c
 				delete(s.controls, key)
 				delete(s.controlEmit, key)
 				delete(s.seenControl, key)
+				delete(s.dispatchModel, key)
 			}
 			s.mu.Unlock()
 		}
@@ -789,7 +800,16 @@ func (s *Supervisor) startQueued(key string, target Harness, next pendingSend) {
 	s.mu.RLock()
 	validStart = !s.closed && s.active[key] > 0 && s.controlGeneration[key] == next.generation
 	selection := inferenceSelection(s.config)
+	modelOverride := next.modelOverride
+	if modelOverride == "" && next.control != nil {
+		// Controls and continuations belong to the job's own turn, so they keep
+		// the model that job was dispatched with.
+		modelOverride = s.dispatchModel[key]
+	}
 	s.mu.RUnlock()
+	if modelOverride != "" {
+		selection.Model = modelOverride
+	}
 	if !validStart {
 		cancelQueuedRequests(next)
 		return
@@ -813,6 +833,11 @@ func (s *Supervisor) startQueued(key string, target Harness, next pendingSend) {
 	s.mu.Lock()
 	if !next.preserveEmitter {
 		s.controlEmit[key] = wrapper
+		if modelOverride != "" {
+			s.dispatchModel[key] = modelOverride
+		} else {
+			delete(s.dispatchModel, key)
+		}
 	}
 	if next.control != nil {
 		s.controls[key] = next.control
