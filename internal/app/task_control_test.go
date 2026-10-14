@@ -540,6 +540,78 @@ func TestTaskControlStopJobEndsWithinGraceWhenTurnNeverResolves(t *testing.T) {
 	}
 }
 
+// TestBugStopResolvedTaskJobInterruptFailureDropsLiveJob: a task-control stop
+// acks at once and interrupts in the background. When that interrupt fails or
+// is refused while the provider session is still active, the job must stay
+// listed in its prior state, the cancellation fence must be released and the
+// grace fallback must not retire it.
+func TestBugStopResolvedTaskJobInterruptFailureDropsLiveJob(t *testing.T) {
+	cases := map[string]func(ctx context.Context, key string) (bool, error){
+		"interrupt error":    func(context.Context, string) (bool, error) { return false, errors.New("interrupt unavailable") },
+		"interrupt rejected": func(context.Context, string) (bool, error) { return false, nil },
+	}
+	for name, interrupt := range cases {
+		t.Run(name, func(t *testing.T) {
+			service, target := newTaskControlService(t)
+			service.jobCancellationGrace = 50 * time.Millisecond
+			// A real orchestrator-run job, so the durable control fence is observable.
+			if _, err := orchestrator.Create(service.Config, "tasks", "stop whose interrupt fails", ""); err != nil {
+				t.Fatal(err)
+			}
+			if err := service.Orchestrator.ScanOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			service.Orchestrator.Wait()
+			jobs := service.Runtime.Jobs()
+			if len(jobs) != 1 || jobs[0].Kind != "task" {
+				t.Fatalf("durable job registration = %#v", jobs)
+			}
+			job := jobs[0]
+			lease, ok := service.Orchestrator.LeaseForSession(job.SessionKey)
+			if !ok {
+				t.Fatal("durable job lease was not registered")
+			}
+			document, err := orchestrator.ReadDocument(lease.File)
+			if err != nil {
+				t.Fatal(err)
+			}
+			taskID, _ := document.FrontMatter["id"].(string)
+			target.active[job.SessionKey] = true
+			if !service.Orchestrator.ControlStillValid(lease, taskID) {
+				t.Fatal("control was not valid before the stop")
+			}
+			interrupted := make(chan struct{})
+			target.interruptFn = func(ctx context.Context, key string) (bool, error) {
+				defer close(interrupted)
+				return interrupt(ctx, key)
+			}
+
+			result, err := service.TaskControl(context.Background(), TaskControlRequest{TaskID: taskID, Action: "stop"})
+			if err != nil || !result.Stopped {
+				t.Fatalf("stop result = %#v err=%v", result, err)
+			}
+			select {
+			case <-interrupted:
+			case <-time.After(2 * time.Second):
+				t.Fatal("background interrupt never ran")
+			}
+			// Outlast the grace period plus one poll interval of the fallback.
+			time.Sleep(600 * time.Millisecond)
+
+			current, live := service.Runtime.Job(job.ID)
+			if !live {
+				t.Fatal("job for a provider session that is still running (interrupt failed) was dropped from the registry")
+			}
+			if current.Execution != job.Execution {
+				t.Fatalf("job execution = %s, want the pre-stop %s", current.Execution, job.Execution)
+			}
+			if !service.Orchestrator.ControlStillValid(lease, taskID) {
+				t.Fatal("the cancellation fence was not released after the failed interrupt")
+			}
+		})
+	}
+}
+
 func stageTaskInFolder(t *testing.T, service *Service, taskID, folder string, frontMatter map[string]any) string {
 	t.Helper()
 	dir := service.Config.StatePath("tasks", folder)
@@ -925,7 +997,6 @@ func TestTaskControlSnoozeAndWakeNowRejectNonWaitingTask(t *testing.T) {
 		t.Errorf("code = %q, want not_steerable", code)
 	}
 }
-
 
 // Rework finding 1 (2026-09-25 review): the mainline mixed-review flow — a
 // task whose reviewer rejected it (rejected completion_summary persisted by
