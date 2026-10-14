@@ -14,6 +14,7 @@ import (
 
 	"github.com/agent0ai/spynel/internal/fsx"
 	"github.com/agent0ai/spynel/internal/harness"
+	"github.com/agent0ai/spynel/internal/statedir"
 	"gopkg.in/yaml.v3"
 )
 
@@ -336,11 +337,7 @@ func PathForRoot(root string) string {
 // StateDir returns the state directory for root, returning <root>/.werkrby
 // when that directory exists, else <root>/.spynel.
 func StateDir(root string) string {
-	werkrby := filepath.Join(root, ".werkrby")
-	if fi, err := os.Stat(werkrby); err == nil && fi.IsDir() {
-		return werkrby
-	}
-	return filepath.Join(root, StateDirectoryName)
+	return statedir.Resolve(root)
 }
 
 func rootForConfigPath(path string) string {

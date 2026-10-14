@@ -20,6 +20,7 @@ import (
 	"github.com/agent0ai/spynel/internal/core"
 	"github.com/agent0ai/spynel/internal/fsx"
 	"github.com/agent0ai/spynel/internal/roster"
+	"github.com/agent0ai/spynel/internal/statedir"
 )
 
 // Herdr adapts the Herdr terminal workspace manager as a coding harness.
@@ -616,7 +617,7 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 	// Roster staff ("@name") expand to a runner kind plus launch arguments.
 	var agentArgs []string
 	if strings.HasPrefix(model, roster.StaffPrefix) {
-		kind, args, expandErr := roster.Expand(filepath.Join(cwd, roster.StateDirName), model)
+		kind, args, expandErr := roster.Expand(statedir.Resolve(cwd), model)
 		if expandErr != nil {
 			return "", "", "", false, "", expandErr
 		}
@@ -1779,7 +1780,7 @@ func (h *Herdr) rosterModelForKey(key string, cfg HarnessConfig) string {
 	if requested := strings.TrimSpace(cfg.Model); requested != "" && requested != "default" && requested != configured {
 		return cfg.Model
 	}
-	stateDir := filepath.Join(cfg.Cwd, roster.StateDirName)
+	stateDir := statedir.Resolve(cfg.Cwd)
 	staffing, err := roster.Load(stateDir)
 	if err != nil || staffing == nil {
 		return cfg.Model

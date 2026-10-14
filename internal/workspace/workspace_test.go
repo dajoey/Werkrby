@@ -501,3 +501,38 @@ func TestUpgradeWithWerkrbyStateDirAndCompatSymlink(t *testing.T) {
 		t.Fatalf("Upgrade failed on workspace with .werkrby and compat symlink: %v", err)
 	}
 }
+
+// A workspace whose active state directory is .werkrby (a real directory, no
+// .spynel) must be repaired in place: Upgrade and a forced Init restore the
+// prompts the chat and /task paths read, and never create a parallel .spynel.
+func TestWorkspaceMaintenanceStaysInActiveStateDir(t *testing.T) {
+	for _, name := range []string{"upgrade", "force-init"} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			state := filepath.Join(root, ".werkrby")
+			if err := os.MkdirAll(filepath.Join(state, "prompts"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			if name == "upgrade" {
+				err = Upgrade(root)
+			} else {
+				err = Init(root, true)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := config.StateDir(root); got != state {
+				t.Fatalf("active state dir = %q, want %q", got, state)
+			}
+			for _, rel := range []string{"prompts/chat.md", "prompts/create-task.md", "tasks/todo", "themes", "AGENTS.md"} {
+				if _, err := os.Stat(filepath.Join(state, filepath.FromSlash(rel))); err != nil {
+					t.Errorf("%s not restored into the active state dir: %v", rel, err)
+				}
+			}
+			if _, err := os.Lstat(filepath.Join(root, ".spynel")); !os.IsNotExist(err) {
+				t.Errorf("a parallel .spynel skeleton was created (stat err = %v)", err)
+			}
+		})
+	}
+}

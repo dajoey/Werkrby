@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"embed"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -54,6 +53,12 @@ var directories = []string{
 	".spynel/goals/proposed", ".spynel/goals/planning", ".spynel/goals/active", ".spynel/goals/review", ".spynel/goals/reviewing", ".spynel/goals/waiting", ".spynel/goals/done", ".spynel/goals/abandoned",
 }
 
+// inState maps a workspace-relative ".spynel/..." layout path onto the active
+// state directory, so a workspace that has switched to .werkrby is maintained in place.
+func inState(stateRoot, layoutPath string) string {
+	return filepath.Join(stateRoot, filepath.FromSlash(strings.TrimPrefix(layoutPath, ".spynel/")))
+}
+
 func ensureRealDirectory(path, description string) error {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
@@ -93,13 +98,14 @@ func Init(root string, force bool) error {
 	if err := os.MkdirAll(abs, 0o700); err != nil {
 		return err
 	}
-	if err := ensureRealDirectory(filepath.Join(abs, ".spynel"), ".spynel state path"); err != nil {
+	stateRoot := config.StateDir(abs)
+	if err := ensureRealDirectory(stateRoot, filepath.Base(stateRoot)+" state path"); err != nil {
 		return err
 	}
-	configPath := config.PathForRoot(abs)
+	configPath := inState(stateRoot, config.FileName)
 	if !force {
 		if _, err := os.Stat(configPath); err == nil {
-			return errors.New(".spynel/config.yaml already exists (use --force to restore missing templates)")
+			return fmt.Errorf("%s/config.yaml already exists (use --force to restore missing templates)", filepath.Base(stateRoot))
 		}
 	}
 	if err := ensureInstructionBoundary(abs); err != nil {
@@ -109,16 +115,16 @@ func Init(root string, force bool) error {
 		if dir == ".spynel/instructions" {
 			continue
 		}
-		if err := os.MkdirAll(filepath.Join(abs, filepath.FromSlash(dir)), 0o700); err != nil {
+		if err := os.MkdirAll(inState(stateRoot, dir), 0o700); err != nil {
 			return err
 		}
 	}
-	if err := theme.InstallBuiltins(filepath.Join(abs, ".spynel", "themes")); err != nil {
+	if err := theme.InstallBuiltins(filepath.Join(stateRoot, "themes")); err != nil {
 		return err
 	}
 	createdConfig := false
 	for _, spec := range files {
-		target := filepath.Join(abs, filepath.FromSlash(spec.Path))
+		target := inState(stateRoot, spec.Path)
 		if force && spec.Path == config.FileName {
 			if _, err := os.Stat(target); err == nil {
 				continue

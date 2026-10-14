@@ -17,6 +17,7 @@ import (
 
 	"github.com/agent0ai/spynel/internal/core"
 	"github.com/agent0ai/spynel/internal/fsx"
+	"github.com/agent0ai/spynel/internal/statedir"
 )
 
 const piRPCMaxRecord = 16 * 1024 * 1024
@@ -534,7 +535,7 @@ func (p *Pi) startProcess(ctx context.Context, key string, session piSession, ep
 	} else {
 		sessionDir := filepath.Join(filepath.Dir(cfg.SessionsFile), "pi-sessions")
 		if cfg.SessionsFile == "" {
-			sessionDir = filepath.Join(cfg.Cwd, ".spynel", "runtime", "pi-sessions")
+			sessionDir = filepath.Join(statedir.Resolve(cfg.Cwd), "runtime", "pi-sessions")
 		}
 		if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 			cancel()
