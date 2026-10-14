@@ -46,11 +46,12 @@ type themeEvent struct{ theme theme.Theme }
 type taskNotificationEvent struct{ notification channel.Notification }
 type notificationPauseMsg struct{ sequence uint64 }
 type notificationAckMsg struct {
-	ids   []string
-	after int
-	err   error
+	ids        []string
+	after      int
+	generation uint64
+	err        error
 }
-type notificationAckRetryMsg struct{}
+type notificationAckRetryMsg struct{ generation uint64 }
 type notificationBoundaryMsg struct {
 	sequence uint64
 	safe     bool
@@ -294,6 +295,7 @@ type model struct {
 	notificationAckIDs       []string
 	notificationAckAfter     int
 	notificationAckBusy      bool
+	notificationAckGen       uint64
 	notificationBoundaryBusy bool
 	deferredUIEvents         []core.Event
 	pasteQueue               []pendingPaste
@@ -1216,11 +1218,12 @@ func (m model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			commands = append(commands, m.beginNotificationAckAt(value.after))
 		}
 	case notificationAckMsg:
-		if !m.notificationAckBusy {
+		if !m.notificationAckBusy || value.generation != m.notificationAckGen {
 			break
 		}
 		if value.err != nil {
-			commands = append(commands, tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg { return notificationAckRetryMsg{} }))
+			generation := value.generation
+			commands = append(commands, tea.Tick(200*time.Millisecond, func(time.Time) tea.Msg { return notificationAckRetryMsg{generation: generation} }))
 			break
 		}
 		m.commitStreamingPrefix(value.after)
@@ -1237,7 +1240,7 @@ func (m model) update(message tea.Msg) (tea.Model, tea.Cmd) {
 			commands = append(commands, notificationPause(m.deltaSequence))
 		}
 	case notificationAckRetryMsg:
-		if m.notificationAckBusy {
+		if m.notificationAckBusy && value.generation == m.notificationAckGen {
 			commands = append(commands, m.ackPendingNotifications())
 		}
 	case bubblespinner.TickMsg:
@@ -1755,14 +1758,15 @@ func notificationIDs(notifications []channel.Notification) []string {
 func (m *model) ackPendingNotifications() tea.Cmd {
 	ids := append([]string(nil), m.notificationAckIDs...)
 	after := m.notificationAckAfter
+	generation := m.notificationAckGen
 	ack := m.ackNotification
 	return func() tea.Msg {
 		for _, id := range ids {
 			if err := ack(id, after); err != nil {
-				return notificationAckMsg{ids: ids, after: after, err: err}
+				return notificationAckMsg{ids: ids, after: after, generation: generation, err: err}
 			}
 		}
-		return notificationAckMsg{ids: ids, after: after}
+		return notificationAckMsg{ids: ids, after: after, generation: generation}
 	}
 }
 
@@ -1925,6 +1929,13 @@ func (m *model) resetResponse() {
 	m.streaming = ""
 	m.responseText = ""
 	m.responseCommit = 0
+	// An acknowledgement still in flight refers to the stream just discarded;
+	// its late result must not split whatever stream comes next. Pending
+	// notifications stay queued and flush at the next boundary.
+	m.notificationAckGen++
+	m.notificationAckBusy = false
+	m.notificationAckIDs = nil
+	m.notificationAckAfter = 0
 }
 
 func completedResponse(streaming, final string) string {

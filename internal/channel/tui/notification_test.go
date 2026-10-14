@@ -178,6 +178,41 @@ func TestLateNotificationAckAfterUserSendDoesNotDuplicateCommittedText(t *testin
 	}
 }
 
+func TestStaleNotificationAckAfterConversationSwitchIsInert(t *testing.T) {
+	m := notificationTestModel()
+	m.ackNotification = func(string, int) error { return nil }
+	m.working = true
+	m.streaming = "Old stream "
+	m.responseText = "Old stream "
+	m.deltaSequence = 1
+	m.pendingNotifications = []channel.Notification{{ID: "n1", Text: "Task complete"}}
+	updated, _ := m.Update(notificationPauseMsg{sequence: 1})
+	m = updated.(model)
+	if !m.notificationAckBusy {
+		t.Fatal("acknowledgement did not start")
+	}
+	// The conversation switches while the acknowledgement is in flight.
+	m.openScreen(core.Screen{ID: "welcome", Conversation: "other"})
+	updated, _ = m.Update(uiEvent{event: core.Event{Kind: core.EventDelta, Text: "Brand new reply"}})
+	m = updated.(model)
+	updated, _ = m.Update(notificationAckMsg{ids: []string{"n1"}, after: 11})
+	m = updated.(model)
+	if m.streaming != "Brand new reply" || m.responseCommit != 0 {
+		t.Fatalf("stale ack split the new stream: streaming=%q commit=%d", m.streaming, m.responseCommit)
+	}
+	for _, entry := range m.transcript {
+		if entry.text == "Brand new " || entry.text == "Brand new" {
+			t.Fatalf("stale ack committed new text: %#v", m.transcript)
+		}
+	}
+	// The pending notification is still flushable once the new stream ends.
+	updated, _ = m.Update(uiEvent{event: core.Event{Kind: core.EventFinal, Text: "Brand new reply", Done: true}})
+	m = updated.(model)
+	if len(m.transcript) != 2 || m.transcript[0].text != "Brand new reply" || m.transcript[1].text != "Task complete" {
+		t.Fatalf("pending notification lost after reset: %#v", m.transcript)
+	}
+}
+
 func TestNotificationNoPauseFallbackAndMultipleQueue(t *testing.T) {
 	m := notificationTestModel()
 	m.working = true
