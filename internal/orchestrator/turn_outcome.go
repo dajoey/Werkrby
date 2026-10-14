@@ -42,6 +42,10 @@ const (
 	outcomeMissField = "outcome_miss"
 )
 
+// beforeOutcomeMove, when set (tests), runs between applyExplicitOutcome's existence check and the
+// locked move, where an operator settle or another writer can move the task.
+var beforeOutcomeMove func()
+
 var errNoTurnOutcome = errors.New("no outcome returned (no result.json in the run directory and no " + outcomeFenceInfo + " block ending the final reply)")
 
 // safeLeaseID is the only lease id shape that may name a run directory: leaseID's hex digest.
@@ -116,14 +120,14 @@ var workerOutcomeKeys = map[string]string{
 // ownedFrontMatterKeys are restored to their value at dispatch before an outcome is applied, so a
 // worker that edits the file in place against the contract changes nothing that survives the move.
 // Keys other writers maintain while a task is claimed (provider_iterations, the Helm and parks
-// fields) are not listed.
+// fields, and staff, which an operator reassign writes into the claimed file) are not listed.
 var ownedFrontMatterKeys = []string{
 	"id", "title", "created_at", "first_assigned_at", "attempt", "review_attempt", "review_required",
 	"goal_id", "goal_round", "notify", "agent", "model", "implementation_thread", "implementation_session",
 	resumeCreditField, resumeCreditsAttemptField, resumeCreditsUsedField, formatCreditAttemptField,
 	acceptanceField, acceptanceRoundsField, outcomeMissField,
 	"completion_summary", "wake_at", "waiting_for", "joey_ask", "wake_check", "wake_check_interval_s",
-	"risk", "staff", "cancelled_reason", "ffxiv_build",
+	"risk", "cancelled_reason", "ffxiv_build",
 }
 
 // codeManagedSummaryKeys are completion_summary fields Werkrby writes; a worker's values are dropped.
@@ -674,6 +678,9 @@ func (m *Manager) applyExplicitOutcome(route workflowRoute, lease Lease, turn *e
 		restored = turn.restoreOwned(document.FrontMatter)
 		transition.apply(document, turn.Phase, source, now, restored, m.staffHandOff)
 	}
+	if beforeOutcomeMove != nil {
+		beforeOutcomeMove()
+	}
 	if err := moveDocumentWithEdit(lease.File, target, transition.Status, now, edit); err != nil {
 		m.requeueUnappliable(base, name, lease, turn, err, now)
 		return
@@ -772,11 +779,28 @@ func (m *Manager) requeueUnappliable(base, name string, lease Lease, turn *expli
 		turn.restoreOwned(frontMatter)
 		delete(frontMatter, resumeCreditField)
 	}
+	gone := func() {
+		m.log(fmt.Sprintf("explicit outcome: %s left its claimed path before Werkrby could apply or requeue the outcome (%v); the ordinary transition reconcile applies", name, cause))
+	}
 	err := moveDocumentWithUpdate(lease.File, target, "todo", now, note, update)
+	if errors.Is(err, os.ErrNotExist) {
+		gone()
+		return
+	}
 	if err != nil && len(turn.raw) > 0 {
 		if lock, lockErr := lockProviderTurn(lease.File); lockErr == nil {
-			writeErr := fsx.AtomicWriteFile(lease.File, turn.raw, 0o600)
+			// Only a document still at its claimed path is put back. One an operator or another
+			// writer already moved belongs to that move; writing the bytes back would revive it.
+			_, statErr := os.Lstat(lease.File)
+			writeErr := statErr
+			if statErr == nil {
+				writeErr = fsx.AtomicWriteFile(lease.File, turn.raw, 0o600)
+			}
 			unlockProviderTurn(lock)
+			if errors.Is(statErr, os.ErrNotExist) {
+				gone()
+				return
+			}
 			if writeErr == nil {
 				note = fmt.Sprintf("Werkrby could not apply this turn's outcome (%v); it put the task file back as it was when the turn started and returned it to todo; the attempt was spent.", cause)
 				err = moveDocumentWithUpdate(lease.File, target, "todo", now, note, update)
@@ -784,6 +808,10 @@ func (m *Manager) requeueUnappliable(base, name string, lease Lease, turn *expli
 		}
 	}
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			gone()
+			return
+		}
 		if renameErr := os.Rename(lease.File, target); renameErr != nil {
 			m.log(fmt.Sprintf("explicit outcome: could not requeue %s (%v, then %v)", name, err, renameErr))
 			return

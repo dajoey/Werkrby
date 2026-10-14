@@ -442,3 +442,60 @@ func TestFlaggedTaskPromptDiffersFromMainGolden(t *testing.T) {
 		t.Fatal("a flagged seat got main's prompt")
 	}
 }
+
+// Round 2, A: an operator settle that lands between the outcome's existence check and its locked move
+// must not be undone. The fallback used to write the dispatch-time bytes back to the working path and
+// requeue them, leaving the task in both cancelled/ and todo/.
+func TestExplicitOutcomeRequeueNeverRevivesASettledTask(t *testing.T) {
+	cfg, name := explicitFixture(t, true, true)
+	var manager *Manager
+	harness := newScripted(func(string, string) (string, error) {
+		return `{"outcome":"review","progress":"Implemented."}`, nil
+	})
+	manager = New(cfg, harness, extensions.Runner{Directory: filepath.Join(cfg.Root, "missing")})
+	beforeOutcomeMove = func() {
+		leases, err := manager.loadLeases()
+		if err != nil || len(leases) != 1 {
+			t.Errorf("leases = %v, %v", leases, err)
+			return
+		}
+		if _, err := manager.SettleTaskByOperator(leases[0], "cancelled", "Operator authority: cancelled from Helm.", nil, nil); err != nil {
+			t.Errorf("operator settle: %v", err)
+		}
+	}
+	t.Cleanup(func() { beforeOutcomeMove = nil })
+	scanAndWait(t, manager)
+	beforeOutcomeMove = nil
+	for _, folder := range []string{"todo", "working", "review"} {
+		if _, err := os.Stat(statusFile(cfg, folder, name)); err == nil {
+			_, cancelErr := os.Stat(statusFile(cfg, "cancelled", name))
+			t.Fatalf("the settled task was revived in %s/ (still in cancelled/: %v)", folder, cancelErr == nil)
+		}
+	}
+	if _, err := os.Stat(statusFile(cfg, "cancelled", name)); err != nil {
+		t.Fatalf("the operator's cancel was lost: %v", err)
+	}
+	scanAndWait(t, manager) // the ordinary reconcile owns the operator's move
+	if leases, _ := manager.loadLeases(); len(leases) != 0 {
+		t.Fatalf("lease left after the reconcile: %#v", leases)
+	}
+}
+
+// Round 2, B: Helm's reassign writes staff straight into the claimed file. Werkrby must not undo it
+// as if the worker had edited the file.
+func TestExplicitOutcomeKeepsAnOperatorReassign(t *testing.T) {
+	cfg, name := explicitFixtureRoster(t, pilotSeat+"  other: {runner: claude}\n", true)
+	harness := newScripted(func(_, prompt string) (string, error) {
+		editTask(t, claimedTask(prompt), func(fm map[string]any) { fm["staff"] = "other" })
+		return `{"outcome":"review","progress":"Implemented."}`, nil
+	})
+	manager := New(cfg, harness, extensions.Runner{Directory: filepath.Join(cfg.Root, "missing")})
+	scanAndWait(t, manager)
+	document := mustRead(t, statusFile(cfg, "review", name))
+	if document.FrontMatter["staff"] != "other" {
+		t.Fatalf("staff = %v, want the operator's reassign kept", document.FrontMatter["staff"])
+	}
+	if strings.Contains(document.Body, "restored staff") || strings.Contains(document.Body, "restored") && strings.Contains(document.Body, "staff") {
+		t.Fatalf("progress blames the worker for the operator's reassign:\n%s", document.Body)
+	}
+}
