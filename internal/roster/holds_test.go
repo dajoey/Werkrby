@@ -61,6 +61,44 @@ func TestHeldUntil(t *testing.T) {
 	}
 }
 
+func TestLandingTrailNamesWhySeatsWerePassed(t *testing.T) {
+	dir := write(t, `
+staff:
+  a: {runner: pi, daily_cap: 2, fallback: b}
+  b: {runner: pi, fallback: c}
+  c: {runner: agy}
+roles:
+  task_implementation: a
+`)
+	r, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	today := now.Local().Format("2006-01-02")
+	if err := os.MkdirAll(filepath.Join(dir, "runtime"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	usageData, _ := json.Marshal(usage{Date: today, Counts: map[string]int{"a": 2}, Seen: map[string]string{}})
+	if err := os.WriteFile(filepath.Join(dir, "runtime", usageFileName), usageData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	decisionData, _ := json.Marshal(decisions{Date: today, Staff: map[string]string{"b": DecisionStop}})
+	if err := os.WriteFile(filepath.Join(dir, "runtime", decisionsFileName), decisionData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	landing, passed := r.LandingTrail(dir, "a", now)
+	if landing != "c" || landing != r.Landing(dir, "a", now) {
+		t.Fatalf("landing %q, want c (same as Landing)", landing)
+	}
+	if len(passed) != 2 || passed[0].Seat != "a" || passed[0].Reason != "daily cap 2 reached" || passed[1].Seat != "b" || passed[1].Reason != "stopped for today" {
+		t.Fatalf("passed hops %+v", passed)
+	}
+	if landing, passed := r.LandingTrail(dir, "c", now); landing != "c" || len(passed) != 0 {
+		t.Fatalf("a seat that runs passed nothing: %q %+v", landing, passed)
+	}
+}
+
 func TestLandingFollowsStopsWithoutCounting(t *testing.T) {
 	dir := write(t, `
 staff:
