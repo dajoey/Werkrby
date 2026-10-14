@@ -58,8 +58,13 @@ type Staff struct {
 	// Headless runs each turn of a `runner: claude` staff as `claude -p` (stream-json) in the workspace
 	// instead of an interactive Herdr pane. Anthropic bills the Max plan's monthly API credit only for
 	// headless (Agent SDK) Claude Code runs, so a seat paid by that credit must set it.
-	Headless bool   `yaml:"headless,omitempty"`
-	Note     string `yaml:"note,omitempty"`
+	Headless bool `yaml:"headless,omitempty"`
+	// ExplicitOutcome makes a headless seat return its task turn's outcome as data (result.json in
+	// its run directory, or a werkrby-outcome block in its final reply) instead of editing and moving
+	// the task file; the orchestrator applies the transition. Off unless set; needs headless, because
+	// only a process exit says the turn is over.
+	ExplicitOutcome bool   `yaml:"explicit_outcome,omitempty"`
+	Note            string `yaml:"note,omitempty"`
 }
 
 type Escalation struct {
@@ -347,6 +352,9 @@ func (r *Roster) validate() error {
 		}
 		if s.Headless && s.Runner != "claude" {
 			return fmt.Errorf("staff %s: headless needs runner claude, not %q", name, s.Runner)
+		}
+		if s.ExplicitOutcome && !s.Headless {
+			return fmt.Errorf("staff %s: explicit_outcome needs headless: true", name)
 		}
 		if s.DailyCap < 0 {
 			return fmt.Errorf("staff %s: daily_cap cannot be negative", name)
