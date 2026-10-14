@@ -6,7 +6,7 @@
 
 ## Local Contracts
 
-- Keep each channel/conversation independent, store complete durable JSONL with private permissions, and tolerate only explicitly handled tail corruption.
+- Keep each channel/conversation independent, store complete durable JSONL with private permissions, and tolerate only explicitly handled tail corruption. An append first repairs an unterminated final line (terminate it when it is a complete entry, otherwise cut it off, since an unacknowledged fragment must never merge with the next record or fail strict readers permanently).
 - Build prompts backward from disk under both message and character limits; never load an unbounded history to compute bounded context.
 - Branch into a new conversation without mutating its source, retain bounded reply references, and exclude private attachment contents from records.
 - Append a recovery baseline to every branch so copied source messages remain context only and can never become stalled-message candidates in the new conversation.

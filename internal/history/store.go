@@ -140,11 +140,14 @@ func (s *Store) appendLocked(channel, conversation string, entry Entry) (string,
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
+	if err := repairTornTail(file); err != nil {
+		return "", err
+	}
 	if entry.At.IsZero() {
 		entry.At = time.Now().UTC()
 	}
@@ -174,6 +177,50 @@ func (s *Store) appendLocked(channel, conversation string, entry Entry) (string,
 		}
 	}
 	return path, nil
+}
+
+// repairTornTail makes the next append start on its own line. A short write or
+// a crash mid-write leaves a final line without a newline; Append syncs before
+// it reports success, so that line was never acknowledged. A complete entry
+// that only lost its newline is kept and terminated; anything else is cut off
+// so it cannot merge with the next record or fail strict readers forever.
+func repairTornTail(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil || info.Size() == 0 {
+		return err
+	}
+	size := info.Size()
+	last := make([]byte, 1)
+	if _, err := file.ReadAt(last, size-1); err != nil {
+		return err
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+	start := int64(0)
+	buf := make([]byte, historyReadChunk)
+	for end := size; end > 0 && start == 0; {
+		begin := max(end-int64(len(buf)), 0)
+		n, err := file.ReadAt(buf[:end-begin], begin)
+		if err != nil && !(errors.Is(err, io.EOF) && int64(n) == end-begin) {
+			return err
+		}
+		if i := bytes.LastIndexByte(buf[:n], '\n'); i >= 0 {
+			start = begin + int64(i) + 1
+		}
+		end = begin
+	}
+	if size-start <= maxHistoryEntryBytes {
+		fragment := make([]byte, size-start)
+		if _, err := file.ReadAt(fragment, start); err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		if json.Valid(fragment) {
+			_, err := file.Write([]byte{'\n'})
+			return err
+		}
+	}
+	return file.Truncate(start)
 }
 
 // ReserveRetrigger atomically rechecks exact source coverage and appends one
