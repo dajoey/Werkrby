@@ -303,3 +303,22 @@ func TestLatestReturnsMostRecentConversationForOneChannel(t *testing.T) {
 		t.Fatalf("missing latest conversation found = %t, err = %v", found, err)
 	}
 }
+
+func TestBranchOfOldConversationSurvivesRetention(t *testing.T) {
+	store := New(t.TempDir())
+	old := time.Now().Add(-90 * 24 * time.Hour)
+	if _, err := store.Append("tui", "old", Entry{At: old, Role: "user", Content: "ancient"}); err != nil {
+		t.Fatal(err)
+	}
+	branch, _, err := store.BranchTo("tui", "old", "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := store.RemoveOlderThan(time.Now().Add(-30*24*time.Hour), nil)
+	if _, err := os.Stat(store.Path("cli", branch)); err != nil {
+		t.Fatalf("fresh branch %s removed by 30-day retention: %v (result %#v)", branch, err, result)
+	}
+	if _, err := os.Stat(store.Path("tui", "old")); !os.IsNotExist(err) {
+		t.Fatalf("old source conversation should still be removed, stat err = %v", err)
+	}
+}

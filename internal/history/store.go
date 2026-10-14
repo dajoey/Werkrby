@@ -1061,6 +1061,11 @@ func (s *Store) RemoveOlderThan(cutoff time.Time, protected map[string]bool) Cle
 			if len(recent) > 0 && !recent[0].At.IsZero() {
 				updated = recent[0].At
 			}
+			// A branch copies old entries and ends in a fresh baseline marker,
+			// which readRecentEntries skips; the marker still dates the branch.
+			if baseline := lastBaselineAt(path); baseline.After(updated) {
+				updated = baseline
+			}
 			if !updated.Before(cutoff) {
 				continue
 			}
@@ -1073,6 +1078,36 @@ func (s *Store) RemoveOlderThan(cutoff time.Time, protected map[string]bool) Cle
 		}
 	}
 	return result
+}
+
+// lastBaselineAt returns the time of the newest recovery baseline marker in the
+// final history chunk, or the zero time when there is none.
+func lastBaselineAt(path string) time.Time {
+	file, err := os.Open(path)
+	if err != nil {
+		return time.Time{}
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return time.Time{}
+	}
+	size := int64(historyReadChunk)
+	if info.Size() < size {
+		size = info.Size()
+	}
+	chunk := make([]byte, size)
+	if _, err := file.ReadAt(chunk, info.Size()-size); err != nil {
+		return time.Time{}
+	}
+	lines := bytes.Split(chunk, []byte{'\n'})
+	for index := len(lines) - 1; index >= 0; index-- {
+		var entry Entry
+		if json.Unmarshal(lines[index], &entry) == nil && entry.RecoveryBaseline {
+			return entry.At
+		}
+	}
+	return time.Time{}
 }
 
 func readEntries(path string) ([]Entry, error) {
