@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestHistoriesAreIndependentAndBounded(t *testing.T) {
@@ -301,5 +302,47 @@ func TestLatestReturnsMostRecentConversationForOneChannel(t *testing.T) {
 	}
 	if _, found, err := store.Latest("whatsapp"); err != nil || found {
 		t.Fatalf("missing latest conversation found = %t, err = %v", found, err)
+	}
+}
+
+func TestOversizeTerminalReplyDoesNotPoisonConversation(t *testing.T) {
+	store := New(t.TempDir())
+	if _, err := store.Append("telegram", "42", Entry{Role: "user", Content: "hi", SourceMessageID: "m1"}); err != nil {
+		t.Fatal(err)
+	}
+	// A terminal reply stores its text in Content and again in FinalText, so a
+	// ~2.3 MB reply writes a line over the 4 MiB reader limit.
+	reply := strings.Repeat("r", 2300*1000)
+	if _, err := store.Append("telegram", "42", Entry{Role: "assistant", Content: reply, Terminal: true, SourceMessageID: "m1", FinalText: &reply}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.HasUserSourceID("telegram", "42", "m2"); err != nil || ok {
+		t.Fatalf("HasUserSourceID after oversize reply: %v, %v", ok, err)
+	}
+	if _, _, err := store.RecentBounded("telegram", "42", 10, 1000); err != nil {
+		t.Fatalf("RecentBounded after oversize reply: %v", err)
+	}
+	entries, _, err := store.Entries("telegram", "42")
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("Entries after oversize reply: %d entries, %v", len(entries), err)
+	}
+	last := entries[1]
+	if !last.Terminal || last.SourceMessageID != "m1" || !strings.HasPrefix(last.Content, "rrrr") || !strings.Contains(last.Content, "truncated") {
+		t.Fatalf("oversize reply lost identity or truncation marker: terminal=%v source=%q len=%d", last.Terminal, last.SourceMessageID, len(last.Content))
+	}
+	if last.FinalText == nil || !strings.Contains(*last.FinalText, "truncated") {
+		t.Fatalf("FinalText not bounded: %v", last.FinalText)
+	}
+}
+
+func TestOversizeMultibyteContentStaysValidUTF8(t *testing.T) {
+	store := New(t.TempDir())
+	content := strings.Repeat("é\u0001", 3*1000*1000) // multibyte plus control chars that JSON-escape to 6 bytes
+	if _, err := store.Append("tui", "local", Entry{Role: "assistant", Content: content}); err != nil {
+		t.Fatal(err)
+	}
+	entries, _, err := store.Entries("tui", "local")
+	if err != nil || len(entries) != 1 || !utf8.ValidString(entries[0].Content) {
+		t.Fatalf("multibyte oversize entry unreadable or invalid: %d, %v", len(entries), err)
 	}
 }

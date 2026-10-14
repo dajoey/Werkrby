@@ -7,6 +7,7 @@
 ## Local Contracts
 
 - Keep each channel/conversation independent, store complete durable JSONL with private permissions, and tolerate only explicitly handled tail corruption.
+- Bound every appended JSONL line below the strict reader limit: an oversized entry keeps its identity fields and has `content`/`final_text` truncated on a rune boundary with a visible marker, because one over-limit line makes every later read of that conversation fail.
 - Build prompts backward from disk under both message and character limits; never load an unbounded history to compute bounded context.
 - Branch into a new conversation without mutating its source, retain bounded reply references, and exclude private attachment contents from records.
 - Append a recovery baseline to every branch so copied source messages remain context only and can never become stalled-message candidates in the new conversation.

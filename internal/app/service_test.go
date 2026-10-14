@@ -4009,3 +4009,24 @@ func TestAutostartScreenReadsRegistrationInsteadOfPreference(t *testing.T) {
 		t.Fatalf("recheck mutated registration: %#v, %v", result, err)
 	}
 }
+
+func TestOversizeTerminalReplyKeepsConversationUsable(t *testing.T) {
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(config.PathForRoot(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(cfg, newServiceHarness())
+	message := core.Message{Channel: "telegram", Conversation: "TG-big", SourceMessageID: "src-1"}
+	reply := strings.Repeat("r", 2300*1000)
+	service.wrapEmit(message, 0, func(core.Event) {})(core.Event{Kind: core.EventFinal, Text: reply, FinalText: &reply, Done: true})
+	if _, err := service.History.HasUserSourceID("telegram", "TG-big", "src-2"); err != nil {
+		t.Fatalf("a later message is rejected after an oversize reply: %v", err)
+	}
+	if _, err := service.chatPrompt(core.Message{Channel: "telegram", Conversation: "TG-big", Text: "next"}); err != nil {
+		t.Fatalf("chat prompt fails after an oversize reply: %v", err)
+	}
+}

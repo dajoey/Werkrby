@@ -71,7 +71,10 @@ func TestEventsFailClosedOnBoundsCorruptionAndInvalidCursor(t *testing.T) {
 					_, _ = s.Append("cli", "bounded", Entry{Role: "assistant", Content: "record"})
 				}
 			case "bytes":
-				_, _ = s.Append("cli", "bounded", Entry{Role: "assistant", Content: strings.Repeat("x", EventReplayBytes)})
+				// A single entry is capped below the replay byte bound, so exceed it with several.
+				for i := 0; i < 3; i++ {
+					_, _ = s.Append("cli", "bounded", Entry{Role: "assistant", Content: strings.Repeat("x", EventReplayBytes/2)})
+				}
 			case "partial":
 				f, _ := os.OpenFile(s.Path("cli", "bounded"), os.O_APPEND|os.O_WRONLY, 0o600)
 				_, _ = f.WriteString("{\"partial\"")
