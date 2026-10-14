@@ -480,3 +480,36 @@ func TestResumeRegistersBranchBeforeConcurrentCleanupCanDeleteIt(t *testing.T) {
 		t.Fatalf("unprotected old source was not removed: %v", err)
 	}
 }
+
+func TestCleanupKeepsFreshCLIBranchOfOldConversation(t *testing.T) {
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(config.PathForRoot(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := New(cfg, newServiceHarness())
+	now := time.Now().UTC()
+	if _, err := service.History.Append("tui", "old", history.Entry{At: now.Add(-90 * 24 * time.Hour), Role: "user", Content: "ancient"}); err != nil {
+		t.Fatal(err)
+	}
+	// A newer tui conversation takes the "latest tui" protection, as in real use.
+	if _, err := service.History.Append("tui", "current", history.Entry{At: now, Role: "user", Content: "now"}); err != nil {
+		t.Fatal(err)
+	}
+	branch, _, err := service.History.BranchTo("tui", "old", "cli")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.runCleanup(30, "", "", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(service.History.Path("cli", branch)); err != nil {
+		t.Fatalf("fresh cli branch removed by cleanup: %v", err)
+	}
+	if _, err := os.Stat(service.History.Path("tui", "old")); !os.IsNotExist(err) {
+		t.Fatalf("old source conversation remains: %v", err)
+	}
+}
