@@ -187,6 +187,22 @@ type Orchestrator struct {
 	SemanticHeartbeatMinutes     int    `yaml:"semantic_heartbeat_minutes"`
 	TaskNotifications            string `yaml:"task_notifications"`
 	MaxParallel                  int    `yaml:"max_parallel"`
+	// AdmissionMode: "off" (the default; empty means off) or "shadow", where every claim site also asks
+	// internal/admission and logs its verdict beside the claim outcome without changing it.
+	AdmissionMode string `yaml:"admission_mode,omitempty"`
+}
+
+const (
+	AdmissionModeOff    = "off"
+	AdmissionModeShadow = "shadow"
+)
+
+// AdmissionModeOrOff is the configured admission mode, with the unset default made explicit.
+func (o Orchestrator) AdmissionModeOrOff() string {
+	if o.AdmissionMode == "" {
+		return AdmissionModeOff
+	}
+	return o.AdmissionMode
 }
 
 type Extensions struct {
@@ -442,6 +458,11 @@ func (c Config) Validate() error {
 	}
 	if minutes := c.Orchestrator.SemanticHeartbeatMinutes; minutes != 0 && (minutes < 5 || minutes > 1440) {
 		problems = append(problems, "orchestrator.semantic_heartbeat_minutes must be 0 (disabled) or between 5 and 1440")
+	}
+	switch c.Orchestrator.AdmissionMode {
+	case "", AdmissionModeOff, AdmissionModeShadow:
+	default:
+		problems = append(problems, "orchestrator.admission_mode must be off or shadow")
 	}
 	switch c.Orchestrator.TaskNotifications {
 	case TaskNotificationsOff, TaskNotificationsDecide, TaskNotificationsAlways:

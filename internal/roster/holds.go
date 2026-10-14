@@ -2,6 +2,7 @@ package roster
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,22 +74,57 @@ func (r *Roster) Landing(stateDir, name string, now time.Time) string {
 	return r.follow(name, u.Counts, loadDecisions(stateDir, today))
 }
 
+// Passed is one staff the fallback walk went past, and why.
+type Passed struct {
+	Seat   string
+	Reason string
+}
+
+// LandingTrail is Landing plus the staff it went past, in order, each with the
+// reason (daily cap, stopped). Read-only like Landing.
+func (r *Roster) LandingTrail(stateDir, name string, now time.Time) (string, []Passed) {
+	if !r.Has(name) {
+		return name, nil
+	}
+	today := now.Local().Format("2006-01-02")
+	u := usage{}
+	if data, err := os.ReadFile(filepath.Join(stateDir, "runtime", usageFileName)); err == nil {
+		_ = json.Unmarshal(data, &u)
+	}
+	if u.Date != today || u.Counts == nil {
+		u = usage{Date: today, Counts: map[string]int{}}
+	}
+	return r.followTrail(name, u.Counts, loadDecisions(stateDir, today))
+}
+
 // follow walks the fallback chain from `name` past staff that are at their
 // daily cap (without a "continue") or stopped, as Assign routes a new session.
 func (r *Roster) follow(name string, counts map[string]int, decided map[string]string) string {
+	chosen, _ := r.followTrail(name, counts, decided)
+	return chosen
+}
+
+func (r *Roster) followTrail(name string, counts map[string]int, decided map[string]string) (string, []Passed) {
 	chosen := name
+	var passed []Passed
 	for hop := 0; hop < maxFallback; hop++ {
 		s := r.Staff[chosen]
 		if s.Fallback == "" {
 			break
 		}
 		halted := s.DailyCap > 0 && counts[chosen] >= s.DailyCap && decided[chosen] != DecisionContinue
-		if !halted && decided[chosen] != DecisionStop {
+		stopped := decided[chosen] == DecisionStop
+		if !halted && !stopped {
 			break
 		}
+		reason := "stopped for today"
+		if !stopped {
+			reason = fmt.Sprintf("daily cap %d reached", s.DailyCap)
+		}
+		passed = append(passed, Passed{Seat: chosen, Reason: reason})
 		chosen = s.Fallback
 	}
-	return chosen
+	return chosen, passed
 }
 
 // AnyHeld is a cheap pre-check: true when the holds file is fresh and lists at

@@ -139,6 +139,29 @@ func TestSemanticHeartbeatValidationSupportsExplicitDisable(t *testing.T) {
 	}
 }
 
+func TestAdmissionModeDefaultsOffAndRejectsUnknownValues(t *testing.T) {
+	cfg := Default()
+	if cfg.Orchestrator.AdmissionMode != "" || cfg.Orchestrator.AdmissionModeOrOff() != AdmissionModeOff {
+		t.Fatalf("default admission mode %q", cfg.Orchestrator.AdmissionMode)
+	}
+	for _, valid := range []string{"", "off", "shadow"} {
+		cfg.Orchestrator.AdmissionMode = valid
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("admission_mode %q rejected: %v", valid, err)
+		}
+	}
+	cfg.Orchestrator.AdmissionMode = "shadow"
+	if cfg.Orchestrator.AdmissionModeOrOff() != AdmissionModeShadow {
+		t.Fatal("shadow not reported")
+	}
+	for _, invalid := range []string{"on", "enforce", "Shadow "} {
+		cfg.Orchestrator.AdmissionMode = invalid
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "admission_mode") {
+			t.Fatalf("admission_mode %q produced %v", invalid, err)
+		}
+	}
+}
+
 func TestCleanupRetentionValidationRequiresBoundedPositiveWholeDays(t *testing.T) {
 	for _, invalid := range []int{-1, 0, 36501} {
 		cfg := Default()

@@ -268,6 +268,8 @@ func run(args []string, version string) error {
 		}
 		fmt.Println("valid: " + cfg.Path)
 		return nil
+	case "admission":
+		return runAdmissionCommand(args[1:], os.Stdout)
 	case "doctor":
 		return doctor()
 	case "extension", "extensions":
@@ -1460,6 +1462,9 @@ Usage:
   werkrby extension ...           List, install, or remove Git extensions
   werkrby whatsapp pair           Pair a WhatsApp account by QR code
   werkrby config [get|set ...]    Validate config or run the shared config command
+  werkrby admission explain       Show why each roster seat would run or wait now (read-only)
+    --seat NAME                   Explain one seat
+    --json                        Emit JSON keyed by seat
   werkrby doctor                  Check local configuration and prerequisites
   werkrby version                 Print the binary version
 `
