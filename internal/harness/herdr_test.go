@@ -221,19 +221,19 @@ func TestWorkerNameAndLabel(t *testing.T) {
 		{
 			key:          "orchestrator:tasks:task_implementation:tasks-20260914-helm-fleet-update-03:1",
 			model:        "opencode",
-			wantName:     "wk-t-a1-helm-fleet-update-03",
+			wantName:     "wk-t-a1-helm-fleet-update-876b81",
 			wantTabLabel: "Task: helm-fleet-update-03 (opencode)",
 		},
 		{
 			key:          "orchestrator:tasks:task_review:tasks-20260914-helm-lmc-verify-02:1",
 			model:        "kimi",
-			wantName:     "wk-r-a1-helm-lmc-verify-02",
+			wantName:     "wk-r-a1-helm-lmc-verify-0-bbbd26",
 			wantTabLabel: "Review: helm-lmc-verify-02 (kimi)",
 		},
 		{
 			key:          "orchestrator:goals:planning:goals-20260914-202731-helm01:1",
 			model:        "opencode",
-			wantName:     "wk-p-a1-helm01",
+			wantName:     "wk-p-a1-helm01-3b223f",
 			wantTabLabel: "Plan: helm01 (opencode)",
 		},
 		{
@@ -671,3 +671,44 @@ func TestDualFormMatchers(t *testing.T) {
 	}
 }
 
+// Distinct job ids must map to distinct worker names (resolveTarget reuses a
+// same-name worker, so a collision shares one pane between two jobs), and
+// plan-phase workers abandoned by a crash must be swept like the other phases.
+func TestBugWorkerNameCollidesAcrossDaysAndPlanSweep(t *testing.T) {
+	name := func(route, phase, id string) string {
+		n, _ := workerNameAndLabel("orchestrator:"+route+":"+phase+":"+id+":1", "opencode")
+		return n
+	}
+
+	// Same slug on different days.
+	a := name("tasks", "task_implementation", "tasks-20261012-daily-report")
+	b := name("tasks", "task_implementation", "tasks-20261013-daily-report")
+	if a == b {
+		t.Errorf("ids differing only by date share worker name %q", a)
+	}
+
+	// Same slug under the tasks- and goals- prefixes.
+	c := name("tasks", "task_implementation", "tasks-shared")
+	d := name("goals", "task_implementation", "goals-shared")
+	if c == d {
+		t.Errorf("tasks-/goals- ids with one slug share worker name %q", c)
+	}
+
+	// Names stay valid herdr names and stable across restarts.
+	nameRe := regexp.MustCompile(`^[a-z0-9_-]+$`)
+	for _, n := range []string{a, b, c, d} {
+		if len(n) == 0 || len(n) > 32 || !nameRe.MatchString(n) {
+			t.Errorf("worker name %q is not a valid herdr name", n)
+		}
+	}
+	if again := name("tasks", "task_implementation", "tasks-20261012-daily-report"); again != a {
+		t.Errorf("worker name not stable: %q then %q", a, again)
+	}
+
+	// Plan-phase workers (current wk-p- and legacy sj-p-) are swept as orphans.
+	for _, n := range []string{"wk-p-a1-helm01", "sj-p-a1-helm01", name("goals", "planning", "goals-20261013-x")} {
+		if !isOrphanWorkerName(n) {
+			t.Errorf("isOrphanWorkerName(%q) = false, want true", n)
+		}
+	}
+}
