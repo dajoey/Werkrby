@@ -23,7 +23,7 @@ import (
 func candidateArchive(t *testing.T, version string, mutate func(map[string]string), extra *tar.Header) (string, string) {
 	t.Helper()
 	files := map[string]string{
-		"spynel":  "#!/bin/sh\nprintf 'spynel " + version + "\\n'\n",
+		"spynel":  "#!/bin/sh\nprintf 'werkrby " + version + "\\n'\n",
 		"LICENSE": "license", "THIRD_PARTY_NOTICES.md": "notices",
 	}
 	for _, name := range []string{"sherpa-onnx", "onnxruntime", "miniaudio", "pion-opus", "bubbletea", "bubbles-textarea"} {
@@ -120,7 +120,7 @@ func TestInstallRetainsWorkingBundleAndRejectsInvalidCandidates(t *testing.T) {
 				}
 			}
 		}},
-		{name: "wrong version", mutate: func(files map[string]string) { files["spynel"] = "#!/bin/sh\necho spynel 7.0.0\n" }},
+		{name: "wrong version", mutate: func(files map[string]string) { files["spynel"] = "#!/bin/sh\necho werkrby 7.0.0\n" }},
 		{name: "traversal", header: &tar.Header{Name: "../escape", Typeflag: tar.TypeReg}},
 		{name: "absolute", header: &tar.Header{Name: "/escape", Typeflag: tar.TypeReg}},
 		{name: "symlink", header: &tar.Header{Name: "link", Typeflag: tar.TypeSymlink, Linkname: "/tmp"}},
@@ -322,4 +322,57 @@ func TestInstallLockIsReleasedAfterCrash(t *testing.T) {
 		t.Fatal("crashed installer retained lock:", err)
 	}
 	unlock()
+}
+
+// The candidate is the real binary built from cmd/spynel, so verifyBundle is
+// checked against the banner the program actually prints, not a hand-typed one.
+func TestVerifyBundleAcceptsRealBinaryBanner(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("real-binary bundle check runs on linux")
+	}
+	libDir := os.Getenv("SHERPA_LIB")
+	if libDir == "" {
+		module, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", "github.com/k2-fsa/sherpa-onnx-go-linux").Output()
+		if err != nil {
+			t.Skipf("sherpa-onnx lib dir unavailable: %v", err)
+		}
+		libDir = filepath.Join(strings.TrimSpace(string(module)), "lib", map[string]string{"amd64": "x86_64-unknown-linux-gnu", "arm64": "aarch64-unknown-linux-gnu"}[runtime.GOARCH])
+	}
+	bundle := t.TempDir()
+	build := exec.Command("go", "build", "-trimpath", "-ldflags=-X main.version=1.3.0", "-o", filepath.Join(bundle, "spynel"), "../../cmd/spynel")
+	build.Env = append(os.Environ(), "CGO_ENABLED=1")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build candidate: %v\n%s", err, output)
+	}
+	files := map[string]string{"LICENSE": "license", "THIRD_PARTY_NOTICES.md": "notices"}
+	for _, name := range []string{"sherpa-onnx", "onnxruntime", "miniaudio", "pion-opus", "bubbletea", "bubbles-textarea"} {
+		files["licenses/"+name+"/LICENSE"] = "license"
+	}
+	for name, content := range files {
+		path := filepath.Join(bundle, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(bundle, "lib"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"libsherpa-onnx-c-api.so", "libonnxruntime.so"} {
+		data, err := os.ReadFile(filepath.Join(libDir, name))
+		if err != nil {
+			t.Skipf("sherpa-onnx library %s unavailable: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(bundle, "lib", name), data, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := verifyBundle(context.Background(), bundle, "1.3.0"); err != nil {
+		t.Fatalf("verifyBundle rejected the real binary: %v", err)
+	}
+	if err := verifyBundle(context.Background(), bundle, "9.9.9"); err == nil {
+		t.Fatal("verifyBundle accepted a real binary of another version")
+	}
 }

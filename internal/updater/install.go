@@ -357,7 +357,10 @@ func verifyBundle(ctx context.Context, directory, version string) error {
 	if err := command.Run(); err != nil {
 		return fmt.Errorf("candidate executable check failed: %w", err)
 	}
-	if strings.TrimSpace(output.text) != "spynel "+version {
+	// The banner is "<program> <version>"; the program name changed with the
+	// rebrand, so only the version is compared, after a known program name.
+	banner := strings.Fields(output.text)
+	if len(banner) != 2 || (banner[0] != "werkrby" && banner[0] != "spynel") || banner[1] != version {
 		return errors.New("candidate executable version does not match release")
 	}
 	return nil

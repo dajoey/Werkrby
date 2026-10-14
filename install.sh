@@ -122,7 +122,7 @@ main() {
   path_line="case \":\$PATH:\" in *:$quoted_bin:*) ;; *) export PATH=$quoted_bin:\$PATH ;; esac # Spynel installer"
   printf '%s\n' "$path_line" > "$install_root/env"
   if on_path "$bin_dir"; then
-    [ "$(spynel --version)" = "spynel $version" ] || { echo 'The installed Spynel command could not be verified on PATH.' >&2; exit 1; }
+    case "$(spynel --version)" in "werkrby $version"|"spynel $version") ;; *) false ;; esac || { echo 'The installed Spynel command could not be verified on PATH.' >&2; exit 1; }
     echo "Installed Spynel $version. Run: spynel"
   else
     configure_path
