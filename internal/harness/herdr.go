@@ -48,9 +48,12 @@ type herdrTurn struct {
 	paneID    string
 	tabID     string
 	isDynamic bool
-	cmd       *exec.Cmd
-	cancel    context.CancelFunc
-	done      chan struct{}
+	// external marks an explicit pane target (e.g. "w8:p2") the user owns: this harness
+	// neither spawned nor registered it, so it never closes or renames it.
+	external bool
+	cmd      *exec.Cmd
+	cancel   context.CancelFunc
+	done     chan struct{}
 	// headless marks a `claude -p` turn (sendHeadless): there is no pane to type into or close.
 	headless bool
 }
@@ -611,7 +614,7 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 	return
 }
 
-func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd string) (target string, paneID string, tabID string, isDynamic bool, threadID string, err error) {
+func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd string) (target string, paneID string, tabID string, isDynamic bool, external bool, threadID string, err error) {
 	model = strings.TrimSpace(model)
 	if model == "" || model == "default" {
 		model = "opencode"
@@ -622,14 +625,14 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 	if strings.HasPrefix(model, roster.StaffPrefix) {
 		kind, args, expandErr := roster.Expand(filepath.Join(cwd, roster.StateDirName), model)
 		if expandErr != nil {
-			return "", "", "", false, "", expandErr
+			return "", "", "", false, false, "", expandErr
 		}
 		model, agentArgs = kind, args
 	}
 
 	// 1. Direct explicit pane target (e.g. "w8:p2")
 	if strings.Contains(model, ":") {
-		return model, model, "", false, "", nil
+		return model, model, "", false, true, "", nil
 	}
 
 	cleanKey := strings.TrimSpace(key)
@@ -683,7 +686,7 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 					if a.AgentStatus == "blocked" {
 						_ = exec.CommandContext(ctx, h.config.Command, "agent", "send-keys", a.Name, "esc").Run()
 					}
-					return a.Name, a.PaneID, a.TabID, false, a.AgentSession.Value, nil
+					return a.Name, a.PaneID, a.TabID, false, false, a.AgentSession.Value, nil
 				}
 			}
 		}
@@ -716,11 +719,11 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 		splitCmd := exec.CommandContext(ctx, h.config.Command, splitArgs...)
 		splitOut, splitErr := splitCmd.Output()
 		if splitErr != nil {
-			return "", "", "", false, "", fmt.Errorf("failed to spawn dedicated worker (tab and split failed): %w (out: %s)", splitErr, string(splitOut))
+			return "", "", "", false, false, "", fmt.Errorf("failed to spawn dedicated worker (tab and split failed): %w (out: %s)", splitErr, string(splitOut))
 		}
 		var splitResp herdrPaneSplitResponse
 		if err := json.Unmarshal(splitOut, &splitResp); err != nil || splitResp.Result.Pane.PaneID == "" {
-			return "", "", "", false, "", fmt.Errorf("failed to parse new pane ID from herdr: %s", string(splitOut))
+			return "", "", "", false, false, "", fmt.Errorf("failed to parse new pane ID from herdr: %s", string(splitOut))
 		}
 		newPaneID = splitResp.Result.Pane.PaneID
 	}
@@ -740,7 +743,7 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 		} else {
 			_ = exec.Command(h.config.Command, "pane", "close", newPaneID).Run()
 		}
-		return "", "", "", false, "", fmt.Errorf("failed to start agent %s in pane %s: %w (out: %s)", model, newPaneID, startErr, string(startOut))
+		return "", "", "", false, false, "", fmt.Errorf("failed to start agent %s in pane %s: %w (out: %s)", model, newPaneID, startErr, string(startOut))
 	}
 
 	getCmd := exec.CommandContext(ctx, h.config.Command, "agent", "get", expectedWorkerName)
@@ -758,7 +761,7 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 		threadID = sid
 	}
 
-	return expectedWorkerName, newPaneID, createdTabID, true, threadID, nil
+	return expectedWorkerName, newPaneID, createdTabID, true, false, threadID, nil
 }
 
 func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg HarnessConfig, emit core.Emit) (string, bool, error) {
@@ -784,7 +787,7 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 		name := strings.TrimPrefix(strings.TrimSpace(cfg.Model), roster.StaffPrefix)
 		return h.sendHeadless(ctx, key, prompt, name, staff, cfg, emit)
 	}
-	target, paneID, tabID, isDynamic, threadID, err := h.resolveTarget(ctx, key, cfg.Model, cfg.Cwd)
+	target, paneID, tabID, isDynamic, external, threadID, err := h.resolveTarget(ctx, key, cfg.Model, cfg.Cwd)
 	if err != nil {
 		return "", false, fmt.Errorf("herdr target resolution: %w", err)
 	}
@@ -806,6 +809,7 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 		paneID:    paneID,
 		tabID:     tabID,
 		isDynamic: isDynamic,
+		external:  external,
 		cancel:    cancel,
 		done:      make(chan struct{}),
 	}
@@ -822,7 +826,7 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 		delete(h.active, key)
 		h.mu.Unlock()
 		close(turn.done)
-		if turnSuccess && isOrchestratorKey(cleanKey) {
+		if turnSuccess && !external && isOrchestratorKey(cleanKey) {
 			go h.cleanupCompletedTab(key, tabID, paneID, target)
 		}
 	}()
@@ -1543,7 +1547,9 @@ func (h *Herdr) Interrupt(ctx context.Context, key string) (bool, error) {
 		return true, nil
 	}
 	_ = exec.CommandContext(ctx, h.config.Command, "agent", "send-keys", turn.target, "ctrl+c").Run()
-	go h.teardownWorker(key, turn.tabID, turn.paneID, turn.target, true)
+	if !turn.external {
+		go h.teardownWorker(key, turn.tabID, turn.paneID, turn.target, true)
+	}
 	return true, nil
 }
 
