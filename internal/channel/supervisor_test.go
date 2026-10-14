@@ -413,3 +413,60 @@ observedError:
 	supervisor.stopAll()
 	supervisor.wait.Wait()
 }
+
+type failingRunFixture struct {
+	ctx chan context.Context
+}
+
+func (c *failingRunFixture) Name() string { return "whatsapp" }
+
+func (c *failingRunFixture) Run(ctx context.Context, _ Handler) error {
+	c.ctx <- ctx
+	return errors.New("connect failed")
+}
+
+func TestSupervisorCancelsChannelContextWhenRunFails(t *testing.T) {
+	cfg := config.Default()
+	fixture := &failingRunFixture{ctx: make(chan context.Context, 1)}
+	managed := []Managed{{
+		Name: "whatsapp", Enabled: func(config.Config) bool { return true }, Fingerprint: func(config.Config) string { return "same" },
+		Build: func(config.Config) (Channel, error) { return fixture, nil },
+	}}
+	supervisor := NewSupervisor(nil, nil, managed, func(ConnectionStatus) {}, nil)
+	if err := supervisor.reconcile(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	supervisor.wait.Wait()
+	runCtx := <-fixture.ctx
+	select {
+	case <-runCtx.Done():
+	default:
+		t.Fatal("channel context of a failed Run was never cancelled")
+	}
+}
+
+func TestSupervisorCancelsChannelContextWhenRunFailsAuthorization(t *testing.T) {
+	cfg := config.Default()
+	fixture := &losesAuthorizationFixture{started: make(chan struct{})}
+	fixture.valid.Store(true)
+	managed := []Managed{{
+		Name: "telegram", Enabled: func(config.Config) bool { return true }, Fingerprint: func(config.Config) string { return "same" },
+		Build: func(config.Config) (Channel, error) { return fixture, nil },
+	}}
+	supervisor := NewSupervisor(nil, nil, managed, func(ConnectionStatus) {}, nil)
+	if err := supervisor.reconcile(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	supervisor.wait.Wait()
+	supervisor.mu.Lock()
+	running := supervisor.running["telegram"]
+	supervisor.mu.Unlock()
+	if running == nil {
+		t.Fatal("failed-authorization generation should stay registered")
+	}
+	select {
+	case <-running.ctx.Done():
+	default:
+		t.Fatal("channel context of a Run that lost authorization was never cancelled")
+	}
+}

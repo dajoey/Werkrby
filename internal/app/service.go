@@ -59,6 +59,8 @@ type Service struct {
 	primaryInstance        string
 	cleanupNotBefore       time.Time
 	titleMu                sync.Mutex
+	themeMu                sync.Mutex
+	pairingEventsMu        sync.Mutex
 	titleChanges           chan string
 	themeChanges           chan theme.Theme
 	connectionMu           sync.RWMutex

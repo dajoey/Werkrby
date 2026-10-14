@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/agent0ai/spynel/internal/fsx"
 	"github.com/agent0ai/spynel/internal/shortid"
@@ -22,6 +23,10 @@ import (
 const (
 	historyReadChunk     = 64 * 1024
 	maxHistoryEntryBytes = 4 * 1024 * 1024
+	// maxHistoryLineBytes leaves headroom under the reader limit for the
+	// newline and scanner buffering.
+	maxHistoryLineBytes  = maxHistoryEntryBytes - 4*1024
+	historyTruncatedMark = "\n\n[truncated: reply exceeded the conversation history size limit]"
 )
 
 type Entry struct {
@@ -148,7 +153,7 @@ func (s *Store) appendLocked(channel, conversation string, entry Entry) (string,
 	if entry.At.IsZero() {
 		entry.At = time.Now().UTC()
 	}
-	data, err := json.Marshal(entry)
+	data, err := marshalBounded(entry)
 	if err != nil {
 		return "", err
 	}
@@ -174,6 +179,50 @@ func (s *Store) appendLocked(channel, conversation string, entry Entry) (string,
 		}
 	}
 	return path, nil
+}
+
+// marshalBounded encodes an entry so its JSON line always fits under the
+// strict reader limit. An oversized entry keeps its identity fields and has
+// Content and FinalText truncated (halving until it fits), because one line over
+// the limit would make every later read of the conversation fail.
+func marshalBounded(entry Entry) ([]byte, error) {
+	data, err := json.Marshal(entry)
+	if err != nil || len(data) <= maxHistoryLineBytes {
+		return data, err
+	}
+	final := entry.FinalText
+	if final != nil {
+		value := *final
+		final = &value
+	}
+	entry.FinalText = final
+	for len(data) > maxHistoryLineBytes {
+		before := len(entry.Content)
+		entry.Content = truncateUTF8(entry.Content, len(entry.Content)/2)
+		if entry.FinalText != nil {
+			*entry.FinalText = truncateUTF8(*entry.FinalText, len(*entry.FinalText)/2)
+		}
+		if data, err = json.Marshal(entry); err != nil {
+			return nil, err
+		}
+		if before == len(entry.Content) {
+			break
+		}
+	}
+	return data, nil
+}
+
+// truncateUTF8 cuts value to at most limit bytes on a rune boundary and appends
+// the truncation marker.
+func truncateUTF8(value string, limit int) string {
+	if limit < 0 {
+		limit = 0
+	}
+	cut := min(limit, len(value))
+	for cut > 0 && cut < len(value) && !utf8.RuneStart(value[cut]) {
+		cut--
+	}
+	return strings.TrimSuffix(value[:cut], historyTruncatedMark) + historyTruncatedMark
 }
 
 // ReserveRetrigger atomically rechecks exact source coverage and appends one

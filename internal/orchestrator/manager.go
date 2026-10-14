@@ -1377,13 +1377,8 @@ func hasRoutableWaitingPath(document Document, now time.Time) bool {
 	if hasJoeyAsk(document) {
 		return true
 	}
-	wakeAtStr := stringField(document, "wake_at")
-	if wakeAtStr != "" {
-		if due, err := time.Parse(time.RFC3339, wakeAtStr); err == nil {
-			if due.After(now) {
-				return true
-			}
-		}
+	if due, ok := frontMatterTime(document.FrontMatter["wake_at"]); ok && due.After(now) {
+		return true
 	}
 	return false
 }
@@ -1483,12 +1478,8 @@ func requiresTaskNotificationDecision(document Document, status string, now time
 	case "done", "failed", "cancelled":
 		return true
 	case "waiting":
-		wakeAt := strings.TrimSpace(stringField(document, "wake_at"))
-		if wakeAt == "" {
-			return true
-		}
-		due, err := time.Parse(time.RFC3339, wakeAt)
-		return err != nil || !due.After(now)
+		due, ok := frontMatterTime(document.FrontMatter["wake_at"])
+		return !ok || !due.After(now)
 	default:
 		return false
 	}
@@ -1695,6 +1686,11 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 				continue
 			}
 			targetStatus := "todo"
+			if route.Name == "tasks" && stringField(document, "resume_status") == "review" {
+				// A quota wall parked the task during review: its implementation
+				// is done, so it resumes review rather than re-running the work.
+				targetStatus = "review"
+			}
 			if route.Name == "goals" {
 				targetStatus = stringField(document, "resume_status")
 				if targetStatus != "planning" && targetStatus != "review" {
@@ -1716,6 +1712,7 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 				if when, ok := frontMatterTime(fm["not_before"]); !ok || !when.After(now) {
 					delete(fm, "not_before")
 				}
+				delete(fm, "resume_status")
 			}); err != nil {
 				return err
 			}
@@ -3149,10 +3146,25 @@ func (m *Manager) recordQuotaError(lease Lease, err error) {
 	base := filepath.Dir(m.Config.Resolve(route.Source))
 	waitingTarget := filepath.Join(base, "waiting", filepath.Base(lease.File))
 	note := fmt.Sprintf("quota wall on %s; parked until %s; attempt not spent", runner, resetTimeStr)
+	// The wake returns the document to the phase the wall interrupted: review
+	// and planning parks record it, an implementation park leaves it absent so
+	// a stale value cannot misroute the wake.
+	resumeStatus := ""
+	switch normalizeLeasePhase(lease.Route, lease.Phase) {
+	case phaseTaskReview, phaseGoalReview:
+		resumeStatus = "review"
+	case phaseGoalPlanning:
+		resumeStatus = "planning"
+	}
 	update := func(fm map[string]any) {
 		fm["quota_reset_at"] = resetTimeStr
 		fm["wake_at"] = resetTimeStr
 		fm[resumeCreditField] = true
+		if resumeStatus != "" {
+			fm["resume_status"] = resumeStatus
+		} else {
+			delete(fm, "resume_status")
+		}
 	}
 	if moveErr := moveDocumentWithUpdate(lease.File, waitingTarget, "waiting", now, note, update); moveErr != nil {
 		m.log("move quota error document to waiting: " + moveErr.Error())

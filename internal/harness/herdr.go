@@ -354,10 +354,12 @@ func hasWorkerPrefix(name string) bool {
 func isOrphanWorkerName(name string) bool {
 	return strings.HasPrefix(name, "sj-t-") ||
 		strings.HasPrefix(name, "sj-r-") ||
+		strings.HasPrefix(name, "sj-p-") ||
 		strings.HasPrefix(name, "sj-o-") ||
 		strings.HasPrefix(name, "sj-hb-") ||
 		strings.HasPrefix(name, "wk-t-") ||
 		strings.HasPrefix(name, "wk-r-") ||
+		strings.HasPrefix(name, "wk-p-") ||
 		strings.HasPrefix(name, "wk-o-") ||
 		strings.HasPrefix(name, "wk-hb-")
 }
@@ -461,10 +463,16 @@ func sanitizeTag(s string) string {
 // hashSource is appended so IDs that differ only past the old head-truncate point
 // stay unique and deterministic across restarts (re-adoption looks panes up by name).
 func fitHerdrWorkerName(prefix, body, hashSource string) string {
+	return fitHerdrWorkerNameHashed(prefix, body, hashSource, false)
+}
+
+// fitHerdrWorkerNameHashed is fitHerdrWorkerName with an option to append the
+// hash even when prefix+body fits, for bodies derived lossily from hashSource.
+func fitHerdrWorkerNameHashed(prefix, body, hashSource string, alwaysHash bool) string {
 	const maxLen = 32
 	body = strings.Trim(body, "-_")
 	name := prefix + body
-	if len(name) <= maxLen {
+	if !alwaysHash && len(name) <= maxLen {
 		return strings.Trim(name, "-_")
 	}
 	sum := sha1.Sum([]byte(hashSource))
@@ -535,6 +543,9 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 			if shortID == "" {
 				shortID = "job"
 			}
+			// The short form drops the tasks-/goals- prefix and the leading date,
+			// so distinct ids can share it; hash the full id whenever it was altered.
+			idAltered := shortID != id
 
 			phaseCode := "t"
 			phaseLabel := "Task"
@@ -555,7 +566,7 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 
 			// Herdr limits agent names to 1-32 lowercase characters [a-z0-9_-]
 			prefix := fmt.Sprintf("wk-%s-a%s-", phaseCode, attempt)
-			workerName = fitHerdrWorkerName(prefix, shortID, shortID)
+			workerName = fitHerdrWorkerNameHashed(prefix, shortID, id, idAltered)
 			tabLabel = fmt.Sprintf("%s: %s (%s)", phaseLabel, shortID, model)
 			return
 		}

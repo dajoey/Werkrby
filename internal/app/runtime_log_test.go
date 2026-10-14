@@ -1125,3 +1125,53 @@ func TestRuntimeClearReportsAnotherActiveSession(t *testing.T) {
 		t.Fatalf("clear error = %v, want active-session evidence", err)
 	}
 }
+
+func errorsJSONLSize(directory string) int64 {
+	var total int64
+	for _, name := range []string{errorLogName, errorLogName + ".1"} {
+		if info, err := os.Stat(filepath.Join(directory, name)); err == nil {
+			total += info.Size()
+		}
+	}
+	return total
+}
+
+func TestRuntimeErrorsJSONLIsBoundedAndKeepsNewest(t *testing.T) {
+	directory := t.TempDir()
+	runtime := NewRuntimeAt(directory, "errors-bound")
+	defer runtime.Close()
+	payload := strings.Repeat("e", maxLogEntryRunes)
+	const total = 1500
+	for index := 0; index < total; index++ {
+		runtime.LogEvent("error", "poll", "orchestrator poll failed", fmt.Sprintf("%04d-%s", index, payload))
+	}
+	if err := runtime.persist.control("flush"); err != nil {
+		t.Fatal(err)
+	}
+	if size := errorsJSONLSize(directory); size > 2*maxRuntimeLogBytes+int64(maxRuntimeJSONLine) {
+		t.Fatalf("errors.jsonl family is %d bytes after %d errors, want at most about %d", size, total, 2*maxRuntimeLogBytes)
+	}
+	data, err := os.ReadFile(filepath.Join(directory, errorLogName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), fmt.Sprintf("%04d-", total-1)) {
+		t.Fatal("errors.jsonl does not hold the newest error")
+	}
+}
+
+func TestRuntimeClearAlsoClearsErrorsJSONL(t *testing.T) {
+	directory := t.TempDir()
+	runtime := NewRuntimeAt(directory, "errors-clear")
+	payload := strings.Repeat("e", maxLogEntryRunes)
+	for index := 0; index < 1500; index++ {
+		runtime.LogEvent("error", "poll", "orchestrator poll failed", fmt.Sprintf("%04d-%s", index, payload))
+	}
+	if _, err := runtime.ClearLogsResult(); err != nil {
+		t.Fatal(err)
+	}
+	runtime.Close()
+	if size := errorsJSONLSize(directory); size != 0 {
+		t.Fatalf("errors.jsonl family is %d bytes after /log clear and Close, want 0", size)
+	}
+}
