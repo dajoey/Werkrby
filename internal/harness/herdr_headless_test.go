@@ -24,7 +24,11 @@ func headlessFixture(t *testing.T, fakeClaude string) (*Herdr, string, string) {
 	if err := os.MkdirAll(state, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	body := "staff:\n  credits:\n    runner: claude\n    headless: true\n    args: [\"--model\", \"sonnet\", \"--settings\", \"/x/credits.json\"]\n  pane: {runner: claude}\n"
+	settings := filepath.Join(root, "credits.json")
+	if err := os.WriteFile(settings, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body := "staff:\n  credits:\n    runner: claude\n    headless: true\n    args: [\"--model\", \"sonnet\", \"--settings\", \"" + settings + "\"]\n  pane: {runner: claude}\n"
 	if err := os.WriteFile(roster.Path(state), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +86,7 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"DONE","ses
 	argv, _ := os.ReadFile(argvFile)
 	got := strings.Split(strings.TrimSpace(string(argv)), "\n")
 	want := append([]string{"-p", "--output-format", "stream-json", "--verbose"}, claudePermissionArgs(h.config)...)
-	want = append(want, "--model", "sonnet", "--settings", "/x/credits.json")
+	want = append(want, "--model", "sonnet", "--settings", filepath.Join(root, "credits.json"))
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}

@@ -1905,3 +1905,22 @@ func TestVersionAndHelpNameWerkrby(t *testing.T) {
 		}
 	}
 }
+
+func TestInstructionsCommandRefusesRosterWithMissingLaunchPath(t *testing.T) {
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	cfgPath := config.PathForRoot(root)
+	cfg, _ := config.Load(cfgPath)
+	missing := filepath.Join(root, "no-such-mcp.json")
+	body := "staff:\n  worker:\n    runner: claude\n    args: [\"--mcp-config\", \"" + missing + "\"]\nroles:\n  task_implementation: worker\n"
+	if err := os.WriteFile(cfg.StatePath("roster.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	err := runInstructionsCommand([]string{"--config", cfgPath}, &output)
+	if err == nil || !strings.Contains(output.String(), "roster: roster.yaml — refused") || !strings.Contains(output.String(), missing) {
+		t.Fatalf("roster with a missing launch path: err=%v output=%q", err, output.String())
+	}
+}

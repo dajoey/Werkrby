@@ -32,6 +32,7 @@ import (
 	"github.com/agent0ai/spynel/internal/localapi"
 	"github.com/agent0ai/spynel/internal/media"
 	"github.com/agent0ai/spynel/internal/orchestrator"
+	"github.com/agent0ai/spynel/internal/roster"
 	startupmanager "github.com/agent0ai/spynel/internal/startup"
 	"github.com/agent0ai/spynel/internal/theme"
 	"github.com/agent0ai/spynel/internal/updater"
@@ -529,6 +530,14 @@ func runInstructionsCommand(args []string, output io.Writer) error {
 	}
 	if invalid {
 		return errors.New("one or more persistent instruction files are unsafe or invalid")
+	}
+	// The roster is staffing config the dispatcher reads live; report it here so a bad edit (an
+	// unknown seat, a launch path that does not exist) shows up before the seats fail to start.
+	if staffing, err := roster.Load(cfg.StatePath()); err != nil {
+		_, _ = fmt.Fprintf(output, "roster: %s — refused (%s)\n", roster.FileName, err.Error())
+		return errors.New("roster file is refused: " + err.Error())
+	} else if staffing != nil {
+		_, _ = fmt.Fprintf(output, "roster: %s — valid (%d staff)\n", roster.FileName, len(staffing.Staff))
 	}
 	return nil
 }

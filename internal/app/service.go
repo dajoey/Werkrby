@@ -25,6 +25,7 @@ import (
 	"github.com/agent0ai/spynel/internal/instructions"
 	"github.com/agent0ai/spynel/internal/media"
 	"github.com/agent0ai/spynel/internal/orchestrator"
+	"github.com/agent0ai/spynel/internal/roster"
 	"github.com/agent0ai/spynel/internal/shortid"
 	"github.com/agent0ai/spynel/internal/theme"
 	"github.com/agent0ai/spynel/internal/updater"
@@ -161,6 +162,7 @@ func NewWithRuntime(cfg config.Config, target harness.Harness, runtime *Runtime)
 	manager.Cleanup = service.runAutomaticCleanup
 	manager.Log = func(message string) { runtime.LogEvent("info", "orchestrator", "lifecycle", message) }
 	manager.LogError = func(component, event, message string) { runtime.LogEvent("error", component, event, message) }
+	roster.SetRefusalLogger(func(message string) { runtime.LogEvent("error", "orchestrator", "roster", message) })
 	manager.JobStarted = func(lease orchestrator.Lease, description string, firstAssignedAt time.Time, providerIterations, implementationAttempts int) (int, error) {
 		kind := lease.DocumentType
 		if kind == "" {

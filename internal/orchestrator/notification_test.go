@@ -245,3 +245,43 @@ func decodeOutboxForTest(data []byte) (OutboxEntry, error) {
 	err := json.Unmarshal(data, &entry)
 	return entry, err
 }
+
+// Only an FFXIV build task may ask for a notice when it parks: `waiting` is dropped from notify.on
+// on every other task, and a task parked on a joey_ask never dispatches a waiting notice at all.
+func TestWaitingNoticeIsOnlyForFFXIVBuildTasksAndNeverForJoeyAsks(t *testing.T) {
+	parse := func(extra string) Document {
+		doc, err := ParseDocument([]byte("---\nid: x\n" + extra + "notify:\n  enabled: true\n  origin: telegram/TG-7\n  on: [done, waiting]\n---\nbody\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return doc
+	}
+	policy, err := NotificationFromDocument(parse(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policy.Outcomes["done"] || policy.Outcomes["waiting"] {
+		t.Fatalf("plain task outcomes = %v, want done only", policy.Outcomes)
+	}
+	policy, err = NotificationFromDocument(parse("ffxiv_build: true\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !policy.Outcomes["done"] || !policy.Outcomes["waiting"] {
+		t.Fatalf("ffxiv_build task outcomes = %v, want done and waiting", policy.Outcomes)
+	}
+
+	now := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	for name, extra := range map[string]string{"plain": "", "ffxiv build": "ffxiv_build: true\n"} {
+		withAsk := parse(extra + "joey_ask:\n  prompt: p\n")
+		if requiresTaskNotificationDecision(withAsk, "waiting", now) {
+			t.Errorf("%s task parked on a joey_ask still dispatches a waiting notice", name)
+		}
+		if !requiresTaskNotificationDecision(parse(extra), "waiting", now) {
+			t.Errorf("%s task waiting on a time lost its notice dispatch", name)
+		}
+		if !requiresTaskNotificationDecision(withAsk, "done", now) {
+			t.Errorf("%s task with a joey_ask lost its done notice", name)
+		}
+	}
+}

@@ -1936,6 +1936,22 @@ func (h *Herdr) teardownWorker(key, tabID, paneID, agentName string, force bool)
 	}
 }
 
+// canonicalDir returns an absolute, symlink-free form of dir for comparing workspace roots, or ""
+// when dir is empty.
+func canonicalDir(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	return filepath.Clean(dir)
+}
+
 // sweepOrphanedWorkers cleans up any abandoned worker tabs or agent registrations
 // from previous crashed or aborted sessions in this workspace on startup.
 func (h *Herdr) sweepOrphanedWorkers(ctx context.Context) {
@@ -1967,9 +1983,17 @@ func (h *Herdr) sweepOrphanedWorkers(ctx context.Context) {
 	if err := json.Unmarshal(out, &listResp); err != nil {
 		return
 	}
+	ownRoot := canonicalDir(h.config.Cwd)
 	for _, a := range listResp.Result.Agents {
 		// Only sweep background worker agents (not chat sj-c-*/wk-c-*, not external agents)
 		if !isOrphanWorkerName(a.Name) {
+			continue
+		}
+
+		// The herdr server is shared by every Werkrby workspace on the host: only a worker that
+		// provably runs in this workspace's root is an orphan of this serve. A worker with another
+		// or no cwd belongs to a live serve and is left alone.
+		if ownRoot == "" || canonicalDir(a.Cwd) != ownRoot {
 			continue
 		}
 

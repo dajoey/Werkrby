@@ -6,7 +6,7 @@
 
 ## Local Contracts
 
-- A missing roster means legacy routing; an invalid roster returns an error the caller logs before using legacy routing. Roster problems never fail a dispatch.
+- A missing roster means legacy routing; an invalid roster returns an error the caller logs before using legacy routing. Roster problems never fail a dispatch. A launch argument that names a file (an absolute path, or the value of `--mcp-config`, `--settings`, `--plugin-dir`, `--system-prompt-file`, `--append-system-prompt-file`; relative values resolve from the workspace root) that does not exist makes the roster invalid. Once a process has loaded a roster cleanly, a later reload that fails to parse, validate, or find its files keeps that previous roster and logs one error line per distinct refusal (`SetRefusalLogger`); a process with no earlier roster gets the error. `werkrby instructions` reports the roster state and exits non-zero when it is refused.
 - Staff names and runner kinds are validated identifiers; launch arguments are single-line strings passed to the process without shell expansion.
 - A daily cap requires a fallback. A session key keeps the staff it was first given that day, so retries and recoveries count once. The last fallback link is used even when capped, so work always has a runner.
 - `escalation` is one mapping or a list of rungs; an implementation attempt goes to the rung with the highest `after_attempt` below it. A task's own valid `staff:` pin outranks every rung except the top one.

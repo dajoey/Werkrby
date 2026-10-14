@@ -712,3 +712,64 @@ func TestBugWorkerNameCollidesAcrossDaysAndPlanSweep(t *testing.T) {
 		}
 	}
 }
+
+// A second serve on another workspace shares the herdr server. Its startup sweep must close only
+// the orphaned workers whose cwd is its own workspace root, never the live workspace's workers.
+func TestSweepOrphanedWorkersOnlyClosesOwnWorkspace(t *testing.T) {
+	dir := t.TempDir()
+	liveRoot := filepath.Join(dir, "live")
+	scratchRoot := filepath.Join(dir, "scratch")
+	for _, p := range []string{liveRoot, scratchRoot} {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	eventsFile := filepath.Join(dir, "events.txt")
+	scriptPath := filepath.Join(dir, "fake-herdr")
+	script := fmt.Sprintf(`#!/usr/bin/env bash
+cmd="$1"
+sub="$2"
+case "$cmd" in
+workspace)
+	echo '{"result":{"workspaces":[{"workspace_id":"w1","label":"[wk-worker] tasks"}]}}'
+	;;
+agent)
+	case "$sub" in
+	list)
+		cat <<'JSON'
+{"result":{"agents":[
+{"name":"wk-t-a1-live-111111","workspace_id":"w1","tab_id":"w1:tlive","pane_id":"w1:plive","cwd":%q},
+{"name":"wk-t-a1-scratch-222222","workspace_id":"w1","tab_id":"w1:tscratch","pane_id":"w1:pscratch","cwd":%q},
+{"name":"wk-t-a1-nocwd-333333","workspace_id":"w1","tab_id":"w1:tnocwd","pane_id":"w1:pnocwd"}
+]}}
+JSON
+		;;
+	rename)
+		echo "rename $3" >> %q
+		;;
+	esac
+	;;
+tab)
+	echo "tab $2 $3" >> %q
+	;;
+esac
+`, liveRoot, scratchRoot, eventsFile, eventsFile)
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHerdr(HarnessConfig{Name: "herdr", Command: scriptPath, Cwd: scratchRoot, SessionsFile: filepath.Join(dir, "sessions.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.sweepOrphanedWorkers(context.Background())
+	data, _ := os.ReadFile(eventsFile)
+	events := string(data)
+	if !strings.Contains(events, "tab close w1:tscratch") {
+		t.Errorf("own-workspace orphan was not closed; events:\n%s", events)
+	}
+	for _, foreign := range []string{"w1:tlive", "w1:tnocwd", "wk-t-a1-live-111111", "wk-t-a1-nocwd-333333"} {
+		if strings.Contains(events, foreign) {
+			t.Errorf("sweep touched %s, which is not this workspace's worker; events:\n%s", foreign, events)
+		}
+	}
+}

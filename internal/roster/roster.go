@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -214,15 +216,70 @@ func (r *Roster) PickDifferentFamily(main string, alternates []string, implement
 // Path returns the roster file inside a workspace state directory.
 func Path(stateDir string) string { return filepath.Join(stateDir, FileName) }
 
-// Load reads and validates the roster. It returns (nil, nil) when no roster exists.
+// pathFlags are launch flags whose value is a file the runner opens at start-up.
+var pathFlags = map[string]bool{
+	"--mcp-config":                true,
+	"--settings":                  true,
+	"--plugin-dir":                true,
+	"--system-prompt-file":        true,
+	"--append-system-prompt-file": true,
+}
+
+var (
+	refusalMu     sync.Mutex
+	refusalLogger = func(msg string) { log.Print(msg) }
+	lastGood      = map[string][]byte{}
+	lastRefusal   = map[string]string{}
+)
+
+// SetRefusalLogger sets where a refused roster reload is reported (nil restores the standard
+// logger). Each distinct refusal of one roster file is reported once, not once per dispatch.
+func SetRefusalLogger(fn func(string)) {
+	refusalMu.Lock()
+	defer refusalMu.Unlock()
+	if fn == nil {
+		fn = func(msg string) { log.Print(msg) }
+	}
+	refusalLogger = fn
+}
+
+// Load reads and validates the roster. It returns (nil, nil) when no roster exists. A roster that
+// does not parse, validate, or name only files that exist is refused: the last roster this process
+// loaded cleanly stays in force and one error line says why. A process with no earlier roster
+// gets the error instead.
 func Load(stateDir string) (*Roster, error) {
-	data, err := os.ReadFile(Path(stateDir))
+	path := Path(stateDir)
+	data, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	r, err := parse(data, stateDir, true)
+	refusalMu.Lock()
+	defer refusalMu.Unlock()
+	if err == nil {
+		lastGood[path] = data
+		delete(lastRefusal, path)
+		return r, nil
+	}
+	previous, ok := lastGood[path]
+	if !ok {
+		return nil, err
+	}
+	kept, keptErr := parse(previous, stateDir, false)
+	if keptErr != nil {
+		return nil, err
+	}
+	if lastRefusal[path] != err.Error() {
+		lastRefusal[path] = err.Error()
+		refusalLogger("roster reload refused, keeping the previous roster: " + err.Error())
+	}
+	return kept, nil
+}
+
+func parse(data []byte, stateDir string, checkPaths bool) (*Roster, error) {
 	var r Roster
 	if err := yaml.Unmarshal(data, &r); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", FileName, err)
@@ -230,7 +287,51 @@ func Load(stateDir string) (*Roster, error) {
 	if err := r.validate(); err != nil {
 		return nil, fmt.Errorf("%s: %w", FileName, err)
 	}
+	if checkPaths {
+		if err := r.checkLaunchPaths(filepath.Dir(stateDir)); err != nil {
+			return nil, fmt.Errorf("%s: %w", FileName, err)
+		}
+	}
 	return &r, nil
+}
+
+// launchPath reports whether a launch argument names a file (an absolute path, or the value of a
+// path flag) and returns that path; flag is the previous argument.
+func launchPath(flag, arg string) (string, bool) {
+	if name, value, ok := strings.Cut(arg, "="); ok && pathFlags[name] {
+		return value, true
+	}
+	if pathFlags[flag] || filepath.IsAbs(arg) {
+		return arg, true
+	}
+	return "", false
+}
+
+// checkLaunchPaths refuses a roster whose launch arguments name a file that does not exist: the
+// seat would fail every launch. Relative paths resolve from the workspace root.
+func (r *Roster) checkLaunchPaths(root string) error {
+	names := make([]string, 0, len(r.Staff))
+	for name := range r.Staff {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		prev := ""
+		for _, arg := range r.Staff[name].Args {
+			path, isPath := launchPath(prev, arg)
+			prev = arg
+			if !isPath {
+				continue
+			}
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(root, path)
+			}
+			if _, err := os.Stat(path); err != nil {
+				return fmt.Errorf("staff %s: launch path %s does not exist", name, path)
+			}
+		}
+	}
+	return nil
 }
 
 func (r *Roster) validate() error {

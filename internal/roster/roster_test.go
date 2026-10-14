@@ -512,3 +512,71 @@ func TestHeadlessStaffKeepsItsNameAndExpands(t *testing.T) {
 		t.Fatalf("unknown staff: ok=%v err=%v", ok, err)
 	}
 }
+
+func TestLoadRefusesMissingLaunchPath(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-mcp.json")
+	body := "staff:\n  implementer:\n    runner: claude\n    args: [\"--model\", \"sonnet\", \"--mcp-config\", \"" + missing + "\"]\nroles:\n  task_implementation: implementer\n"
+	dir := write(t, body)
+	_, err := Load(dir)
+	if err == nil || !strings.Contains(err.Error(), missing) || !strings.Contains(err.Error(), "implementer") {
+		t.Fatalf("Load with a missing --mcp-config = %v, want an error naming staff and %s", err, missing)
+	}
+
+	// A path in the flag=value form, and a bare absolute argument, are checked too.
+	for _, arg := range []string{`"--settings=` + missing + `"`, `"` + missing + `"`} {
+		dir := write(t, "staff:\n  implementer:\n    runner: claude\n    args: ["+arg+"]\n")
+		if _, err := Load(dir); err == nil || !strings.Contains(err.Error(), missing) {
+			t.Errorf("Load with arg %s = %v, want an error naming %s", arg, err, missing)
+		}
+	}
+
+	// An existing file, and non-path values such as a model id, load fine.
+	present := filepath.Join(t.TempDir(), "mcp.json")
+	if err := os.WriteFile(present, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir = write(t, "staff:\n  implementer:\n    runner: claude\n    args: [\"--model\", \"zai/glm-5.3\", \"--mcp-config\", \""+present+"\"]\n")
+	if _, err := Load(dir); err != nil {
+		t.Fatalf("Load with an existing path = %v", err)
+	}
+}
+
+func TestReloadKeepsPreviousRosterWhenNewOneIsRefused(t *testing.T) {
+	var logged []string
+	SetRefusalLogger(func(msg string) { logged = append(logged, msg) })
+	t.Cleanup(func() { SetRefusalLogger(nil) })
+
+	present := filepath.Join(t.TempDir(), "mcp.json")
+	if err := os.WriteFile(present, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	good := "staff:\n  implementer:\n    runner: claude\n    args: [\"--mcp-config\", \"" + present + "\"]\nroles:\n  task_implementation: implementer\n"
+	dir := write(t, good)
+	if _, err := Load(dir); err != nil {
+		t.Fatal(err)
+	}
+
+	missing := filepath.Join(t.TempDir(), "gone.json")
+	bad := map[string]string{
+		"missing path":  strings.Replace(good, present, missing, 1),
+		"unknown staff": strings.Replace(good, "task_implementation: implementer", "task_implementation: nobody", 1),
+	}
+	for name, body := range bad {
+		logged = nil
+		if err := os.WriteFile(Path(dir), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 3; i++ {
+			r, err := Load(dir)
+			if err != nil || r == nil || !r.Has("implementer") || r.Staff["implementer"].Args[1] != present {
+				t.Fatalf("%s: reload = %+v, %v; want the previous roster", name, r, err)
+			}
+		}
+		if len(logged) != 1 {
+			t.Fatalf("%s: want exactly one refusal line for three reloads, got %d: %v", name, len(logged), logged)
+		}
+		if name == "missing path" && !strings.Contains(logged[0], missing) {
+			t.Errorf("refusal line %q does not name the missing path %s", logged[0], missing)
+		}
+	}
+}

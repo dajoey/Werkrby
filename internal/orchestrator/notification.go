@@ -94,6 +94,11 @@ func NotificationFromDocument(document Document) (NotificationPolicy, error) {
 			return policy, fmt.Errorf("notify.on contains unsupported outcome %q", outcome)
 		}
 	}
+	// A waiting notice is for FFXIV build tasks only (front matter `ffxiv_build: true`); every other
+	// task parks silently, so the outcome is dropped from its policy rather than rejected.
+	if build, _ := document.FrontMatter["ffxiv_build"].(bool); !build {
+		delete(policy.Outcomes, "waiting")
+	}
 	return policy, nil
 }
 

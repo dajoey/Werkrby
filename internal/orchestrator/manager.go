@@ -1483,6 +1483,10 @@ func requiresTaskNotificationDecision(document Document, status string, now time
 	case "done", "failed", "cancelled":
 		return true
 	case "waiting":
+		// A park on a joey_ask is owned by the Helm card, never by a waiting notice.
+		if hasJoeyAsk(document) {
+			return false
+		}
 		due, ok := frontMatterTime(document.FrontMatter["wake_at"])
 		return !ok || !due.After(now)
 	default:
