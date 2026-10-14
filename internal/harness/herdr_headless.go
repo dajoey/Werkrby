@@ -30,6 +30,46 @@ type headlessResultLine struct {
 // line before killing the process group and using the result.
 var headlessResultGrace = 30 * time.Second
 
+// headlessStatusInterval overrides the status cadence of a headless turn (tests); zero uses the Herdr cadence.
+var headlessStatusInterval time.Duration
+
+// headlessChildEnv is the environment a headless worker gets: Werkrby's own, minus the credentials only
+// Werkrby needs (channel bot tokens). A pane worker inherits the Herdr server's environment, which
+// does not carry them; the child of a direct exec would, and its Bash tool could read them.
+func headlessChildEnv(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		name, _, _ := strings.Cut(entry, "=")
+		if !headlessSecretEnvName(name) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// headlessSecretEnvName reports whether an environment variable holds a Werkrby-only secret: any
+// bot token (the configured channels.telegram.token_env is SPYJO_BOT_TOKEN), anything for the
+// Telegram or WhatsApp channels, and a token, secret or key under Werkrby's own prefixes.
+func headlessSecretEnvName(name string) bool {
+	upper := strings.ToUpper(name)
+	switch {
+	case strings.HasSuffix(upper, "_BOT_TOKEN"),
+		strings.HasPrefix(upper, "TELEGRAM_"), strings.Contains(upper, "_TELEGRAM_"),
+		strings.HasPrefix(upper, "WHATSAPP_"), strings.Contains(upper, "_WHATSAPP_"):
+		return true
+	}
+	for _, prefix := range []string{"SPYJO_", "SPYNEL_", "WERKRBY_"} {
+		if strings.HasPrefix(upper, prefix) {
+			for _, suffix := range []string{"TOKEN", "SECRET", "KEY", "PASSWORD"} {
+				if strings.HasSuffix(upper, suffix) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // sendHeadless runs one turn of a `headless: true` roster staff as `claude -p --output-format
 // stream-json` in the workspace instead of typing the prompt into an interactive Herdr pane. It keeps
 // the Herdr turn contract: it blocks until the turn ends, emits status at the Herdr cadence (status
@@ -73,6 +113,7 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	defer procCancel()
 	cmd := exec.CommandContext(procContext, command, args...)
 	cmd.Dir = cfg.Cwd
+	cmd.Env = headlessChildEnv(os.Environ())
 	cmd.Stdin = strings.NewReader(prompt)
 	// Claude Code starts tool and MCP children that can inherit stdout. On cancel the whole process
 	// group is killed, and WaitDelay bounds Wait if a pipe is still held open anyway.
@@ -95,9 +136,16 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		emit(core.Event{Kind: core.EventStatus, Text: fmt.Sprintf("Headless: running staff %s as claude -p in %s", staffName, cfg.Cwd)})
 	}
 
+	// The ticker is joined before any terminal event so a status event never follows it.
 	tickerDone := make(chan struct{})
+	tickerExited := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(herdrStatusInterval(strings.TrimSpace(key)))
+		defer close(tickerExited)
+		interval := herdrStatusInterval(strings.TrimSpace(key))
+		if headlessStatusInterval > 0 {
+			interval = headlessStatusInterval
+		}
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		start := time.Now()
 		for {
@@ -142,6 +190,14 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	}
 	waitErr := cmd.Wait()
 	close(tickerDone)
+	<-tickerExited
+	// A turn that reported no session leaves no session for the key: a stale id from an earlier
+	// turn would be handed back by ThreadID and resumed by the next turn as if this one had
+	// continued it. An interrupted or timed-out turn keeps the earlier session, since it may have
+	// died before Claude Code printed one.
+	if threadID == "" && turnContext.Err() == nil {
+		h.forgetSession(key)
+	}
 	if turnContext.Err() != nil {
 		if errors.Is(turnContext.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			detail := fmt.Sprintf("headless worker %s exceeded %s", target, herdrWaitCeiling)
@@ -169,6 +225,15 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		})
 	}
 	return threadID, false, nil
+}
+
+func (h *Herdr) forgetSession(key string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.sessions[key]; ok {
+		delete(h.sessions, key)
+		_ = h.saveSessionsLocked()
+	}
 }
 
 // headlessFailureDetail names why a headless turn failed. The result text is used only when Claude

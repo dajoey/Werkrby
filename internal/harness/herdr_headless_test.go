@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -31,7 +32,7 @@ func headlessFixture(t *testing.T, fakeClaude string) (*Herdr, string, string) {
 	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+fakeClaude), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	h, err := NewHerdr(HarnessConfig{Command: filepath.Join(root, "no-such-herdr"), Cwd: root, Sandbox: "danger-full-access"})
+	h, err := NewHerdr(HarnessConfig{Command: filepath.Join(root, "no-such-herdr"), Cwd: root, Sandbox: "danger-full-access", ApprovalPolicy: "never"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +81,8 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"DONE","ses
 	}
 	argv, _ := os.ReadFile(argvFile)
 	got := strings.Split(strings.TrimSpace(string(argv)), "\n")
-	want := []string{"-p", "--output-format", "stream-json", "--verbose", "--model", "sonnet", "--settings", "/x/credits.json"}
+	want := append([]string{"-p", "--output-format", "stream-json", "--verbose"}, claudePermissionArgs(h.config)...)
+	want = append(want, "--model", "sonnet", "--settings", "/x/credits.json")
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("argv = %q, want %q", got, want)
 	}
@@ -266,5 +268,131 @@ echo '{"type":"result","subtype":"success","is_error":false,"result":"DONE","ses
 	}
 	if argv, _ := os.ReadFile(argvFile); !strings.Contains(string(argv), "--resume\nsess-A\n") {
 		t.Fatalf("follow-up argv = %q, want --resume sess-A", argv)
+	}
+}
+
+func TestHerdrHeadlessProductionConfigSkipsPermissionPrompts(t *testing.T) {
+	if current, err := user.Current(); err == nil && current.Uid == "0" {
+		t.Skip("root gets the acceptEdits form; production runs as a normal user")
+	}
+	h, _, argvFile := headlessFixture(t, `printf '%s\n' "$@" > "$(dirname "$0")/argv"
+cat >/dev/null
+echo '{"type":"result","subtype":"success","is_error":false,"result":"DONE","session_id":"s-perm"}'
+`)
+	if h.config.Sandbox != "danger-full-access" || h.config.ApprovalPolicy != "never" {
+		t.Fatalf("fixture config = %q/%q, want the production danger-full-access/never", h.config.Sandbox, h.config.ApprovalPolicy)
+	}
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@credits", nil); err != nil {
+		t.Fatal(err)
+	}
+	argv, _ := os.ReadFile(argvFile)
+	if !strings.Contains("\n"+string(argv), "\n--dangerously-skip-permissions\n") {
+		t.Fatalf("argv = %q, want --dangerously-skip-permissions: a headless worker has no pane to answer a prompt", argv)
+	}
+}
+
+func TestHerdrHeadlessChildEnvDropsWerkrbySecrets(t *testing.T) {
+	for _, name := range []string{"SPYJO_BOT_TOKEN", "SPYNEL_TELEGRAM_TOKEN", "OTHER_BOT_TOKEN", "TELEGRAM_API_HASH", "WHATSAPP_SESSION"} {
+		t.Setenv(name, "secret-value")
+	}
+	t.Setenv("LANG", "C.UTF-8")
+	t.Setenv("USER", "worker")
+	h, root, _ := headlessFixture(t, `cat >/dev/null
+env > "$(dirname "$0")/childenv"
+echo '{"type":"result","subtype":"success","is_error":false,"result":"DONE","session_id":"s-env"}'
+`)
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@credits", nil); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "childenv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := string(data)
+	for _, leaked := range []string{"SPYJO_BOT_TOKEN", "SPYNEL_TELEGRAM_TOKEN", "OTHER_BOT_TOKEN", "TELEGRAM_API_HASH", "WHATSAPP_SESSION", "secret-value"} {
+		if strings.Contains(env, leaked) {
+			t.Fatalf("child env carries %q", leaked)
+		}
+	}
+	for _, kept := range []string{"HOME=", "PATH=", "USER=worker", "LANG=C.UTF-8"} {
+		if !strings.Contains("\n"+env, "\n"+kept) {
+			t.Fatalf("child env lost %q", kept)
+		}
+	}
+}
+
+func TestHeadlessSecretEnvNames(t *testing.T) {
+	for _, name := range []string{"SPYJO_BOT_TOKEN", "FOO_BOT_TOKEN", "SPYNEL_TELEGRAM_TOKEN", "telegram_x", "TELEGRAM_X", "WHATSAPP_X"} {
+		if !headlessSecretEnvName(name) {
+			t.Errorf("%s should be scrubbed", name)
+		}
+	}
+	for _, name := range []string{"HOME", "PATH", "USER", "LANG", "ANTHROPIC_BASE_URL", "XDG_RUNTIME_DIR"} {
+		if headlessSecretEnvName(name) {
+			t.Errorf("%s must be kept", name)
+		}
+	}
+}
+
+// A status event must never follow the terminal event: the emit below is slow on a status event, so
+// without joining the ticker the final event is recorded first.
+func TestHerdrHeadlessNoStatusAfterTerminalEvent(t *testing.T) {
+	old := headlessStatusInterval
+	headlessStatusInterval = 5 * time.Millisecond
+	defer func() { headlessStatusInterval = old }()
+	h, _, _ := headlessFixture(t, `cat >/dev/null
+sleep 0.3
+echo '{"type":"result","subtype":"success","is_error":false,"result":"DONE","session_id":"s-tick"}'
+`)
+	var log eventLog
+	slow := func(e core.Event) {
+		if e.Kind == core.EventStatus && strings.Contains(e.Text, "working") {
+			time.Sleep(150 * time.Millisecond)
+		}
+		log.emit(e)
+	}
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@credits", slow); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(400 * time.Millisecond) // let a straggling status emit land
+	log.mu.Lock()
+	defer log.mu.Unlock()
+	finals := 0
+	for _, e := range log.events {
+		if e.Done {
+			finals++
+		} else if finals > 0 {
+			t.Fatalf("event after the terminal event: %+v", log.events)
+		}
+	}
+	if finals != 1 {
+		t.Fatalf("terminal events = %d, want 1", finals)
+	}
+}
+
+func TestHerdrHeadlessTurnWithoutSessionLineLeavesNoStaleSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	h, root, _ := headlessFixture(t, `cat >/dev/null
+if [ -f "$(dirname "$0")/second" ]; then
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"DONE"}'
+else
+  touch "$(dirname "$0")/second"
+  echo '{"type":"result","subtype":"success","is_error":false,"result":"DONE","session_id":"sess-old"}'
+fi
+`)
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "first", "@credits", nil); err != nil {
+		t.Fatal(err)
+	}
+	if h.ThreadID(headlessKey) != "sess-old" {
+		t.Fatalf("first turn session = %q, want sess-old", h.ThreadID(headlessKey))
+	}
+	_ = root
+	thread, _, err := h.SendWithModel(context.Background(), headlessKey, "second", "@credits", nil)
+	if err != nil || thread != "" {
+		t.Fatalf("second turn = %q, %v; want an empty thread id", thread, err)
+	}
+	if got := h.ThreadID(headlessKey); got != "" {
+		t.Fatalf("key still maps to %q after a turn that reported no session", got)
 	}
 }
