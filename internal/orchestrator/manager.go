@@ -1374,23 +1374,8 @@ func (m *Manager) reconcileGoalTransition(_ context.Context, route workflowRoute
 // hasRoutableWaitingPath checks whether a document entering waiting/ carries
 // an explicit routable path: either a non-empty joey_ask or a future RFC 3339 wake_at.
 func hasRoutableWaitingPath(document Document, now time.Time) bool {
-	if val, ok := document.FrontMatter["joey_ask"]; ok && val != nil {
-		switch v := val.(type) {
-		case string:
-			if strings.TrimSpace(v) != "" {
-				return true
-			}
-		case map[string]any:
-			if len(v) > 0 {
-				return true
-			}
-		case map[any]any:
-			if len(v) > 0 {
-				return true
-			}
-		default:
-			return true
-		}
+	if hasJoeyAsk(document) {
+		return true
 	}
 	wakeAtStr := stringField(document, "wake_at")
 	if wakeAtStr != "" {
@@ -1723,7 +1708,15 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 			}
 			target := filepath.Join(base, targetStatus, entry.Name())
 			note := fmt.Sprintf("Spynel resumed this %s from waiting because its scheduled wake condition became due; it returned to %s for a fresh agent decision.", strings.TrimSuffix(route.Name, "s"), targetStatus)
-			if err := moveDocumentWithProgress(path, target, targetStatus, now, note); err != nil {
+			// The dates that woke it are spent; left behind they would wake the
+			// document's next park early. A not_before still in the future is a
+			// dispatch gate rather than a park date, so it stays.
+			if err := moveDocumentWithUpdate(path, target, targetStatus, now, note, func(fm map[string]any) {
+				delete(fm, "wake_at")
+				if when, ok := frontMatterTime(fm["not_before"]); !ok || !when.After(now) {
+					delete(fm, "not_before")
+				}
+			}); err != nil {
 				return err
 			}
 			if route.Name == "goals" && targetStatus == "planning" {
