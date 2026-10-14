@@ -3,12 +3,15 @@ package tui
 import (
 	"context"
 	"errors"
+	"io"
 	"testing"
+	"time"
 
 	"github.com/agent0ai/spynel/internal/channel"
 	"github.com/agent0ai/spynel/internal/channel/tui/textarea"
 	"github.com/agent0ai/spynel/internal/core"
 	"github.com/charmbracelet/bubbles/viewport"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func notificationTestModel() model {
@@ -210,6 +213,56 @@ func TestStaleNotificationAckAfterConversationSwitchIsInert(t *testing.T) {
 	m = updated.(model)
 	if len(m.transcript) != 2 || m.transcript[0].text != "Brand new reply" || m.transcript[1].text != "Task complete" {
 		t.Fatalf("pending notification lost after reset: %#v", m.transcript)
+	}
+}
+
+// Runs the real Bubble Tea program loop: the acknowledgement is a real tea.Cmd
+// goroutine that is still in flight when the conversation switches, and its
+// result is delivered by the program, not by a hand-built Update call.
+func TestStaleNotificationAckAfterConversationSwitchInProgram(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{})
+	m := notificationTestModel()
+	m.ackNotification = func(string, int) error {
+		close(started)
+		<-release
+		return nil
+	}
+	m.working = true
+	m.streaming = "Old stream "
+	m.responseText = "Old stream "
+	m.deltaSequence = 1
+	m.pendingNotifications = []channel.Notification{{ID: "n1", Text: "Task complete"}}
+	program := tea.NewProgram(m, tea.WithInput(nil), tea.WithOutput(io.Discard), tea.WithoutSignals())
+	result := make(chan tea.Model, 1)
+	go func() {
+		final, _ := program.Run()
+		result <- final
+	}()
+	program.Send(notificationPauseMsg{sequence: 1})
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("acknowledgement command never started")
+	}
+	program.Send(uiEvent{event: core.Event{Kind: core.EventScreen, Screen: &core.Screen{ID: "welcome", Conversation: "other"}}})
+	program.Send(uiEvent{event: core.Event{Kind: core.EventDelta, Text: "Brand new reply"}})
+	close(release)
+	// The late result is posted by the command goroutine; the final event is
+	// sent after a short settle so it is processed behind the late ack.
+	time.Sleep(200 * time.Millisecond)
+	program.Send(uiEvent{event: core.Event{Kind: core.EventFinal, Text: "Brand new reply", Done: true}})
+	time.Sleep(100 * time.Millisecond)
+	program.Quit()
+	var final model
+	select {
+	case got := <-result:
+		final = got.(model)
+	case <-time.After(5 * time.Second):
+		t.Fatal("program did not stop")
+	}
+	if len(final.transcript) != 2 || final.transcript[0].text != "Brand new reply" || final.transcript[1].text != "Task complete" {
+		t.Fatalf("stale ack split the new stream or lost the pending notification: %#v", final.transcript)
 	}
 }
 
