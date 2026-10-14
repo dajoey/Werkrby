@@ -104,19 +104,32 @@ func (a *Admission) Decide(req Request) Decision {
 		now = time.Now()
 	}
 	d := Decision{Seat: req.Asked, Inputs: map[string]string{}}
+	if req.Kind == KindContinuation {
+		return d.run("continuation of running work is never stopped by a quota decision")
+	}
+	claudeOnly := hasConstraint(req.Constraints, ConstraintClaudeOnly)
 	r, err := roster.Load(a.StateDir)
+	var unclassified string
 	switch {
 	case err != nil:
-		return d.run("roster unreadable, legacy routing: " + err.Error())
+		unclassified = "roster unreadable, legacy routing: " + err.Error()
 	case r == nil:
-		return d.run("no roster: legacy routing")
+		unclassified = "no roster: legacy routing"
 	case !r.Has(req.Asked):
-		return d.run(fmt.Sprintf("seat %q is not in the roster", req.Asked))
+		unclassified = fmt.Sprintf("seat %q is not in the roster", req.Asked)
 	}
-	readings, _ := loadReadings(a.SnapshotPath) // an unreadable snapshot leaves every plan unknown
+	if unclassified != "" {
+		if claudeOnly {
+			return d.wait("claude_only: " + unclassified)
+		}
+		return d.run(unclassified)
+	}
 
+	// Load the readings under the lock so two calls cannot apply an older file to the held windows
+	// after a newer one.
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	readings, _ := loadReadings(a.SnapshotPath) // an unreadable snapshot leaves every plan unknown
 
 	seat, passed := r.LandingTrail(a.StateDir, req.Asked, now)
 	for _, p := range passed {
@@ -132,7 +145,7 @@ func (a *Admission) Decide(req Request) Decision {
 			d.Until = until
 			return d.wait(fmt.Sprintf("hold on seat %s until %s: %s", seat, until.UTC().Format(time.RFC3339), why))
 		}
-		if hasConstraint(req.Constraints, ConstraintClaudeOnly) && !claudePlan(plan) {
+		if claudeOnly && !claudePlan(plan) {
 			return d.wait(fmt.Sprintf("claude_only: seat %s spends %s", seat, planName(plan)))
 		}
 		if plan == "" {

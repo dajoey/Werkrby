@@ -60,18 +60,8 @@ func HeldUntil(stateDir, name string, now time.Time) (time.Time, string, bool) {
 // session or writing anything: it follows fallback past capped and stopped
 // staff exactly as Assign does.
 func (r *Roster) Landing(stateDir, name string, now time.Time) string {
-	if !r.Has(name) {
-		return name
-	}
-	today := now.Local().Format("2006-01-02")
-	u := usage{}
-	if data, err := os.ReadFile(filepath.Join(stateDir, "runtime", usageFileName)); err == nil {
-		_ = json.Unmarshal(data, &u)
-	}
-	if u.Date != today || u.Counts == nil {
-		u = usage{Date: today, Counts: map[string]int{}}
-	}
-	return r.follow(name, u.Counts, loadDecisions(stateDir, today))
+	landing, _ := r.LandingTrail(stateDir, name, now)
+	return landing
 }
 
 // Passed is one staff the fallback walk went past, and why.

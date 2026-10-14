@@ -128,14 +128,42 @@ func state(plan string, readings map[string]reading, held map[string]time.Time, 
 		return planState{Unknown: true}
 	}
 	st := planState{AsOf: rd.AsOf}
-	if !rd.AsOf.IsZero() && now.Sub(rd.AsOf) > staleMax {
-		st.Unknown = true
+	stale := !rd.AsOf.IsZero() && now.Sub(rd.AsOf) > staleMax
+	names := map[string]bool{}
+	for name := range rd.Windows {
+		names[name] = true
+	}
+	// A window that read full earlier stays full when the new reading no longer lists it, as the gate's
+	// full_windows walks the union of both.
+	for key := range held {
+		if name, ok := strings.CutPrefix(key, plan+"/"); ok {
+			names[name] = true
+		}
+	}
+	if stale {
+		// A stale reading is not trusted, but a window already known full holds until its reset.
+		var windows []string
+		for name := range names {
+			if reset := held[plan+"/"+name]; reset.After(now) {
+				windows = append(windows, name)
+				if reset.After(st.Until) {
+					st.Until = reset
+				}
+			}
+		}
+		if len(windows) == 0 {
+			st.Unknown = true
+			return st
+		}
+		sort.Strings(windows)
+		st.Full, st.Why = true, "window "+strings.Join(windows, ", ")+" full (reading stale)"
 		return st
 	}
 	fullAt := fullAtFor(plan)
 	var windows []string
 	numeric := false
-	for name, w := range rd.Windows {
+	for name := range names {
+		w := rd.Windows[name] // a held window the reading dropped has no pct
 		key := plan + "/" + name
 		reset, wasHeld := held[key]
 		if w.Pct != nil {
