@@ -185,6 +185,10 @@ func (s *Service) SetPairing(event channel.PairingEvent) {
 	s.pairingMu.Lock()
 	s.pairing[event.Name] = event
 	s.pairingMu.Unlock()
+	// Serialize drain-then-send so concurrent callers cannot both drain and
+	// then block on a full one-slot channel with no reader.
+	s.pairingEventsMu.Lock()
+	defer s.pairingEventsMu.Unlock()
 	select {
 	case <-s.pairingEvents:
 	default:
@@ -1455,6 +1459,8 @@ func (s *Service) themeCommand(message core.Message, name string, emit core.Emit
 func (s *Service) ThemeChanges() <-chan theme.Theme { return s.themeChanges }
 
 func (s *Service) publishTheme(value theme.Theme) {
+	s.themeMu.Lock()
+	defer s.themeMu.Unlock()
 	select {
 	case <-s.themeChanges:
 	default:
