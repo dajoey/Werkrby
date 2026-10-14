@@ -1313,6 +1313,7 @@ func (s *Service) validateInferenceSettings(ctx context.Context, previous config
 	explicitService := requestedSetting(requested, "harness.service_mode", "speed", "service_mode", "service-mode")
 
 	var model *harness.Model
+	catalogUnreachable := false
 	needCatalog := modelChanged && (!explicitEffort && selected.Effort != "" || !explicitService && selected.ServiceMode != "") || explicitService && selected.ServiceMode != ""
 	if previous.Harness.Name == next.Harness.Name && needCatalog {
 		if provider, ok := s.Harness.(harness.ModelProvider); ok {
@@ -1322,6 +1323,7 @@ func (s *Service) validateInferenceSettings(ctx context.Context, previous config
 			if err != nil && explicitService && selected.ServiceMode != "" {
 				return fmt.Errorf("cannot validate model properties: %w", err)
 			}
+			catalogUnreachable = err != nil
 			for index := range models {
 				candidate := &models[index]
 				if candidate.ID == selected.Model || selected.Model == "" && candidate.Default {
@@ -1342,6 +1344,10 @@ func (s *Service) validateInferenceSettings(ctx context.Context, previous config
 		serviceValid = selected.ServiceMode == "" || containsProperty(model.ServiceModes, selected.ServiceMode)
 	} else if next.Harness.Name == "claude-code" {
 		effortValid = selected.Effort == "" || containsString([]string{"low", "medium", "high", "xhigh", "max"}, selected.Effort)
+	}
+	if catalogUnreachable && model == nil {
+		// An outage proves nothing about the new model: keep the user's effort and service mode.
+		effortValid, serviceValid = true, true
 	}
 	if next.Harness.Name != "codex" {
 		serviceValid = selected.ServiceMode == ""

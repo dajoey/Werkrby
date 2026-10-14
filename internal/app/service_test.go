@@ -2951,6 +2951,41 @@ func TestUnsupportedModelPropertyIsRejectedAndModelChangeClearsStaleValues(t *te
 	}
 }
 
+func TestModelChangeDuringCatalogOutageKeepsEffortAndServiceMode(t *testing.T) {
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.Load(config.PathForRoot(root))
+	cfg.Harness.Name = "codex"
+	cfg.Harness.Model = "model-a"
+	cfg.Harness.ReasoningEffort = "high"
+	cfg.Harness.ServiceMode = "fast"
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	target := &propertyServiceHarness{serviceHarness: newServiceHarness(), modelsErr: errors.New("catalog timeout")}
+	registry := harness.NewRegistry()
+	registry.Register("codex", func(harness.HarnessConfig) (harness.Harness, error) { return target, nil })
+	supervisor := harness.NewSupervisor(registry, harness.HarnessConfig{Name: "codex"})
+	if err := supervisor.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = supervisor.Close() })
+	service := New(cfg, supervisor)
+	if _, err := service.ApplySettings(map[string]string{"harness.model": "model-a2"}); err != nil {
+		t.Fatal(err)
+	}
+	got := service.Settings.Snapshot().Harness
+	if got.Model != "model-a2" || got.ReasoningEffort != "high" || got.ServiceMode != "fast" {
+		t.Fatalf("an unreachable catalog must not clear effort or service mode: %#v", got)
+	}
+	reloaded, err := config.Load(config.PathForRoot(root))
+	if err != nil || reloaded.Harness.ReasoningEffort != "high" || reloaded.Harness.ServiceMode != "fast" {
+		t.Fatalf("persisted selection = %#v, %v", reloaded.Harness, err)
+	}
+}
+
 func TestProviderAdvertisedReasoningEffortPersistsEndToEnd(t *testing.T) {
 	root := t.TempDir()
 	if err := workspace.Init(root, false); err != nil {
