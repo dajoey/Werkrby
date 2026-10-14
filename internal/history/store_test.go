@@ -412,3 +412,48 @@ func TestRecoveryTailStillFailsClosedOnCorruptTail(t *testing.T) {
 		t.Fatalf("corrupt newest tail did not fail closed")
 	}
 }
+
+// A short write (ENOSPC) or a crash mid-write leaves a final line with no
+// newline. The next append must not be written onto that fragment.
+func TestBughuntTornTailSwallowsNextAppend(t *testing.T) {
+	for name, tail := range map[string]string{
+		"torn fragment":              `{"role":"user","source_message_id":"whatsapp:to`,
+		"complete entry, no newline": `{"role":"user","content":"unterminated","source_message_id":"whatsapp:unterminated"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := New(t.TempDir())
+			if _, err := store.Append("whatsapp", "person", Entry{Role: "user", SourceMessageID: "whatsapp:old", Content: "original"}); err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.OpenFile(store.Path("whatsapp", "person"), os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := file.WriteString(tail); err != nil {
+				_ = file.Close()
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Append("whatsapp", "person", Entry{Role: "user", SourceMessageID: "whatsapp:new", Content: "after the tear"}); err != nil {
+				t.Fatal(err)
+			}
+			entries, _, err := store.Entries("whatsapp", "person")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) < 2 || entries[0].Content != "original" || entries[len(entries)-1].Content != "after the tear" {
+				t.Fatalf("append after a torn tail lost or merged a message: %+v", entries)
+			}
+			for _, sourceID := range []string{"whatsapp:old", "whatsapp:new"} {
+				if found, err := store.HasUserSourceID("whatsapp", "person", sourceID); err != nil || !found {
+					t.Fatalf("source check after torn tail: source=%s found=%t err=%v", sourceID, found, err)
+				}
+			}
+			if _, err := store.ReserveRetrigger("whatsapp", "person", []string{"whatsapp:old"}, time.Time{}, time.Now().Add(time.Hour), 10); err != nil && strings.Contains(err.Error(), "corrupt correlation") {
+				t.Fatalf("ReserveRetrigger still sees corrupt data: %v", err)
+			}
+		})
+	}
+}
