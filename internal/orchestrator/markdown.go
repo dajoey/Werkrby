@@ -72,12 +72,21 @@ func ParseDocument(data []byte) (Document, error) {
 // containing colons is emitted as an unquoted YAML scalar (for example,
 // `waiting_for: Joey's decision (questions 1-4: picks stand)` or
 // `outcome: Progress: completed...`). These violate YAML's mapping key rules
-// and cause "mapping values are not allowed in this context".
+// and cause "mapping values are not allowed in this context". Lines inside a
+// block scalar (`key: |` or `key: >`) are data and are never rewritten.
 func sanitizeFrontMatter(front string) string {
 	lines := strings.Split(front, "\n")
 	var result []string
+	blockKeyIndent := -1 // column of the key that opened the current block scalar; -1 when outside one
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
+		if blockKeyIndent >= 0 {
+			if trimmed == "" || leadingSpaces(line) > blockKeyIndent {
+				result = append(result, line)
+				continue
+			}
+			blockKeyIndent = -1
+		}
 		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			result = append(result, line)
 			continue
@@ -102,8 +111,16 @@ func sanitizeFrontMatter(front string) string {
 			result = append(result, line)
 			continue
 		}
+		if strings.HasPrefix(valTrimmed, "|") || strings.HasPrefix(valTrimmed, ">") {
+			rest := strings.TrimLeft(line, " ")
+			for strings.HasPrefix(rest, "- ") {
+				rest = strings.TrimLeft(rest[2:], " ")
+			}
+			blockKeyIndent = len(line) - len(rest) // a "- key: |" item's key sits after the dash
+			result = append(result, line)
+			continue
+		}
 		if strings.HasPrefix(valTrimmed, "\"") || strings.HasPrefix(valTrimmed, "'") ||
-			strings.HasPrefix(valTrimmed, "|") || strings.HasPrefix(valTrimmed, ">") ||
 			strings.HasPrefix(valTrimmed, "[") || strings.HasPrefix(valTrimmed, "{") {
 			result = append(result, line)
 			continue
@@ -121,6 +138,10 @@ func sanitizeFrontMatter(front string) string {
 		result = append(result, line)
 	}
 	return strings.Join(result, "\n")
+}
+
+func leadingSpaces(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " "))
 }
 
 func (d Document) Bytes() ([]byte, error) {
