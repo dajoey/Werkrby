@@ -270,6 +270,27 @@ func moveDocumentWithProgress(path, target, status string, now time.Time, note s
 // moveDocumentWithUpdate applies update to the front matter in the same
 // locked write that records the new status, before the rename.
 func moveDocumentWithUpdate(path, target, status string, now time.Time, note string, update func(map[string]any)) error {
+	return moveDocumentLocked(path, target, status, now, func(document *Document) {
+		if update != nil {
+			update(document.FrontMatter)
+		}
+	}, func(document *Document) {
+		if note != "" {
+			appendProgress(document, now, note)
+		}
+	})
+}
+
+// moveDocumentWithEdit applies edit to the whole document (front matter and body) in the same
+// locked write that records the new status, before the rename. edit runs after status and
+// updated_at are set, so it may read them.
+func moveDocumentWithEdit(path, target, status string, now time.Time, edit func(*Document)) error {
+	return moveDocumentLocked(path, target, status, now, nil, edit)
+}
+
+// moveDocumentLocked is one locked write and rename: before runs ahead of the status stamp, after
+// runs once status and updated_at are set.
+func moveDocumentLocked(path, target, status string, now time.Time, before, after func(*Document)) error {
 	lock, err := lockProviderTurn(path)
 	if err != nil {
 		return err
@@ -279,13 +300,13 @@ func moveDocumentWithUpdate(path, target, status string, now time.Time, note str
 	if err != nil {
 		return err
 	}
-	if update != nil {
-		update(document.FrontMatter)
+	if before != nil {
+		before(&document)
 	}
 	document.FrontMatter["status"] = status
 	document.FrontMatter["updated_at"] = now.UTC().Format(time.RFC3339)
-	if note != "" {
-		appendProgress(&document, now, note)
+	if after != nil {
+		after(&document)
 	}
 	if err := WriteDocument(path, document); err != nil {
 		return err
@@ -325,14 +346,42 @@ func appendProgress(document *Document, now time.Time, note string) {
 	if runes := []rune(note); len(runes) > 1000 {
 		note = string(runes[:999]) + "…"
 	}
-	entry := "- " + now.UTC().Format(time.RFC3339) + " — " + note
-	body := strings.ReplaceAll(document.Body, "\r\n", "\n")
-	lines := strings.Split(body, "\n")
-	for _, line := range lines {
-		if line == entry {
-			return
+	insertProgressEntry(document, "- "+now.UTC().Format(time.RFC3339)+" — "+note)
+}
+
+// appendProgressBlock appends a multi-line Markdown entry (a worker's own progress text) as one
+// list item: the first line carries the timestamp and later lines are indented under it.
+func appendProgressBlock(document *Document, now time.Time, text string) {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
+	if runes := []rune(text); len(runes) > maxOutcomeProgressRunes {
+		text = string(runes[:maxOutcomeProgressRunes-1]) + "…"
+	}
+	lines := strings.Split(text, "\n")
+	for index, line := range lines {
+		line = strings.TrimRight(line, " \t")
+		switch {
+		case index == 0:
+			lines[index] = "- " + now.UTC().Format(time.RFC3339) + " — " + line
+		case line == "":
+			lines[index] = ""
+		case strings.HasPrefix(strings.TrimSpace(line), "#"):
+			// A heading inside the entry would end the Progress section for later appends.
+			lines[index] = "  \\" + strings.TrimSpace(line)
+		default:
+			lines[index] = "  " + line
 		}
 	}
+	insertProgressEntry(document, strings.Join(lines, "\n"))
+}
+
+// insertProgressEntry puts entry at the end of the ## Progress section (creating it if needed),
+// unless the body already holds the same entry.
+func insertProgressEntry(document *Document, entry string) {
+	body := strings.ReplaceAll(document.Body, "\r\n", "\n")
+	if strings.Contains("\n"+body+"\n", "\n"+entry+"\n") {
+		return
+	}
+	lines := strings.Split(body, "\n")
 	progress := -1
 	end := len(lines)
 	for index, line := range lines {

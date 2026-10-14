@@ -52,6 +52,9 @@ func TestLoadRejectsBadRosters(t *testing.T) {
 		"bad runner":          "staff: {a: {runner: \"pi; rm\"}}",
 		"bad escalation":      "staff: {a: {runner: pi}}\nescalation: {after_attempt: 0, staff: a}",
 		"headless not claude": "staff: {a: {runner: pi, headless: true}}",
+		// An explicit outcome is read when the worker process exits; a pane seat has no process exit
+		// to read it at, only a screen that looks idle.
+		"explicit outcome not headless": "staff: {a: {runner: claude, explicit_outcome: true}}",
 	} {
 		if _, err := Load(write(t, body)); err == nil {
 			t.Errorf("%s: expected an error", name)
@@ -510,6 +513,18 @@ func TestHeadlessStaffKeepsItsNameAndExpands(t *testing.T) {
 	}
 	if _, ok, err := ExpandStaff(dir, "@nobody"); !ok || err == nil {
 		t.Fatalf("unknown staff: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestExplicitOutcomeIsPerSeatAndOffByDefault(t *testing.T) {
+	dir := write(t, "staff:\n  pilot: {runner: claude, headless: true, explicit_outcome: true}\n  credits: {runner: claude, headless: true}\n")
+	pilot, ok, err := ExpandStaff(dir, "@pilot")
+	if err != nil || !ok || !pilot.ExplicitOutcome {
+		t.Fatalf("pilot seat = %+v %v %v, want explicit_outcome on", pilot, ok, err)
+	}
+	credits, ok, err := ExpandStaff(dir, "@credits")
+	if err != nil || !ok || credits.ExplicitOutcome {
+		t.Fatalf("unflagged headless seat = %+v %v %v, want explicit_outcome off", credits, ok, err)
 	}
 }
 

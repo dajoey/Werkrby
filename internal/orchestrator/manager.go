@@ -872,6 +872,8 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 		// beside the very send error an in-place retry classifies, so it must
 		// not veto that retry.
 		var terminalFinalSeen bool
+		// finalText is the turn's final reply; an explicit-outcome turn may carry its outcome there.
+		var finalText string
 		emit := func(event core.Event) {
 			lifecycleMu.Lock()
 			defer lifecycleMu.Unlock()
@@ -881,6 +883,10 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 			terminal := event.Done && (event.Kind == core.EventFinal || event.Kind == core.EventError)
 			if terminal && event.Kind == core.EventFinal {
 				terminalFinalSeen = true
+				finalText = event.Text
+				if event.FinalText != nil {
+					finalText = *event.FinalText
+				}
 			}
 			if jobID > 0 && m.JobEvent != nil {
 				m.JobEvent(jobID, event)
@@ -930,6 +936,24 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 			lease.TargetModel = targetModel
 			if saveErr := m.saveLease(lease); saveErr != nil {
 				m.log("save lease target model: " + saveErr.Error())
+			}
+		}
+		// A seat with explicit_outcome returns this turn's outcome as data and Werkrby applies it,
+		// so its prompt carries that contract instead of the file-move steps. Any problem preparing
+		// it keeps the ordinary prompt and the ordinary file-move reconcile for this turn.
+		turn := m.explicitOutcomeTurn(route, lease, targetModel)
+		if turn != nil {
+			explicitPrompt, prepareErr := m.renderPromptFor(route, lease, promptPath, turn)
+			if prepareErr == nil {
+				prepareErr = turn.prepare()
+			}
+			if prepareErr != nil {
+				m.log("explicit outcome off for this turn of " + lease.File + ": " + prepareErr.Error())
+				turn = nil
+			} else {
+				prompt = config.PrependAgentPrefix(m.agentPrefix(lease.Phase, harnessSettings), explicitPrompt)
+				// The run directory lives for this dispatch only, whatever way it ends.
+				defer func() { _ = os.RemoveAll(turn.Dir) }()
 			}
 		}
 		var threadID string
@@ -983,6 +1007,11 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 		lifecycleMu.Lock()
 		defer lifecycleMu.Unlock()
 		if err != nil {
+			// A worker on an explicit-outcome seat may have written its outcome before the run
+			// failed (a refused final reply); that outcome is the turn's result.
+			if turn != nil && m.applyWrittenOutcomeAfterSendError(route, lease, turn, err) {
+				return
+			}
 			if jobID > 0 && m.JobEvent != nil {
 				m.JobEvent(jobID, core.Event{Kind: core.EventError, Text: err.Error(), Done: true})
 			}
@@ -1019,6 +1048,9 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 			verb = "steered"
 		}
 		m.log(fmt.Sprintf("%s %s in thread %s", verb, lease.File, shortid.Display(threadID)))
+		if turn != nil && !steered {
+			m.applyExplicitOutcome(route, lease, turn, finalText)
+		}
 	}()
 }
 
@@ -1983,6 +2015,13 @@ func (m *Manager) recoverStale(ctx context.Context) error {
 }
 
 func (m *Manager) renderPrompt(route workflowRoute, lease Lease, promptPath string) (string, error) {
+	return m.renderPromptFor(route, lease, promptPath, nil)
+}
+
+// renderPromptFor renders a workflow prompt. A non-nil turn is an explicit-outcome seat: the status
+// folder list gives way to a pointer at the turn-end contract, which is appended after every other
+// section so it is the last word on how the turn ends.
+func (m *Manager) renderPromptFor(route workflowRoute, lease Lease, promptPath string, turn *explicitTurn) (string, error) {
 	file := lease.File
 	data, err := os.ReadFile(m.Config.Resolve(promptPath))
 	if err != nil {
@@ -2009,10 +2048,14 @@ func (m *Manager) renderPrompt(route workflowRoute, lease Lease, promptPath stri
 		}
 		workerName = harness.WorkerNameForKey(phaseSessionKey(route.Name, docID, phase, attempt))
 	}
+	statusFolders := strings.Join(statuses, "\n")
+	if turn != nil {
+		statusFolders = "- On this seat Werkrby moves the task file; see \"Turn end on this seat\" at the end of this prompt."
+	}
 	replacements := map[string]string{
 		"{{FILE}}": file, "{{ROUTE}}": route.Name,
 		"{{ALLOWED_NEXT}}":   strings.Join(route.AllowedNext, ", "),
-		"{{STATUS_FOLDERS}}": strings.Join(statuses, "\n"),
+		"{{STATUS_FOLDERS}}": statusFolders,
 		"{{STALE_AFTER}}":    route.StaleAfter.String(),
 		"{{PHASE}}":          phaseForFile(route.Name, file),
 		"{{RELATED_TASKS}}":  m.relatedTasksForGoal(file),
@@ -2033,7 +2076,11 @@ func (m *Manager) renderPrompt(route workflowRoute, lease Lease, promptPath stri
 		role = instructions.Reviewer
 	}
 	prompt = instructions.InjectRoleScopeDiscipline(prompt, role)
-	return instructions.Append(prompt, m.Config.StatePath(), role)
+	prompt, err = instructions.Append(prompt, m.Config.StatePath(), role)
+	if err != nil || turn == nil {
+		return prompt, err
+	}
+	return strings.TrimRight(prompt, "\n") + "\n\n" + turn.contract(file), nil
 }
 
 func (m *Manager) harnessSettings() config.Harness {

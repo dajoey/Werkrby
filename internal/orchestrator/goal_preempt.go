@@ -63,6 +63,15 @@ func (m *Manager) forgetPreemption(leaseID string) {
 	delete(m.preemptions, leaseID)
 }
 
+// preemptionPendingFor reports whether a goal preemption was recorded for this lease, without
+// consuming it.
+func (m *Manager) preemptionPendingFor(leaseID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	at, ok := m.preemptions[leaseID]
+	return ok && time.Since(at) <= preemptWindow
+}
+
 // consumePreemption reports whether the lease was paused for goal work within
 // preemptWindow, and forgets the record.
 func (m *Manager) consumePreemption(leaseID string) bool {
