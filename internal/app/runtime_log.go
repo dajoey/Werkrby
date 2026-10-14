@@ -20,6 +20,7 @@ const (
 	maxRuntimeLogBytes = 2 << 20
 	runtimeLogWait     = 2 * time.Second
 	maxRuntimeJSONLine = maxLogEntryRunes*6 + 4096
+	errorLogName       = "errors.jsonl"
 )
 
 var urlUserinfoPattern = regexp.MustCompile(`(?i)(\b[a-z][a-z0-9+.-]*://)[^/?#\s'"<>]+@([^/?#\s'"<>])`)
@@ -233,13 +234,28 @@ func (p *runtimeLogPersistence) appendSync(entry LogEntry, flush bool) error {
 		err = p.file.Sync()
 	}
 	if entry.Level == "error" || entry.Level == "fatal" {
-		errorLogPath := filepath.Join(p.directory, "errors.jsonl")
-		if ef, openErr := os.OpenFile(errorLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); openErr == nil {
-			_, _ = ef.Write(data)
-			_ = ef.Close()
-		}
+		p.appendErrorLogLocked(data)
 	}
 	return err
+}
+
+// appendErrorLogLocked appends one entry to errors.jsonl, keeping that file and
+// its single rotated predecessor (errors.jsonl.1) within maxRuntimeLogBytes each.
+func (p *runtimeLogPersistence) appendErrorLogLocked(data []byte) {
+	errorLogPath := filepath.Join(p.directory, errorLogName)
+	if info, statErr := os.Stat(errorLogPath); statErr == nil && info.Size()+int64(len(data)) > maxRuntimeLogBytes {
+		_ = p.withDirectoryLock(func() error {
+			// Re-check under the directory lock: another process may have rotated.
+			if again, err := os.Stat(errorLogPath); err == nil && again.Size()+int64(len(data)) > maxRuntimeLogBytes {
+				return os.Rename(errorLogPath, errorLogPath+".1")
+			}
+			return nil
+		})
+	}
+	if ef, openErr := os.OpenFile(errorLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); openErr == nil {
+		_, _ = ef.Write(data)
+		_ = ef.Close()
+	}
 }
 
 func (p *runtimeLogPersistence) rotateLocked() error {
@@ -309,6 +325,11 @@ func (p *runtimeLogPersistence) clearSync() error {
 		remaining, pruneErr := pruneRuntimeLogFiles(paths, 0)
 		if first == nil {
 			first = pruneErr
+		}
+		for _, name := range []string{errorLogName, errorLogName + ".1"} {
+			if rmErr := os.Remove(filepath.Join(p.directory, name)); rmErr != nil && !os.IsNotExist(rmErr) && first == nil {
+				first = rmErr
+			}
 		}
 		if len(remaining) > 0 && first == nil {
 			first = fmt.Errorf("%d active runtime log files remain", len(remaining))
