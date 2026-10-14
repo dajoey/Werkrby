@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -212,5 +213,48 @@ func TestTaskControlRouteDecodesStaffAndWakeAtFields(t *testing.T) {
 	defer resp2.Body.Close()
 	if resp2.StatusCode != http.StatusOK {
 		t.Fatalf("snooze status = %d", resp2.StatusCode)
+	}
+}
+
+func TestTaskControlRouteReassignKeepsTaskParseable(t *testing.T) {
+	server, token, ts := newTaskControlServer(t)
+	service := server.Service
+
+	taskID := "tasks-20260925-control-route-reassign-yaml"
+	path := filepath.Join(service.Config.StatePath("tasks", "waiting"), taskID+".md")
+	document := orchestrator.Document{FrontMatter: map[string]any{
+		"id": taskID, "title": "Waiting fixture", "status": "waiting", "review_required": false, "attempt": 1,
+		"wake_at": "2026-09-25T12:00:00Z",
+	}, Body: "# Task\n\n## Progress\n"}
+	if err := orchestrator.WriteDocument(path, document); err != nil {
+		t.Fatal(err)
+	}
+	post := func(staff string) int {
+		body := `{"task_id":"` + taskID + `","action":"reassign","staff":` + strconv.Quote(staff) + `}`
+		req, _ := http.NewRequest("POST", ts.URL+"/v1/task-control", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	if code := post("x\nstatus: done"); code != http.StatusBadRequest {
+		t.Errorf("injection reassign status = %d, want 400", code)
+	}
+	if code := post("Joey #2 backup"); code != http.StatusOK {
+		t.Fatalf("reassign status = %d, want 200", code)
+	}
+	doc, err := orchestrator.ReadDocument(path)
+	if err != nil {
+		t.Fatalf("task unparseable after reassign: %v", err)
+	}
+	if got := doc.FrontMatter["staff"]; got != "Joey #2 backup" {
+		t.Errorf("staff = %#v, want %q", got, "Joey #2 backup")
+	}
+	if got := doc.FrontMatter["status"]; got != "waiting" {
+		t.Errorf("status = %#v, want waiting", got)
 	}
 }

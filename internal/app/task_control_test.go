@@ -897,6 +897,71 @@ Untouched body.
 	}
 }
 
+func TestTaskControlReassignRoundTripsStaffWithYAMLSpecials(t *testing.T) {
+	for _, staff := range []string{"Joey #2 backup", "a: b", "yes", "123", "- x"} {
+		t.Run(staff, func(t *testing.T) {
+			service, _ := newTaskControlService(t)
+			taskID := "tasks-20260925-reassign-special"
+			taskPath := stageTaskInFolder(t, service, taskID, "working", map[string]any{"staff": "cursor"})
+
+			result, err := service.TaskControl(context.Background(), TaskControlRequest{
+				TaskID: taskID,
+				Action: "reassign",
+				Staff:  staff,
+			})
+			if err != nil {
+				t.Fatalf("reassign failed: %v", err)
+			}
+			if result.Staff != staff {
+				t.Errorf("result staff = %q, want %q", result.Staff, staff)
+			}
+			doc, err := orchestrator.ReadDocument(taskPath)
+			if err != nil {
+				t.Fatalf("task unparseable after reassign: %v", err)
+			}
+			if got, _ := doc.FrontMatter["staff"].(string); got != staff {
+				t.Errorf("persisted staff = %#v, want %q", doc.FrontMatter["staff"], staff)
+			}
+		})
+	}
+}
+
+func TestTaskControlReassignRejectsControlCharactersInStaff(t *testing.T) {
+	for _, staff := range []string{"x\nstatus: done", "x\r\nstatus: done", "x\ty", "x\x00y"} {
+		t.Run(fmt.Sprintf("%q", staff), func(t *testing.T) {
+			service, _ := newTaskControlService(t)
+			taskID := "tasks-20260925-reassign-control"
+			taskPath := stageTaskInFolder(t, service, taskID, "working", map[string]any{"staff": "cursor"})
+			before, err := os.ReadFile(taskPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			_, err = service.TaskControl(context.Background(), TaskControlRequest{
+				TaskID: taskID,
+				Action: "reassign",
+				Staff:  staff,
+			})
+			if err == nil {
+				t.Fatal("expected reassign to reject control characters")
+			}
+			if code := taskControlCode(err); code != "bad_request" {
+				t.Errorf("code = %q, want bad_request", code)
+			}
+			after, err := os.ReadFile(taskPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Errorf("task file changed by a rejected reassign:\n%s", after)
+			}
+			if _, err := orchestrator.ReadDocument(taskPath); err != nil {
+				t.Errorf("task unparseable: %v", err)
+			}
+		})
+	}
+}
+
 func TestTaskControlSnoozeAndWakeNowRejectNonWaitingTask(t *testing.T) {
 	service, _ := newTaskControlService(t)
 	taskID := "tasks-20260925-non-waiting"

@@ -11,11 +11,24 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/agent0ai/spynel/internal/fsx"
 	"github.com/agent0ai/spynel/internal/harness"
 	"github.com/agent0ai/spynel/internal/orchestrator"
+	"gopkg.in/yaml.v3"
 )
+
+// yamlStringScalar renders s as a single-line YAML scalar that parses back to
+// the same string: plain when that is safe ("agy"), quoted when it is not
+// ("Joey #2 backup", "123", "- x"). The caller rejects control characters first.
+func yamlStringScalar(s string) (string, error) {
+	out, err := yaml.Marshal(s)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(string(out), "\n"), nil
+}
 
 // Task-control is the task-id-addressed control surface for the Helm web
 // conversations phase ("Steer"). It reuses the /job command primitives —
@@ -354,6 +367,13 @@ func (s *Service) TaskControl(ctx context.Context, input TaskControlRequest) (Ta
 		if staff == "" {
 			return TaskControlResult{}, taskControlErrorf("bad_request", "staff name is required for reassign")
 		}
+		if strings.IndexFunc(staff, unicode.IsControl) >= 0 {
+			return TaskControlResult{}, taskControlErrorf("bad_request", "staff name must not contain control characters")
+		}
+		staffValue, err := yamlStringScalar(staff)
+		if err != nil {
+			return TaskControlResult{}, err
+		}
 		taskPath, folder, _, err := s.findTaskDocument(taskID)
 		if err != nil {
 			return TaskControlResult{}, err
@@ -368,7 +388,7 @@ func (s *Service) TaskControl(ctx context.Context, input TaskControlRequest) (Ta
 		}
 		content := string(contentBytes)
 
-		content, err = SurgicallyUpdateFrontMatterField(content, "staff", staff)
+		content, err = SurgicallyUpdateFrontMatterField(content, "staff", staffValue)
 		if err != nil {
 			return TaskControlResult{}, err
 		}
