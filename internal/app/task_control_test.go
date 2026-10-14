@@ -926,7 +926,6 @@ func TestTaskControlSnoozeAndWakeNowRejectNonWaitingTask(t *testing.T) {
 	}
 }
 
-
 // Rework finding 1 (2026-09-25 review): the mainline mixed-review flow — a
 // task whose reviewer rejected it (rejected completion_summary persisted by
 // Spynel in todo/), reworked, back in review/ — must web-Approve into a
@@ -1044,5 +1043,59 @@ func TestTaskControlWakeNowStripsWaitingForAndWakeAt(t *testing.T) {
 	}
 	if doc.FrontMatter["status"] != "todo" {
 		t.Errorf("status = %v, want todo", doc.FrontMatter["status"])
+	}
+}
+
+// A task id is a file name, never a path: ids carrying separators, "..", or ":"
+// must not resolve to a document outside the tasks status folders, and a
+// document without an id of its own is never adopted for the requested id.
+func TestBugTaskControlTraversal(t *testing.T) {
+	for _, id := range []string{"../../notes", "..", "../todo/x", `..\..\notes`, "a/b", "c:notes", "notes/.."} {
+		for _, action := range []string{"reassign", "approve", "request-changes", "snooze", "wake-now", "message", "interrupt", "stop", "output"} {
+			service, _ := newTaskControlService(t)
+			// ../../notes resolves to <state>/notes.md from tasks/working.
+			outside := service.Config.StatePath("notes.md")
+			original := "---\nstaff: cursor\nstatus: working\nupdated_at: \"2026-09-25T08:00:00Z\"\n---\n\n# Notes\n"
+			if err := os.WriteFile(outside, []byte(original), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := service.TaskControl(context.Background(), TaskControlRequest{
+				TaskID: id,
+				Action: action,
+				Staff:  "agy",
+				Text:   "note",
+				WakeAt: "2099-01-01T00:00:00Z",
+			})
+			if err == nil {
+				t.Errorf("%s with task id %q: expected an error", action, id)
+			}
+			raw, readErr := os.ReadFile(outside)
+			if readErr != nil || string(raw) != original {
+				t.Errorf("%s with task id %q wrote outside the tasks tree: %q (%v)", action, id, raw, readErr)
+			}
+			if info, statErr := os.Stat(outside); statErr == nil && info.Mode().Perm() != 0o644 {
+				t.Errorf("%s with task id %q changed mode of outside file to %v", action, id, info.Mode().Perm())
+			}
+		}
+	}
+}
+
+func TestTaskControlRejectsDocumentWhoseIDDiffersFromRequestedTask(t *testing.T) {
+	service, _ := newTaskControlService(t)
+	workingDir := service.Config.StatePath("tasks", "working")
+	if err := os.MkdirAll(workingDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(workingDir, "tasks-20261013-noid.md")
+	original := "---\nstaff: cursor\nstatus: working\n---\n\n# No id\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := service.TaskControl(context.Background(), TaskControlRequest{TaskID: "tasks-20261013-noid", Action: "reassign", Staff: "agy"})
+	if taskControlCode(err) != "not_found" {
+		t.Fatalf("document without id: code = %q err = %v", taskControlCode(err), err)
+	}
+	if raw, _ := os.ReadFile(path); string(raw) != original {
+		t.Fatalf("document without id was modified: %q", raw)
 	}
 }

@@ -214,3 +214,25 @@ func TestTaskControlRouteDecodesStaffAndWakeAtFields(t *testing.T) {
 		t.Fatalf("snooze status = %d", resp2.StatusCode)
 	}
 }
+
+func TestTaskControlRouteRejectsTraversalTaskIDWithoutTouchingOutsideFile(t *testing.T) {
+	server, token, ts := newTaskControlServer(t)
+	outside := server.Service.Config.StatePath("notes.md")
+	original := "---\nstaff: cursor\nstatus: working\n---\n\n# Notes\n"
+	if err := os.WriteFile(outside, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("POST", ts.URL+"/v1/task-control", strings.NewReader(`{"task_id":"../../notes","action":"reassign","staff":"agy"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("traversal task id status = %d", resp.StatusCode)
+	}
+	if raw, _ := os.ReadFile(outside); string(raw) != original {
+		t.Fatalf("outside file modified: %q", raw)
+	}
+}

@@ -143,14 +143,23 @@ func (s *Service) resolveTaskControlJob(taskID string) (Job, orchestrator.Lease,
 	return best, lease, documentID, phase, nil
 }
 
+// validTaskControlID reports whether a task id is a plain file-name stem: no
+// path separators, no "..", and no ":" (drive or stream syntax).
+func validTaskControlID(taskID string) bool {
+	return taskID != "" && !strings.ContainsAny(taskID, `/\:`) && !strings.Contains(taskID, "..")
+}
+
 // findTaskDocument resolves a task id to its location on disk across status folders.
 func (s *Service) findTaskDocument(taskID string) (string, string, orchestrator.Document, error) {
+	if !validTaskControlID(taskID) {
+		return "", "", orchestrator.Document{}, taskControlErrorf("bad_request", "task_id must not contain path separators, \"..\" or \":\"")
+	}
 	folders := []string{"working", "reviewing", "review", "waiting", "todo", "done", "cancelled", "failed"}
 	for _, folder := range folders {
 		candidate := filepath.Join(s.Config.StatePath("tasks", folder), taskID+".md")
 		if doc, err := orchestrator.ReadDocument(candidate); err == nil {
 			id, _ := doc.FrontMatter["id"].(string)
-			if id == taskID || id == "" {
+			if id == taskID {
 				return candidate, folder, doc, nil
 			}
 		}
@@ -183,6 +192,9 @@ func (s *Service) TaskControl(ctx context.Context, input TaskControlRequest) (Ta
 	taskID := strings.TrimSpace(input.TaskID)
 	if taskID == "" || len([]rune(taskID)) > maxTaskControlIDRunes {
 		return TaskControlResult{}, taskControlErrorf("bad_request", "task_id is required and bounded to %d characters", maxTaskControlIDRunes)
+	}
+	if !validTaskControlID(taskID) {
+		return TaskControlResult{}, taskControlErrorf("bad_request", "task_id must not contain path separators, \"..\" or \":\"")
 	}
 	action := strings.ToLower(strings.TrimSpace(input.Action))
 	text := input.Text
