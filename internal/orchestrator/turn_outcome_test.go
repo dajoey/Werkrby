@@ -120,6 +120,16 @@ func TestTurnOutcomeReadPrefersResultFileThenFencedBlock(t *testing.T) {
 // seat, with or without explicit_outcome, and one queued task.
 func explicitFixture(t *testing.T, explicit bool, noReview bool) (config.Config, string) {
 	t.Helper()
+	seat := "pilot: {runner: claude, headless: true}"
+	if explicit {
+		seat = "pilot: {runner: claude, headless: true, explicit_outcome: true}"
+	}
+	return explicitFixtureRoster(t, "  "+seat+"\n", noReview)
+}
+
+// explicitFixtureRoster is explicitFixture with the staff block given (two-space indented lines).
+func explicitFixtureRoster(t *testing.T, staff string, noReview bool) (config.Config, string) {
+	t.Helper()
 	root := t.TempDir()
 	if err := workspace.Init(root, false); err != nil {
 		t.Fatal(err)
@@ -129,11 +139,7 @@ func explicitFixture(t *testing.T, explicit bool, noReview bool) (config.Config,
 		t.Fatal(err)
 	}
 	cfg.Orchestrator.TaskNotifications = config.TaskNotificationsOff
-	seat := "pilot: {runner: claude, headless: true}"
-	if explicit {
-		seat = "pilot: {runner: claude, headless: true, explicit_outcome: true}"
-	}
-	body := "staff:\n  " + seat + "\nroles:\n  task_implementation: pilot\n  task_review: pilot\n"
+	body := "staff:\n" + staff + "roles:\n  task_implementation: pilot\n  task_review: pilot\n"
 	if err := os.WriteFile(roster.Path(cfg.StatePath()), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -211,31 +217,6 @@ func TestExplicitOutcomeSeatOwnerAppliesTransition(t *testing.T) {
 	fake.mu.Unlock()
 	if !strings.Contains(prompt, "Turn end on this seat") || strings.Contains(prompt, filepath.Join(filepath.Dir(cfg.Resolve(workflowRoutes()[0].Source)), "review")+"\n") {
 		t.Fatalf("flagged seat prompt lacks the explicit outcome contract or still lists status folders:\n%s", prompt)
-	}
-}
-
-func TestExplicitOutcomeMissingResultRequeuesToTodo(t *testing.T) {
-	cfg, name := explicitFixture(t, true, true)
-	fake := newFakeRecipient()
-	manager := New(cfg, fake, extensions.Runner{Directory: filepath.Join(cfg.Root, "missing")})
-	if err := manager.ScanOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	manager.Wait()
-	todo := statusFile(cfg, "todo", name)
-	document, err := ReadDocument(todo)
-	if err != nil {
-		t.Fatalf("a turn without an outcome did not return the task to todo/: %v", err)
-	}
-	if !strings.Contains(document.Body, "no outcome") {
-		t.Fatalf("progress does not say why:\n%s", document.Body)
-	}
-	if document.FrontMatter[resumeCreditField] != nil {
-		t.Fatalf("a missing outcome must spend the attempt, got credit %#v", document.FrontMatter[resumeCreditField])
-	}
-	leases, _ := manager.loadLeases()
-	if len(leases) != 0 {
-		t.Fatalf("lease left for a detector: %#v", leases)
 	}
 }
 

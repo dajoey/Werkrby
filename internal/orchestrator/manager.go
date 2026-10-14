@@ -1007,6 +1007,11 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 		lifecycleMu.Lock()
 		defer lifecycleMu.Unlock()
 		if err != nil {
+			// A worker on an explicit-outcome seat may have written its outcome before the run
+			// failed (a refused final reply); that outcome is the turn's result.
+			if turn != nil && m.applyWrittenOutcomeAfterSendError(route, lease, turn, err) {
+				return
+			}
 			if jobID > 0 && m.JobEvent != nil {
 				m.JobEvent(jobID, core.Event{Kind: core.EventError, Text: err.Error(), Done: true})
 			}
