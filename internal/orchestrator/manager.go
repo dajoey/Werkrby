@@ -1063,12 +1063,17 @@ func (m *Manager) reconcileTransitions(ctx context.Context) error {
 			status, path, err = m.reconcileGoalTransition(ctx, route, lease, phase, status, path)
 		}
 		if err != nil {
-			// Keep the lease so a later scan can finish the transition once the
-			// document is repaired; do not abort the rest of the board.
-			if errors.Is(err, errUnreadableDocument) {
-				continue
+			// Keep the lease so a later scan can finish the transition (once
+			// the document is repaired or the hook recovers); do not abort the
+			// rest of the board. An unreadable document is already logged. A
+			// cancelled context (shutdown) still aborts the scan.
+			if ctx.Err() != nil {
+				return err
 			}
-			return err
+			if !errors.Is(err, errUnreadableDocument) {
+				m.log(fmt.Sprintf("transition for %s failed, lease kept for the next scan: %v", lease.File, err))
+			}
+			continue
 		}
 		_ = os.Remove(m.leasePath(lease.ID))
 		m.finishRuntimeJob(lease.ID)

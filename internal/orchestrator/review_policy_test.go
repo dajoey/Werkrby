@@ -655,8 +655,9 @@ func TestDirectCompletionRetriesFailedHookWithStableEventID(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager.Wait()
-	if err := manager.reconcileTransitions(context.Background()); err == nil {
-		t.Fatal("first failed hook delivery unexpectedly reconciled")
+	// A failed hook no longer aborts the board scan: the lease stays for retry.
+	if err := manager.reconcileTransitions(context.Background()); err != nil {
+		t.Fatalf("failed hook delivery aborted reconciliation: %v", err)
 	}
 	if err := manager.reconcileTransitions(context.Background()); err != nil {
 		t.Fatal(err)
@@ -687,6 +688,69 @@ func TestDirectCompletionRetriesFailedHookWithStableEventID(t *testing.T) {
 	after, err := os.ReadFile(filepath.Join(extension, "events"))
 	if err != nil || string(after) != string(events) {
 		t.Fatalf("completed hook was relaunched: before=%q after=%q err=%v", events, after, err)
+	}
+}
+
+// A task.completed hook that keeps failing must not stall the board: the
+// failed lease is kept for the next scan, but scanOnce still reaches recovery,
+// wake and claims, so an unrelated queued task is claimed.
+func TestFailingCompletionHookDoesNotStallBoard(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell hook fixture")
+	}
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.Load(config.PathForRoot(root))
+	route := workflowRoutes()[0]
+	extension := filepath.Join(cfg.Resolve(cfg.Extensions.Directory), "failing")
+	if err := os.MkdirAll(extension, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "name: failing\nhooks:\n  task.completed: [\"./hook.sh\"]\n"
+	script := "#!/bin/sh\nprintf x >> attempts\nexit 9\n"
+	if err := os.WriteFile(filepath.Join(extension, extensions.ManifestName), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(extension, "hook.sh"), []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	taskA, err := CreateWithOptions(cfg, "tasks", "complete with failing hook", "", CreateOptions{NoReview: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nameA := filepath.Base(taskA)
+	fake := newFakeRecipient()
+	completed := false
+	fake.beforeEmit = func() {
+		if completed {
+			return
+		}
+		completed = true
+		recordDirectCompletion(t, filepath.Join(cfg.Resolve(route.Working), nameA), filepath.Join(filepath.Dir(cfg.Resolve(route.Source)), "done", nameA))
+	}
+	manager := New(cfg, fake, extensions.Runner{Directory: cfg.Resolve(cfg.Extensions.Directory), Timeout: time.Second})
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+	taskB, err := CreateWithOptions(cfg, "tasks", "unrelated queued task", "", CreateOptions{NoReview: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for scan := 1; scan <= 3; scan++ {
+		if err := manager.ScanOnce(context.Background()); err != nil {
+			t.Fatalf("scan %d returned the hook error: %v", scan, err)
+		}
+		manager.Wait()
+	}
+	if _, err := os.Stat(taskB); err == nil {
+		t.Fatalf("unrelated task %s is still in todo after 3 scans: a failing hook stalled the board", filepath.Base(taskB))
+	}
+	attempts, err := os.ReadFile(filepath.Join(extension, "attempts"))
+	if err != nil || len(attempts) < 2 {
+		t.Fatalf("failed hook lease was not kept for retry: attempts=%q err=%v", attempts, err)
 	}
 }
 
