@@ -209,7 +209,7 @@ func (e *Election) TryAcquire(endpoint, token string) (Lease, bool, error) {
 			// represent a renewable owner, so recover it under the election lock.
 			current = Lease{}
 		}
-		if current.InstanceID != "" && !stale(current, now) {
+		if current.InstanceID != "" && !e.stale(current, now) {
 			targeted := current.HandoffTo == e.id
 			expired := current.HandoffTo != "" && !now.Before(current.HandoffAt.Add(HandoffTimeout))
 			if !targeted && !expired {
@@ -217,7 +217,7 @@ func (e *Election) TryAcquire(endpoint, token string) (Lease, bool, error) {
 				return nil
 			}
 		}
-		if current.PID > 0 && current.PID != e.pid && isProcessExeDeleted(current.PID) {
+		if current.PID > 0 && current.PID != e.pid && e.sameEnvironment(current) && isProcessExeDeleted(current.PID) {
 			terminateObsoleteProcess(current.PID)
 		}
 		result = Lease{
@@ -258,7 +258,7 @@ func (e *Election) Renew(token string) (Lease, bool, error) {
 			return nil
 		}
 		now := e.now()
-		if stale(current, now) || isProcessExeDeleted(e.pid) {
+		if e.stale(current, now) || isProcessExeDeleted(e.pid) {
 			return nil
 		}
 		// A matching owner term is authoritative for this process. Restore the
@@ -299,7 +299,7 @@ func (e *Election) Handoff(token, targetID string) (Lease, bool, error) {
 			return nil
 		}
 		now := e.now()
-		if stale(current, now) {
+		if e.stale(current, now) {
 			return nil
 		}
 		current.EnvironmentID = e.environmentID
@@ -365,7 +365,7 @@ func (e *Election) RunWhileOwner(token string, action func() error) (bool, error
 			}
 			return err
 		}
-		if current.InstanceID != e.id || current.Token != token || current.HandoffTo != "" || stale(current, e.now()) {
+		if current.InstanceID != e.id || current.Token != token || current.HandoffTo != "" || e.stale(current, e.now()) {
 			return nil
 		}
 		ran = true
@@ -374,7 +374,7 @@ func (e *Election) RunWhileOwner(token string, action func() error) (bool, error
 	return ran, err
 }
 
-func (e *Election) IsStale(lease Lease) bool { return stale(lease, e.now()) }
+func (e *Election) IsStale(lease Lease) bool { return e.stale(lease, e.now()) }
 
 // RunWhileNoPrimaryLease holds the ownership mutation boundary while action
 // runs, but only when no primary lease exists at all. This is deliberately
@@ -416,20 +416,29 @@ func (e *Election) RunWhileNoPrimaryLease(action func() error) (bool, error) {
 // contenders remain excluded until the reservation expires.
 func (e *Election) CanTakeOver(lease Lease) bool {
 	now := e.now()
-	return stale(lease, now) || lease.HandoffTo == e.id ||
+	return e.stale(lease, now) || lease.HandoffTo == e.id ||
 		(lease.HandoffTo != "" && !now.Before(lease.HandoffAt.Add(HandoffTimeout)))
 }
 
-func stale(lease Lease, now time.Time) bool {
+// stale reports whether a lease no longer fences contenders. A heartbeat that
+// expired always counts. The PID and executable checks read this process's PID
+// namespace, so they apply only to a lease written from the same environment;
+// a foreign-environment owner (a host and a container sharing one state
+// directory) is judged by its heartbeat alone.
+func (e *Election) stale(lease Lease, now time.Time) bool {
 	if lease.InstanceID == "" || lease.HeartbeatAt.IsZero() || !now.Before(lease.HeartbeatAt.Add(StaleAfter)) {
 		return true
 	}
-	if lease.PID > 0 {
+	if lease.PID > 0 && e.sameEnvironment(lease) {
 		if !isProcessAlive(lease.PID) || isProcessExeDeleted(lease.PID) {
 			return true
 		}
 	}
 	return false
+}
+
+func (e *Election) sameEnvironment(lease Lease) bool {
+	return lease.EnvironmentID != "" && lease.EnvironmentID == e.environmentID
 }
 
 func (e *Election) withLock(action func() error) error {

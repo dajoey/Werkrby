@@ -681,12 +681,13 @@ func TestDeadPIDLeaseIsImmediatelyStale(t *testing.T) {
 
 	// Dead PID (PID 99999999 is extraordinarily unlikely to exist)
 	deadLease := Lease{
-		InstanceID:  "dead-instance",
-		PID:         99999999,
-		Endpoint:    "127.0.0.1:10001",
-		Token:       "token",
-		StartedAt:   now,
-		HeartbeatAt: now, // fresh heartbeat, but dead process!
+		InstanceID:    "dead-instance",
+		PID:           99999999,
+		Endpoint:      "127.0.0.1:10001",
+		EnvironmentID: election.EnvironmentID(), // same environment: the PID is checkable
+		Token:         "token",
+		StartedAt:     now,
+		HeartbeatAt:   now, // fresh heartbeat, but dead process!
 	}
 
 	if !election.CanTakeOver(deadLease) {
@@ -739,5 +740,60 @@ func TestReplacedExecutableRefusesAcquireAndRenew(t *testing.T) {
 	}
 	if current.InstanceID != lease.InstanceID || current.Token != token {
 		t.Fatalf("replaced instance disturbed its own lease: %#v, want %#v", current, lease)
+	}
+}
+
+// A primary in another environment (a host process and a container sharing one
+// bind-mounted state directory) has a PID that means nothing in this PID
+// namespace. A fresh heartbeat must keep such a lease fenced; only a stale
+// heartbeat lets this contender replace it.
+func TestForeignEnvironmentFreshLeaseIsNotStolen(t *testing.T) {
+	state := t.TempDir()
+	now := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	host, err := NewWithEnvironmentID(state, testEnvironmentID("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	container, err := NewWithEnvironmentID(state, testEnvironmentID("b"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	host.now = func() time.Time { return now }
+	container.now = func() time.Time { return now }
+
+	token, _ := host.NewToken()
+	hostLease, acquired, err := host.TryAcquire("127.0.0.1:10001", token)
+	if err != nil || !acquired {
+		t.Fatalf("host acquire = %#v, %t, %v", hostLease, acquired, err)
+	}
+	// The host PID is not visible from the container's PID namespace, so
+	// kill(pid, 0) fails there exactly as it does for a dead PID.
+	hostLease.PID = 99999999
+	if err := host.writeLease(hostLease); err != nil {
+		t.Fatal(err)
+	}
+
+	if container.CanTakeOver(hostLease) {
+		t.Fatal("container may take over a fresh foreign-environment lease")
+	}
+	if container.IsStale(hostLease) {
+		t.Fatal("fresh foreign-environment lease reads stale")
+	}
+	containerToken, _ := container.NewToken()
+	if lease, acquired, err := container.TryAcquire("127.0.0.1:10002", containerToken); err != nil || acquired || lease.InstanceID != host.ID() {
+		t.Fatalf("container stole a fresh foreign-environment lease: %#v, %t, %v", lease, acquired, err)
+	}
+	if current, err := container.readLease(); err != nil || current.InstanceID != host.ID() || current.Token != token {
+		t.Fatalf("host lease replaced after the container's attempt: %#v, %v", current, err)
+	}
+
+	// Once the heartbeat really expires, the foreign lease is replaceable.
+	later := now.Add(StaleAfter + time.Second)
+	container.now = func() time.Time { return later }
+	if !container.CanTakeOver(hostLease) {
+		t.Fatal("heartbeat-expired foreign-environment lease must be replaceable")
+	}
+	if lease, acquired, err := container.TryAcquire("127.0.0.1:10002", containerToken); err != nil || !acquired || lease.InstanceID != container.ID() {
+		t.Fatalf("container takeover of expired foreign lease = %#v, %t, %v", lease, acquired, err)
 	}
 }
