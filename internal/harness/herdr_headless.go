@@ -35,7 +35,9 @@ var headlessStatusInterval time.Duration
 
 // headlessChildEnv is the environment a headless worker gets: Werkrby's own, minus the credentials only
 // Werkrby needs (channel bot tokens). A pane worker inherits the Herdr server's environment, which
-// does not carry them; the child of a direct exec would, and its Bash tool could read them.
+// does not carry them, plus whatever its pane shell's rc files export: ~/.bashrc must not export a
+// bot token (ops tests/test_fleet_mcp_env_allowlist.py guards fleet-mcp-env.sh). The child of a
+// direct exec would carry them, and its Bash tool could read them.
 func headlessChildEnv(environ []string) []string {
 	out := make([]string, 0, len(environ))
 	for _, entry := range environ {
