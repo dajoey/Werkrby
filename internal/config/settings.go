@@ -76,6 +76,7 @@ func Settings(cfg Config) []Setting {
 		{Key: "orchestrator.semantic_heartbeat_minutes", Section: "config", Description: "Fixed delay after each agent workflow audit completes; 0 disables it", Value: strconv.Itoa(cfg.Orchestrator.SemanticHeartbeatMinutes), Advanced: true},
 		{Key: "orchestrator.task_notifications", Section: "config", Description: "Live policy context for direct task notification agents", Value: cfg.Orchestrator.TaskNotifications, Choices: []string{TaskNotificationsOff, TaskNotificationsDecide, TaskNotificationsAlways}, Advanced: true},
 		{Key: "orchestrator.max_parallel", Section: "config", Description: "Live maximum concurrent Markdown jobs; lowering never cancels active work", Value: strconv.Itoa(cfg.Orchestrator.MaxParallel), Advanced: true},
+		{Key: "orchestrator.repair_slots", Section: "config", Description: "Extra capacity reserved for lane: repair tasks so a repair for stuck workers can run while they hold every normal slot; 0 disables the reserve", Value: strconv.Itoa(cfg.Orchestrator.RepairSlots), Advanced: true},
 		{Key: "extensions.enabled", Section: "config", Description: "Run trusted extension hooks after restart", Value: formatBool(cfg.Extensions.Enabled), Choices: []string{"on", "off"}, Restart: true, Advanced: true},
 		{Key: "extensions.directory", Section: "config", Description: "Installed extension directory after restart", Value: cfg.Extensions.Directory, Restart: true, Advanced: true},
 		{Key: "extensions.hook_timeout", Section: "config", Description: "Per-hook timeout after restart", Value: cfg.Extensions.HookTimeout, Restart: true, Advanced: true},
@@ -266,6 +267,8 @@ func setSetting(cfg *Config, key, value string) (Setting, error) { //nolint:gocy
 		cfg.Orchestrator.TaskNotifications = strings.ToLower(value)
 	case "orchestrator.max_parallel":
 		cfg.Orchestrator.MaxParallel, err = parseInteger(1)
+	case "orchestrator.repair_slots":
+		cfg.Orchestrator.RepairSlots, err = parseInteger(0)
 	case "extensions.enabled":
 		cfg.Extensions.Enabled, err = parseBoolean()
 	case "extensions.directory":

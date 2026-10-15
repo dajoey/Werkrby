@@ -400,6 +400,20 @@ func documentIsGoalDerived(document Document) bool {
 	return strings.TrimSpace(id) != ""
 }
 
+// repairLane is the front-matter lane value that lets a task claim the
+// reserved repair capacity beyond orchestrator.max_parallel.
+const repairLane = "repair"
+
+// documentIsRepair reports whether a document is stamped `lane: repair`:
+// a task the repair lane (a Helm card about a silent, stalled or quota-walled
+// worker) may claim the reserved slot while stuck workers hold every normal
+// slot (2026-10-15). Any other lane value, including a blank one, is a
+// normal task and never touches the reserve.
+func documentIsRepair(document Document) bool {
+	lane, _ := document.FrontMatter["lane"].(string)
+	return strings.TrimSpace(lane) == repairLane
+}
+
 // documentCreatedAt is the claim-ordering timestamp, taken from the front
 // matter the caller already parsed; it never re-reads the file. A missing or
 // unparseable value reports !ok so the document sorts last instead of first.

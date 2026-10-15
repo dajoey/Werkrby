@@ -196,6 +196,10 @@ type Orchestrator struct {
 	RunsMode string `yaml:"runs_mode,omitempty"`
 	// WorkWindow keeps one slot free for work Claude cards during working hours (see WorkWindow).
 	WorkWindow WorkWindow `yaml:"work_window,omitempty"`
+	// RepairSlots reserves extra capacity beyond MaxParallel for lane: repair
+	// tasks so a repair for stuck workers can be claimed while those workers
+	// hold every normal slot (2026-10-15). 0 disables the reserve.
+	RepairSlots int `yaml:"repair_slots"`
 }
 
 const (
@@ -254,7 +258,7 @@ func Default() Config {
 		Speech:  Speech{Enabled: true, Language: "en", NumThreads: 2, MaxFileMB: 100, MaxDurationSec: 1800, ChunkSeconds: 600},
 		Startup: Startup{},
 		Orchestrator: Orchestrator{
-			Enabled: true, IntervalSec: 10, RetriggerUnrespondedMessages: true, SemanticHeartbeatMinutes: 15, TaskNotifications: TaskNotificationsDecide, MaxParallel: 4,
+			Enabled: true, IntervalSec: 10, RetriggerUnrespondedMessages: true, SemanticHeartbeatMinutes: 15, TaskNotifications: TaskNotificationsDecide, MaxParallel: 4, RepairSlots: 1,
 		},
 		Extensions: Extensions{Enabled: true, Directory: ".spynel/extensions", HookTimeout: "30s"},
 	}
@@ -473,6 +477,9 @@ func (c Config) Validate() error {
 		problems = append(problems, "orchestrator.max_parallel must be positive")
 	}
 	problems = append(problems, c.Orchestrator.WorkWindow.validate()...)
+	if c.Orchestrator.RepairSlots < 0 {
+		problems = append(problems, "orchestrator.repair_slots must be zero or positive")
+	}
 	if minutes := c.Orchestrator.SemanticHeartbeatMinutes; minutes != 0 && (minutes < 5 || minutes > 1440) {
 		problems = append(problems, "orchestrator.semantic_heartbeat_minutes must be 0 (disabled) or between 5 and 1440")
 	}
