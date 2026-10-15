@@ -671,3 +671,72 @@ func TestHerdrHeadlessAgyFollowUpResumesItsConversation(t *testing.T) {
 		t.Fatalf("argv = %q, want --conversation %s", argv, agyConv)
 	}
 }
+
+// Review 2026-10-15 (agy): a resumed turn that fails before agy prints a conversation id keeps it.
+func TestHerdrHeadlessAgyFailedResumedTurnKeepsItsConversation(t *testing.T) {
+	h, root := agyHeadlessFixture(t, `if [ -f "$(dirname "$0")/fail" ]; then echo '{"event":"result","result":{"conversation_id":"","status":"ERROR","error":"RESOURCE_EXHAUSTED"}}'; exit 1; fi
+`+agyTurnOK)
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "first", "@researcher", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "agy-home", "conversations"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agy-home", "conversations", agyConv+".db"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "fail"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "second", "@researcher", nil); err == nil {
+		t.Fatal("want the failed turn")
+	}
+	if got := h.ThreadID(headlessKey); got != agyConv {
+		t.Fatalf("conversation after a failed resumed turn = %q, want %s kept", got, agyConv)
+	}
+}
+
+func TestParseAgyLineIsLenient(t *testing.T) {
+	// a float step index, a string tool_info and no tool_name still give the step; the line is not lost
+	ev, ok := parseAgyLine([]byte(`{"event":"step_update","step_update":{"conversation_id":"c1","step_index":2.0,"state":"ACTIVE","step_type":"tool","tool_info":{"name":"run_command","parameters":{"CommandLine":"ls"}}}}`))
+	if !ok || ev.toolID != "2" || ev.toolName != "run_command" || ev.sessionID != "c1" {
+		t.Fatalf("step = %+v %v", ev, ok)
+	}
+	ev, ok = parseAgyLine([]byte(`{"event":"step_update","step_update":"opaque","conversation_id":"c2"}`))
+	if !ok || ev.sessionID != "c2" {
+		t.Fatalf("string step_update = %+v %v", ev, ok)
+	}
+	ev, ok = parseAgyLine([]byte(`{"event":"result","result":{"conversation_id":"c3","status":"SUCCESS","response":{"text":"odd"},"usage":"x"}}`))
+	if !ok || ev.final == nil || ev.final.Subtype != "success" {
+		t.Fatalf("odd result = %+v %v", ev, ok)
+	}
+	// an ERROR with no error text leaves the reason to stderr
+	ev, _ = parseAgyLine([]byte(`{"event":"result","result":{"status":"ERROR"}}`))
+	if ev.final == nil || !ev.final.IsError || ev.final.Result != "" {
+		t.Fatalf("empty error = %+v", ev.final)
+	}
+}
+
+func TestHerdrHeadlessAgyEmptyErrorUsesStderr(t *testing.T) {
+	h, _ := agyHeadlessFixture(t, `echo '{"event":"result","result":{"status":"ERROR"}}'
+echo 'error: model overloaded, try later' >&2
+exit 1
+`)
+	_, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@researcher", nil)
+	if err == nil || !strings.Contains(err.Error(), "error: model overloaded") {
+		t.Fatalf("err = %v, want the stderr error line", err)
+	}
+}
+
+func TestHerdrHeadlessAgyPlanModeIsNotFullAccess(t *testing.T) {
+	h, root := agyHeadlessFixture(t, agyTurnOK)
+	h.config.ApprovalPolicy = "plan"
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@researcher", nil); err != nil {
+		t.Fatal(err)
+	}
+	argv, _ := os.ReadFile(filepath.Join(root, "argv"))
+	got := strings.ReplaceAll(string(argv), "\n", " ")
+	if strings.Contains(got, "--dangerously-skip-permissions") || !strings.Contains(got, "--mode plan") {
+		t.Fatalf("argv = %q, want --mode plan and no skip-permissions", got)
+	}
+}

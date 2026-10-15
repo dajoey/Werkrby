@@ -122,3 +122,15 @@ func TestActivitySummaryFirstLinesAndGrepWhere(t *testing.T) {
 		t.Errorf("query summary = %q", got)
 	}
 }
+
+func TestHeadlessActivityRepeatedActiveIsOneCall(t *testing.T) {
+	dir := t.TempDir()
+	a := newHeadlessActivity(dir, 42, "/w", "x", "")
+	a.call("2", "run_command", `{"CommandLine":"ls"}`)
+	a.call("2", "run_command", `{"CommandLine":"ls"}`)
+	a.result("2")
+	body, _ := os.ReadFile(filepath.Join(dir, "42.log"))
+	if n := strings.Count(string(body), "▶ run_command"); n != 1 {
+		t.Fatalf("%d call lines for one step:\n%s", n, body)
+	}
+}

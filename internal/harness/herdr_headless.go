@@ -122,7 +122,7 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	previous := h.sessions[key]
 	h.mu.Unlock()
 	var args []string
-	resumed := false // a kimi turn passed -S previous
+	resumed := false // a kimi (-S) or agy (--conversation) turn resumed the remembered session
 	if kimi {
 		// Kimi takes the prompt as the -p value (the pane path already hands Herdr the prompt as one
 		// argument, so it fits the same limit) and runs tools without asking in prompt mode.
@@ -134,17 +134,14 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		args = append(args, staff.Args...)
 	} else if agy {
 		// agy takes the prompt as its print argument and runs with the same permission policy as
-		// the Claude seats (its panes start with --dangerously-skip-permissions).
+		// the Claude seats (its panes start with --dangerously-skip-permissions; plan and read-only
+		// configurations start it in plan mode).
 		args = []string{"-p", prompt, "--output-format", "stream-json"}
 		if agyConversationExists(previous) {
 			args = append(args, "--conversation", previous)
+			resumed = true
 		}
-		for _, arg := range claudePermissionArgs(cfg) {
-			if arg == "--dangerously-skip-permissions" {
-				args = append(args, arg)
-			}
-		}
-		args = append(args, staff.Args...)
+		args = append(append(args, agyPermissionArgs(cfg)...), staff.Args...)
 	} else {
 		args = []string{"-p", "--output-format", "stream-json", "--verbose"}
 		if path := transcriptPath("claude", previous, cfg.Cwd); path != "" {
@@ -313,9 +310,9 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	// turn would be handed back by ThreadID and resumed by the next turn as if this one had
 	// continued it. An interrupted or timed-out turn keeps the earlier session, since it may have
 	// died before Claude Code printed one.
-	// Kimi prints its session id only when a turn finishes, so a resumed (-S) turn that failed
-	// still has its session: keep it.
-	if threadID == "" && turnContext.Err() == nil && !(kimi && resumed) {
+	// Kimi prints its session id only when a turn finishes, and an agy turn that fails early may
+	// print none, so a resumed turn that failed without one still has its session: keep it.
+	if threadID == "" && turnContext.Err() == nil && !((kimi || agy) && resumed) {
 		h.forgetSession(key)
 	}
 	if turnContext.Err() != nil {
@@ -604,59 +601,87 @@ type agyEvent struct {
 	final     *headlessResultLine
 }
 
+// agyObject decodes a JSON object leniently: a field of an unexpected type is dropped, never the line.
+func agyObject(raw json.RawMessage) map[string]json.RawMessage {
+	var out map[string]json.RawMessage
+	if json.Unmarshal(raw, &out) != nil {
+		return nil
+	}
+	return out
+}
+
+func agyString(raw json.RawMessage) string {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	return ""
+}
+
+// agyIndex reads a step index written as a number or a string.
+func agyIndex(raw json.RawMessage) string {
+	var n float64
+	if json.Unmarshal(raw, &n) == nil {
+		return strconv.FormatInt(int64(n), 10)
+	}
+	return agyString(raw)
+}
+
 // parseAgyLine reads one agy stream-json line: the conversation id (init, and every later event),
 // a tool step's state, and the closing result (status SUCCESS or ERROR, with response or error).
-// ok is false for a line that is not JSON.
+// ok is false only for a line that is not a JSON object; fields of an unexpected type are skipped.
 func parseAgyLine(line []byte) (agyEvent, bool) {
-	var msg struct {
-		Event          string `json:"event"`
-		ConversationID string `json:"conversation_id"`
-		StepUpdate     *struct {
-			ConversationID string `json:"conversation_id"`
-			StepIndex      int    `json:"step_index"`
-			State          string `json:"state"`
-			StepType       string `json:"step_type"`
-			ToolName       string `json:"tool_name"`
-			ToolInfo       struct {
-				Parameters json.RawMessage `json:"parameters"`
-			} `json:"tool_info"`
-		} `json:"step_update"`
-		Result *struct {
-			ConversationID string `json:"conversation_id"`
-			Status         string `json:"status"`
-			Response       string `json:"response"`
-			Error          string `json:"error"`
-		} `json:"result"`
-	}
-	if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &msg) != nil {
+	if len(bytes.TrimSpace(line)) == 0 {
 		return agyEvent{}, false
 	}
-	ev := agyEvent{sessionID: msg.ConversationID}
-	if su := msg.StepUpdate; su != nil {
+	top := agyObject(line)
+	if top == nil {
+		return agyEvent{}, false
+	}
+	ev := agyEvent{sessionID: agyString(top["conversation_id"])}
+	if su := agyObject(top["step_update"]); su != nil {
 		if ev.sessionID == "" {
-			ev.sessionID = su.ConversationID
+			ev.sessionID = agyString(su["conversation_id"])
 		}
-		if su.StepType == "tool" {
-			ev.toolID = strconv.Itoa(su.StepIndex)
-			ev.toolName = su.ToolName
-			ev.toolState = su.State
-			ev.toolArgs = string(su.ToolInfo.Parameters)
+		if agyString(su["step_type"]) == "tool" {
+			info := agyObject(su["tool_info"])
+			ev.toolID = agyIndex(su["step_index"])
+			ev.toolName = agyString(su["tool_name"])
+			if ev.toolName == "" {
+				ev.toolName = agyString(info["name"])
+			}
+			ev.toolState = agyString(su["state"])
+			ev.toolArgs = string(info["parameters"])
 		}
 	}
-	if r := msg.Result; r != nil {
+	if r := agyObject(top["result"]); r != nil {
 		if ev.sessionID == "" {
-			ev.sessionID = r.ConversationID
+			ev.sessionID = agyString(r["conversation_id"])
 		}
-		final := &headlessResultLine{Type: "result", SessionID: ev.sessionID, Subtype: "success", Result: strings.TrimSpace(r.Response)}
-		if r.Status != "SUCCESS" {
+		final := &headlessResultLine{Type: "result", SessionID: ev.sessionID, Subtype: "success", Result: strings.TrimSpace(agyString(r["response"]))}
+		if status := agyString(r["status"]); status != "SUCCESS" {
+			// An empty error leaves Result empty, so the failure detail falls back to agy's stderr.
 			final.Subtype = "error"
 			final.IsError = true
-			final.Result = strings.TrimSpace(r.Error)
-			if final.Result == "" {
-				final.Result = "agy ended with status " + r.Status
-			}
+			final.Result = strings.TrimSpace(agyString(r["error"]))
 		}
 		ev.final = final
 	}
 	return ev, true
+}
+
+// agyPermissionArgs maps Werkrby's approval and sandbox settings onto agy: plan and read-only
+// configurations run it in plan mode; full access with no approvals skips its permission prompts
+// (as the Claude seats do); anything else leaves agy's own defaults.
+func agyPermissionArgs(cfg HarnessConfig) []string {
+	claude := claudePermissionArgs(cfg)
+	for i, arg := range claude {
+		if arg == "--permission-mode" && i+1 < len(claude) && claude[i+1] == "plan" {
+			return []string{"--mode", "plan"}
+		}
+		if arg == "--dangerously-skip-permissions" {
+			return []string{arg}
+		}
+	}
+	return nil
 }

@@ -95,6 +95,10 @@ func (a *headlessActivity) call(id, tool, arguments string) {
 	}
 	now := headlessActivityNow()
 	a.mu.Lock()
+	if _, seen := a.calls[id]; seen { // a repeated ACTIVE update for the same step
+		a.mu.Unlock()
+		return
+	}
 	a.calls[id] = headlessActivityCall{tool: tool, at: now}
 	a.mu.Unlock()
 	a.emit(fmt.Sprintf("%s  ▶ %s%s", activityHMS(now), tool, activityTail(activitySummary(tool, arguments))))
