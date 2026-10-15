@@ -90,6 +90,10 @@ func (m *Manager) pauseStandaloneForGoalWork(ctx context.Context) {
 	if m.preemptionPending() {
 		return
 	}
+	// Ops lane: ops tasks inside their reserve keep their slots; only the excess is paused.
+	if m.opsLaneProtects() {
+		return
+	}
 	leases, err := m.loadLeases()
 	if err != nil {
 		return
