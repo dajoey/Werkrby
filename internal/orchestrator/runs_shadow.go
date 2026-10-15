@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -83,15 +84,43 @@ func (m *Manager) runBegin(lease Lease, seat string) (rec *runRecorder) {
 	if store == nil {
 		return nil
 	}
+	doc := filepath.Base(lease.File)
+	// Compare before this run is recorded: the previous run of the document and phase is what the
+	// attempt this claim charged has to follow from.
+	prev, havePrev, prevErr := store.LastRun(doc, lease.Phase)
 	id, err := store.Begin(runs.Run{
-		Doc: filepath.Base(lease.File), Phase: lease.Phase, Seat: seat, SessionKey: lease.SessionKey,
+		Doc: doc, Phase: lease.Phase, Seat: seat, SessionKey: lease.SessionKey,
 		Charged: lease.ClaimAttempt, Start: time.Now(),
 	})
 	if err != nil {
 		m.log("runs-shadow: record run start: " + err.Error())
 		return nil
 	}
+	if prevErr != nil {
+		m.log("runs-shadow: read the previous run: " + prevErr.Error())
+	} else {
+		m.logAttemptCheck(doc, lease, seat, prev, havePrev)
+	}
 	return &runRecorder{m: m, id: id}
+}
+
+// logAttemptCheck logs the attempt this claim charged beside the one the runs imply. The Stage B
+// check counts the lines that start "runs-shadow: attempts disagree "; "refund" lines are the known
+// carve-out sites. The document is quoted so a name with a space still parses, and state, seat and
+// the previous run's id let a reader tell a recovery from a fresh claim.
+func (m *Manager) logAttemptCheck(doc string, lease Lease, seat string, prev runs.Run, havePrev bool) {
+	var previous *runs.Run
+	previousOutcome, previousID := "none", int64(0)
+	if havePrev {
+		previous, previousOutcome, previousID = &prev, string(prev.Outcome), prev.ID
+	}
+	derived, verdict := runs.Check(previous, lease.ClaimAttempt)
+	derivedText := "n/a"
+	if verdict != runs.Unseeded && verdict != runs.PreviousOpen {
+		derivedText = strconv.Itoa(derived)
+	}
+	m.log(fmt.Sprintf("runs-shadow: attempts %s doc=%q phase=%s charged=%d derived=%s previous=%s prev_run=%d state=%s seat=%q",
+		verdict, doc, lease.Phase, lease.ClaimAttempt, derivedText, previousOutcome, previousID, lease.State, seat))
 }
 
 // endLocked records how the turn ended, once. r.mu is held.
