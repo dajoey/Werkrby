@@ -674,6 +674,7 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 		}
 	})
 	personalClaims := -1 // in-flight personal claims; counted on first use while the window is open
+	goalPauseAttempted := false // one standalone pause per scan, as the break below used to promise
 	for _, candidate := range candidates {
 		source := filepath.Join(sourceDir, candidate.name)
 		document := candidate.document
@@ -718,11 +719,16 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 			// Every slot (including the repair reserve for repair work) is
 			// taken. Goal work is the top priority: it claims first (sort order
 			// above) and, when it cannot get a slot, a running standalone task
-			// is paused so the next scan can claim it. Idle slots are never held
-			// back for it; they simply run whatever is queued.
+			// is paused so the next scan can claim it (at most one pause per
+			// scan). The scan itself keeps walking: idle slots are never held
+			// back for goal work, and a later lane: repair candidate must still
+			// reach the reserved slot while the house is stuck (2026-10-15).
 			if route.Name == "goals" || documentIsGoalDerived(document) {
-				m.pauseStandaloneForGoalWork(ctx)
-				break
+				if !goalPauseAttempted {
+					goalPauseAttempted = true
+					m.pauseStandaloneForGoalWork(ctx)
+				}
+				continue
 			}
 			if isRepair {
 				break
