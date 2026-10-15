@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -83,15 +84,41 @@ func (m *Manager) runBegin(lease Lease, seat string) (rec *runRecorder) {
 	if store == nil {
 		return nil
 	}
+	doc := filepath.Base(lease.File)
+	// Compare before this run is recorded: the previous run of the document and phase is what the
+	// attempt this claim charged has to follow from.
+	prev, havePrev, prevErr := store.LastRun(doc, lease.Phase)
 	id, err := store.Begin(runs.Run{
-		Doc: filepath.Base(lease.File), Phase: lease.Phase, Seat: seat, SessionKey: lease.SessionKey,
+		Doc: doc, Phase: lease.Phase, Seat: seat, SessionKey: lease.SessionKey,
 		Charged: lease.ClaimAttempt, Start: time.Now(),
 	})
 	if err != nil {
 		m.log("runs-shadow: record run start: " + err.Error())
 		return nil
 	}
+	if prevErr != nil {
+		m.log("runs-shadow: read the previous run: " + prevErr.Error())
+	} else {
+		m.logAttemptCheck(doc, lease, prev, havePrev)
+	}
 	return &runRecorder{m: m, id: id}
+}
+
+// logAttemptCheck logs the attempt this claim charged beside the one the runs imply. The Stage B
+// check counts the "disagree" lines; "refund" lines are the known carve-out sites.
+func (m *Manager) logAttemptCheck(doc string, lease Lease, prev runs.Run, havePrev bool) {
+	var previous *runs.Run
+	previousOutcome := "none"
+	if havePrev {
+		previous, previousOutcome = &prev, string(prev.Outcome)
+	}
+	derived, verdict := runs.Check(previous, lease.ClaimAttempt)
+	derivedText := "n/a"
+	if verdict != runs.Unseeded && verdict != runs.PreviousOpen {
+		derivedText = strconv.Itoa(derived)
+	}
+	m.log(fmt.Sprintf("runs-shadow: attempts %s doc=%s phase=%s charged=%d derived=%s previous=%s",
+		verdict, doc, lease.Phase, lease.ClaimAttempt, derivedText, previousOutcome))
 }
 
 // endLocked records how the turn ended, once. r.mu is held.
