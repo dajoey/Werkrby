@@ -147,6 +147,7 @@ Direct child DOX files:
 | [media/AGENTS.md](media/AGENTS.md) | Attachments, audio decoding, model cache, and transcription. |
 | [orchestrator/AGENTS.md](orchestrator/AGENTS.md) | Durable workflows, leases, recovery, heartbeat, and notifications. |
 | [roster/AGENTS.md](roster/AGENTS.md) | Optional staffing file, role routing, daily caps, and fallbacks. |
+| [runs/AGENTS.md](runs/AGENTS.md) | SQLite run record and intents inbox that attempts are derived from. |
 | [shortid/AGENTS.md](shortid/AGENTS.md) | Compact human-facing identifier rendering. |
 | [startup/AGENTS.md](startup/AGENTS.md) | Cross-platform automatic-startup registration. |
 | [theme/AGENTS.md](theme/AGENTS.md) | Semantic palette assets, validation, installation, and discovery. |

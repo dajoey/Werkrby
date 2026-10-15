@@ -117,6 +117,7 @@ type Manager struct {
 	holdLogMu                   sync.Mutex
 	holdLogged                  map[string]time.Time
 	shadow                      admissionShadowState
+	runsShadow                  runsShadowState
 	admissionSnapshotPath       string // tests; empty means the collector's default snapshot
 	scanTimer                   *time.Timer
 	scanTimerGeneration         uint64
@@ -876,6 +877,9 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 		var terminalFinalSeen bool
 		// finalText is the turn's final reply; an explicit-outcome turn may carry its outcome there.
 		var finalText string
+		// run records this dispatch's provider turn when orchestrator.runs_mode is shadow; it is set
+		// just before the first send, which is the only thing that makes emit run.
+		var run *runRecorder
 		emit := func(event core.Event) {
 			lifecycleMu.Lock()
 			defer lifecycleMu.Unlock()
@@ -883,6 +887,9 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 				return
 			}
 			terminal := event.Done && (event.Kind == core.EventFinal || event.Kind == core.EventError)
+			if terminal {
+				run.terminal(ctx, lease, event)
+			}
 			if terminal && event.Kind == core.EventFinal {
 				terminalFinalSeen = true
 				finalText = event.Text
@@ -960,6 +967,7 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 		}
 		var threadID string
 		var steered bool
+		run = m.runBegin(lease, targetModel)
 		for sendAttempt := 0; ; sendAttempt++ {
 			if ms, ok := m.Harness.(interface {
 				SendWithModel(context.Context, string, string, string, core.Emit) (string, bool, error)
@@ -986,6 +994,7 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 				// retry is the same turn, so hand the lease back to live work
 				// before dispatching it.
 				m.restoreLeaseForRetry(lease.ID, recovery)
+				run.retrying()
 			}
 			lifecycleMu.Unlock()
 			if !eligible {
@@ -1006,6 +1015,7 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 				Execution: &core.ExecutionStatus{State: "running", Detail: retryDetail},
 			})
 		}
+		run.sent(ctx, lease, err)
 		lifecycleMu.Lock()
 		defer lifecycleMu.Unlock()
 		if err != nil {

@@ -162,6 +162,29 @@ func TestAdmissionModeDefaultsOffAndRejectsUnknownValues(t *testing.T) {
 	}
 }
 
+func TestRunsModeDefaultsOffAndRejectsUnknownValues(t *testing.T) {
+	cfg := Default()
+	if cfg.Orchestrator.RunsMode != "" || cfg.Orchestrator.RunsModeOrOff() != RunsModeOff {
+		t.Fatalf("default runs mode %q", cfg.Orchestrator.RunsMode)
+	}
+	for _, valid := range []string{"", "off", "shadow"} {
+		cfg.Orchestrator.RunsMode = valid
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("runs_mode %q rejected: %v", valid, err)
+		}
+	}
+	cfg.Orchestrator.RunsMode = "shadow"
+	if cfg.Orchestrator.RunsModeOrOff() != RunsModeShadow {
+		t.Fatal("shadow not reported")
+	}
+	for _, invalid := range []string{"on", "derived", "Shadow "} {
+		cfg.Orchestrator.RunsMode = invalid
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "runs_mode") {
+			t.Fatalf("runs_mode %q produced %v", invalid, err)
+		}
+	}
+}
+
 func TestCleanupRetentionValidationRequiresBoundedPositiveWholeDays(t *testing.T) {
 	for _, invalid := range []int{-1, 0, 36501} {
 		cfg := Default()
