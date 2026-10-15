@@ -10,13 +10,16 @@ type RosterObserver func(role, key, asked string) (record func(assigned string))
 
 var rosterObserver atomic.Pointer[RosterObserver]
 
-// SetRosterObserver installs the observer; nil removes it.
-func SetRosterObserver(observer RosterObserver) {
+// SetRosterObserver installs the observer (nil removes it) and returns a function that removes it
+// again only if it is still the installed one, so a stopping owner never clears a newer owner's.
+func SetRosterObserver(observer RosterObserver) (remove func()) {
 	if observer == nil {
 		rosterObserver.Store(nil)
-		return
+		return func() {}
 	}
-	rosterObserver.Store(&observer)
+	installed := &observer
+	rosterObserver.Store(installed)
+	return func() { rosterObserver.CompareAndSwap(installed, nil) }
 }
 
 // observeRoster asks the observer; a fault in it never reaches the turn it watches.

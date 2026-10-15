@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -63,7 +64,7 @@ func TestAdmissionShadowRosterLogsDisagreementPerRole(t *testing.T) {
 	joined := strings.Join(f.shadowLines(), "\n")
 	for _, want := range []string{
 		"site=chat doc=chat:telegram:TG-1 phase=chat asked=implementer old=run:implementer new=wait:implementer",
-		"site=notification doc=orchestrator:notification:t1:done:1 phase=notification",
+		"site=notification doc=notification phase=notification",
 		"site=heartbeat doc=orchestrator:semantic-heartbeat phase=heartbeat",
 	} {
 		if !strings.Contains(joined, want) {
@@ -136,6 +137,70 @@ func TestAdmissionShadowChatTurnThroughHerdr(t *testing.T) {
 	usage, err := os.ReadFile(filepath.Join(f.state, "runtime", "roster-usage.json"))
 	if err != nil || !strings.Contains(string(usage), "chat:telegram:TG-1") {
 		t.Fatalf("the roster did not count the chat session (%v): %s", err, usage)
+	}
+}
+
+// Every notification has its own session key; the comparison and its log line are per role, so a full
+// plan does not log one line per event.
+func TestAdmissionShadowRosterComparesNotificationsAsOneRole(t *testing.T) {
+	f := rosterShadowFixture(t, "shadow")
+	f.writeZai(100)
+	m := f.manager()
+	if m.shadowRoster("notification", "orchestrator:notification:t1:done:1", "implementer") == nil {
+		t.Fatal("first notification not sampled")
+	}
+	if m.shadowRoster("notification", "orchestrator:notification:t2:done:1", "implementer") != nil {
+		t.Fatal("a second notification inside the minute was sampled")
+	}
+}
+
+// Run installs the observer and, on exit, removes only its own: a newer owner's stays.
+func TestManagerRunInstallsAndRemovesTheRosterObserver(t *testing.T) {
+	f := rosterShadowFixture(t, "shadow")
+	f.writeZai(100)
+	m := f.manager()
+	script := filepath.Join(t.TempDir(), "herdr")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nif [ \"$1\" = status ]; then echo 'status: running'; exit 0; fi\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h, err := harness.NewHerdr(harness.HarnessConfig{Name: "herdr", Command: script, Cwd: f.cfg.Root, SessionsFile: filepath.Join(t.TempDir(), "sessions.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	send := func(key string) {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_, _, _ = h.Send(ctx, key, "hello", nil)
+	}
+	count := func() int { return len(f.shadowLines()) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	deadline := time.Now().Add(20 * time.Second)
+	for before := count(); count() == before; {
+		send("chat:tui:run-hook")
+		if time.Now().After(deadline) {
+			t.Fatal("Run did not install the roster observer")
+		}
+		time.Sleep(20 * time.Millisecond)
+		m.shadow.mu.Lock()
+		m.shadow.sampled = nil // let the retry be sampled again
+		m.shadow.mu.Unlock()
+	}
+	var asked atomic.Int32
+	remove := harness.SetRosterObserver(func(string, string, string) func(string) { asked.Add(1); return nil })
+	t.Cleanup(remove)
+	cancel()
+	<-done
+	send("chat:tui:after-run")
+	if asked.Load() != 1 {
+		t.Fatalf("Run's exit removed an observer another owner had installed (asked %d times)", asked.Load())
+	}
+	remove()
+	send("chat:tui:after-remove")
+	if asked.Load() != 1 {
+		t.Fatal("remove left the observer installed")
 	}
 }
 

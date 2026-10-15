@@ -185,6 +185,10 @@ func (m *Manager) shadowRoster(role, key, asked string) func(assigned string) {
 	default:
 		return nil
 	}
+	// A notification's session key names one event; compare and dedupe the role, not each event.
+	if role == "notification" {
+		key = role
+	}
 	var decision admission.Decision
 	var ok bool
 	func() {
