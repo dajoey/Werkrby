@@ -2347,7 +2347,7 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 			}
 		}
 	case phaseTaskImplementation:
-		pinnedStaff := text("staff")
+		pinnedStaff := honoredStaffPin(staffing, frontMatter, fileName, logf)
 		if pinnedStaff != "" {
 			if s, ok := staffing.Staff[pinnedStaff]; ok && s.NoEscalate {
 				name = ""
@@ -2358,7 +2358,7 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 			name = staffing.EscalationFor(int(numberValue(frontMatter["attempt"])), false)
 		}
 		if name == "" {
-			if staff := text("staff"); staff != "" {
+			if staff := pinnedStaff; staff != "" {
 				if staffing.Has(staff) {
 					name = staff
 				} else {

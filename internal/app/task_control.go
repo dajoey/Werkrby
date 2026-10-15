@@ -392,6 +392,11 @@ func (s *Service) TaskControl(ctx context.Context, input TaskControlRequest) (Ta
 		if err != nil {
 			return TaskControlResult{}, err
 		}
+		// An operator's reassign is a person's pin: it stands even for a seat filers may not pin.
+		content, err = SurgicallyUpdateFrontMatterField(content, "pinned_by", `"operator"`)
+		if err != nil {
+			return TaskControlResult{}, err
+		}
 		content, err = SurgicallyUpdateFrontMatterField(content, "updated_at", fmt.Sprintf("%q", stamp))
 		if err != nil {
 			return TaskControlResult{}, err

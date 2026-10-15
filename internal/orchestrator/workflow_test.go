@@ -1733,6 +1733,7 @@ roles:
 		}
 		editFrontMatter(t, task, func(fm map[string]any) {
 			fm["staff"] = "zai-code"
+			fm["pinned_by"] = "joey"
 		})
 		name := filepath.Base(task)
 		base := filepath.Dir(cfg.Resolve(route.Source))

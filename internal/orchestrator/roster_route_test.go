@@ -55,8 +55,8 @@ escalation: {after_attempt: 3, staff: principal}
 	}
 	for _, test := range []struct{ name, route, phase, frontMatter, want string }{
 		{"role default", "tasks", phaseTaskImplementation, "", "opencode"},
-		{"task staff", "tasks", phaseTaskImplementation, "staff: architect\n", "agy"},
-		{"staff beats agent", "tasks", phaseTaskImplementation, "staff: architect\nagent: kimi\n", "agy"},
+		{"task staff", "tasks", phaseTaskImplementation, "staff: architect\npinned_by: joey\n", "agy"},
+		{"staff beats agent", "tasks", phaseTaskImplementation, "staff: architect\npinned_by: joey\nagent: kimi\n", "agy"},
 		{"legacy agent pin", "tasks", phaseTaskImplementation, "agent: hermes\n", "hermes"},
 		{"unknown staff falls to role", "tasks", phaseTaskImplementation, "staff: nobody\n", "opencode"},
 		{"ordinary review", "tasks", phaseTaskReview, "", "pi"},
@@ -121,7 +121,7 @@ escalation:
 	}
 	// Pinned + exempt stays put at every rung, including past the top.
 	for _, attempt := range []string{"1", "2", "3", "4", "9"} {
-		if got := resolve(task("exempt"+attempt, "staff: media\nattempt: "+attempt+"\n")); got != "hermes" {
+		if got := resolve(task("exempt"+attempt, "staff: media\npinned_by: joey\nattempt: "+attempt+"\n")); got != "hermes" {
 			t.Errorf("exempt media attempt %s = %q, want hermes", attempt, got)
 		}
 	}
@@ -182,9 +182,9 @@ roles:
 		{"pinned later retry stays escalated", "staff: ops\nattempt: 4\n", "@architect"},
 		{"unpinned role default escalates too", "attempt: 2\n", "@architect"},
 		{"unpinned first attempt stays", "attempt: 1\n", "agy"},
-		{"a seat with no escalation never moves", "staff: implementer\nattempt: 5\n", "opencode"},
-		{"escalation honours its own threshold", "staff: media\nattempt: 2\n", "hermes"},
-		{"escalation honours its own threshold, later", "staff: media\nattempt: 3\n", "@architect"},
+		{"a seat with no escalation never moves", "staff: implementer\npinned_by: joey\nattempt: 5\n", "opencode"},
+		{"escalation honours its own threshold", "staff: media\npinned_by: joey\nattempt: 2\n", "hermes"},
+		{"escalation honours its own threshold, later", "staff: media\npinned_by: joey\nattempt: 3\n", "@architect"},
 		{"the target itself does not escalate", "staff: architect\nattempt: 9\n", "@architect"},
 	} {
 		if got := resolve(task(c.name[:5]+"-"+c.want+"-"+c.frontMatter[len(c.frontMatter)-3:len(c.frontMatter)-1], c.frontMatter)); got != c.want {

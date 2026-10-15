@@ -967,6 +967,9 @@ Untouched body.
 	if !strings.Contains(raw, "Reassigned staff to agy.") {
 		t.Errorf("progress log missing reassign line: %s", raw)
 	}
+	if !strings.Contains(raw, "pinned_by: \"operator\"") {
+		t.Errorf("an operator reassign must stamp pinned_by so the pin stands:\n%s", raw)
+	}
 }
 
 func TestTaskControlReassignRoundTripsStaffWithYAMLSpecials(t *testing.T) {
