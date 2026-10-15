@@ -196,6 +196,8 @@ type Orchestrator struct {
 	RunsMode string `yaml:"runs_mode,omitempty"`
 	// WorkWindow keeps one slot free for work Claude cards during working hours (see WorkWindow).
 	WorkWindow WorkWindow `yaml:"work_window,omitempty"`
+	// OpsLane keeps slots for standalone (ops) tasks while goal work holds the rest (see OpsLane).
+	OpsLane OpsLane `yaml:"ops_lane,omitempty"`
 	// RepairSlots reserves extra capacity beyond MaxParallel for lane: repair
 	// tasks so a repair for stuck workers can be claimed while those workers
 	// hold every normal slot (2026-10-15). 0 disables the reserve.
@@ -477,6 +479,7 @@ func (c Config) Validate() error {
 		problems = append(problems, "orchestrator.max_parallel must be positive")
 	}
 	problems = append(problems, c.Orchestrator.WorkWindow.validate()...)
+	problems = append(problems, c.Orchestrator.OpsLane.validate()...)
 	if c.Orchestrator.RepairSlots < 0 {
 		problems = append(problems, "orchestrator.repair_slots must be zero or positive")
 	}

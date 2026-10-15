@@ -75,6 +75,10 @@ type Lease struct {
 	// tasks); it decides whether a dispatch may acquire the reserved repair
 	// capacity beyond orchestrator.max_parallel (2026-10-15).
 	Lane string `json:"lane,omitempty"`
+	// SlotClass is the lane the claim counts against for the ops lane: slotClassGoal for goal
+	// planning, review and goal-derived tasks, slotClassOps for any other task. Empty for repair
+	// tasks and for leases from before the field existed.
+	SlotClass string `json:"slot_class,omitempty"`
 }
 
 type ScheduledCheckpoint struct {
@@ -114,6 +118,8 @@ type Manager struct {
 	preemptions                 map[string]time.Time // lease id -> when it was paused for goal work; consumed by recordError
 	workClock                   func() time.Time     // test clock for the work window; nil means time.Now
 	workReserveLoggedAt         time.Time            // last "holding for the reserved slot" log line
+	opsWaiting                  atomic.Bool          // an ops document is waiting for a slot (set once per scan)
+	opsLaneLoggedAt             time.Time            // last "holding goal work for the ops lane" log line
 	jobs                        sync.WaitGroup
 	capacityMu                  sync.Mutex
 	capacityActive              int
@@ -524,6 +530,7 @@ func (m *Manager) scanOnce(ctx context.Context) error {
 	if err := m.ensureRouteDirectories(); err != nil {
 		return err
 	}
+	m.refreshOpsWaiting(cfg)
 	if err := m.resumeInterruptedClaims(ctx); err != nil {
 		return err
 	}
@@ -704,6 +711,12 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 				continue
 			}
 		}
+		// Ops lane: goal claims may not take the slots waiting ops work is short of. Skipped, not
+		// claimed, and no running task is paused for it; the ops candidates after it still can be.
+		if m.opsLaneHolds(route, document) {
+			m.logOpsLaneHold(candidate.name)
+			continue
+		}
 		isRepair := documentIsRepair(document)
 		if !m.canAdmitClaim(isRepair) {
 			// Every slot (including the repair reserve for repair work) is
@@ -743,7 +756,7 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 			OwnerID: m.ownerID,
 			File:    target, SourceFile: source, SessionKey: phaseSessionKey(route.Name, documentID, phase, attempt),
 			State: "claiming", Phase: phase, ClaimAttempt: attempt, StartedAt: now, HeartbeatAt: now,
-			WorkCard: documentIsWorkCard(document),
+			WorkCard: documentIsWorkCard(document), SlotClass: documentSlotClass(route, document),
 		}
 		if isRepair {
 			lease.Lane = repairLane
@@ -826,11 +839,16 @@ func (m *Manager) startExistingClaim(ctx context.Context, route workflowRoute, p
 		// Work window: a fresh planning round is personal work and may not take the slot kept for
 		// work Claude cards. A recovery of a round already running is never held.
 		windowHeld := !paced && incrementAttempt && m.workWindowHolds(document)
-		if paced || windowHeld {
+		// Ops lane: a fresh planning round may not take the slots waiting ops work is short of.
+		opsHeld := !paced && !windowHeld && incrementAttempt && m.opsLaneHolds(route, document)
+		if paced || windowHeld || opsHeld {
 			if incrementAttempt && !deferred {
 				note := "Spynel deferred this goal's planning round: its seat is on a quota pace hold. No attempt was spent; planning starts when the hold lifts."
 				if windowHeld {
 					note = "Spynel deferred this goal's planning round: the work window is open and the slot left for personal work is taken. No attempt was spent; planning starts when a slot frees or the window closes."
+				}
+				if opsHeld {
+					note = "Spynel deferred this goal's planning round: normal-operations tasks are waiting and the ops lane is short of its reserved slots. No attempt was spent; planning starts when a slot frees."
 				}
 				if err := updateDocumentProgressWithUpdate(path, time.Now().UTC(), note, func(frontMatter map[string]any) {
 					frontMatter[planningHoldDeferredField] = true
@@ -863,7 +881,7 @@ func (m *Manager) startExistingClaim(ctx context.Context, route workflowRoute, p
 		OwnerID: m.ownerID,
 		File:    path, SessionKey: phaseSessionKey(route.Name, id, phase, attempt), State: state,
 		Phase: phase, ClaimAttempt: attempt, StartedAt: now, HeartbeatAt: now,
-		WorkCard: documentIsWorkCard(document),
+		WorkCard: documentIsWorkCard(document), SlotClass: documentSlotClass(route, document),
 	}
 	if documentIsRepair(document) {
 		lease.Lane = repairLane
@@ -1859,6 +1877,10 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 				}
 				// Same for the work window: a woken planning round is personal work.
 				if targetStatus == "planning" && m.workWindowHolds(document) {
+					continue
+				}
+				// And for the ops lane: a woken planning round waits for the lane's slots.
+				if targetStatus == "planning" && m.opsLaneHolds(route, document) {
 					continue
 				}
 			}
