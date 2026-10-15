@@ -86,6 +86,12 @@ func TestRunsShadowLogsDerivedBesideChargedAttempts(t *testing.T) {
 			// the new owner closes the run it finds open as lost before the dispatch, which costs nothing
 			want: "attempts disagree doc=%s phase=task_implementation charged=2 derived=1 previous=lost",
 		},
+		{
+			name:  "failed attempt that did not advance",
+			front: map[string]any{"attempt": 1, "resume_credit": true},
+			seed:  func(f *shadowFixture, doc string) { f.seedRun(doc, 1, runs.Fail) },
+			want:  "attempts disagree doc=%s phase=task_implementation charged=1 derived=2 previous=fail",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newShadowFixture(t, "")
@@ -98,7 +104,7 @@ func TestRunsShadowLogsDerivedBesideChargedAttempts(t *testing.T) {
 			f.scanTodo(m)
 			m.Wait()
 			lines := f.attemptLines()
-			want := strings.Replace(tc.want, "%s", name, 1)
+			want := strings.Replace(tc.want, "%s", `"`+name+`"`, 1) // the document is quoted in the line
 			if len(lines) != 1 || !strings.Contains(lines[0], want) {
 				t.Fatalf("attempt lines = %q, want one containing %q", lines, want)
 			}

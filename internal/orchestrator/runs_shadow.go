@@ -99,26 +99,28 @@ func (m *Manager) runBegin(lease Lease, seat string) (rec *runRecorder) {
 	if prevErr != nil {
 		m.log("runs-shadow: read the previous run: " + prevErr.Error())
 	} else {
-		m.logAttemptCheck(doc, lease, prev, havePrev)
+		m.logAttemptCheck(doc, lease, seat, prev, havePrev)
 	}
 	return &runRecorder{m: m, id: id}
 }
 
 // logAttemptCheck logs the attempt this claim charged beside the one the runs imply. The Stage B
-// check counts the "disagree" lines; "refund" lines are the known carve-out sites.
-func (m *Manager) logAttemptCheck(doc string, lease Lease, prev runs.Run, havePrev bool) {
+// check counts the lines that start "runs-shadow: attempts disagree "; "refund" lines are the known
+// carve-out sites. The document is quoted so a name with a space still parses, and state, seat and
+// the previous run's id let a reader tell a recovery from a fresh claim.
+func (m *Manager) logAttemptCheck(doc string, lease Lease, seat string, prev runs.Run, havePrev bool) {
 	var previous *runs.Run
-	previousOutcome := "none"
+	previousOutcome, previousID := "none", int64(0)
 	if havePrev {
-		previous, previousOutcome = &prev, string(prev.Outcome)
+		previous, previousOutcome, previousID = &prev, string(prev.Outcome), prev.ID
 	}
 	derived, verdict := runs.Check(previous, lease.ClaimAttempt)
 	derivedText := "n/a"
 	if verdict != runs.Unseeded && verdict != runs.PreviousOpen {
 		derivedText = strconv.Itoa(derived)
 	}
-	m.log(fmt.Sprintf("runs-shadow: attempts %s doc=%s phase=%s charged=%d derived=%s previous=%s",
-		verdict, doc, lease.Phase, lease.ClaimAttempt, derivedText, previousOutcome))
+	m.log(fmt.Sprintf("runs-shadow: attempts %s doc=%q phase=%s charged=%d derived=%s previous=%s prev_run=%d state=%s seat=%q",
+		verdict, doc, lease.Phase, lease.ClaimAttempt, derivedText, previousOutcome, previousID, lease.State, seat))
 }
 
 // endLocked records how the turn ended, once. r.mu is held.
