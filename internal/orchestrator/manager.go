@@ -105,6 +105,8 @@ type Manager struct {
 	controlCancelled            map[string]int
 	operatorStops               map[string]time.Time // lease id -> when an operator stopped it; survives finishRuntimeJob
 	preemptions                 map[string]time.Time // lease id -> when it was paused for goal work; consumed by recordError
+	workClock                   func() time.Time     // test clock for the work window; nil means time.Now
+	workReserveLoggedAt         time.Time            // last "holding for the reserved slot" log line
 	jobs                        sync.WaitGroup
 	capacityMu                  sync.Mutex
 	capacityActive              int
@@ -563,6 +565,8 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 		name     string
 		document Document
 	}
+	cfg := m.runtimeSnapshot()
+	windowOpen := m.workWindowActive(cfg)
 	var candidates []queueCandidate
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(strings.ToLower(entry.Name()), ".md") || entry.Name() == "AGENTS.md" {
@@ -586,6 +590,14 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 	// equal timestamps fall back to filename order, and a document without a
 	// usable created_at sorts last so one bad document cannot stall the board.
 	sort.SliceStable(candidates, func(i, j int) bool {
+		// While the work window is open, work Claude cards claim before
+		// everything else, goal work included.
+		if windowOpen {
+			wi, wj := documentIsWorkCard(candidates[i].document), documentIsWorkCard(candidates[j].document)
+			if wi != wj {
+				return wi
+			}
+		}
 		// Goal-derived documents (goal_id) claim before standalone ones: the
 		// current goal is paramount (Joey, 2026-10-03), including tasks the
 		// goal files after today. Within a class the order is unchanged.
@@ -606,6 +618,7 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 			return candidates[i].name < candidates[j].name
 		}
 	})
+	personalClaims := -1 // in-flight personal claims; counted on first use while the window is open
 	for _, candidate := range candidates {
 		source := filepath.Join(sourceDir, candidate.name)
 		document := candidate.document
@@ -630,6 +643,18 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 		// standalone task for a slot it will not use.
 		if m.rosterHeld("queue", route, phase, candidate.name, document) {
 			continue
+		}
+		// Work window: personal claims may not take the slot reserved for work
+		// Claude cards. Skipped, not claimed; a later work card in this queue
+		// still can be.
+		if windowOpen && !documentIsWorkCard(document) {
+			if personalClaims < 0 {
+				personalClaims = m.personalInflight()
+			}
+			if personalCap := m.personalSlotCap(cfg); personalClaims >= personalCap {
+				m.logWorkReserveHold(candidate.name, personalClaims, personalCap)
+				continue
+			}
 		}
 		if !m.canAdmitClaim() {
 			// Every slot is taken. Goal work is the top priority: it claims
@@ -681,6 +706,9 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 		claimed.FrontMatter[attemptField] = attempt
 		if err := WriteDocument(target, claimed); err != nil {
 			return err
+		}
+		if personalClaims >= 0 && !documentIsWorkCard(document) {
+			personalClaims++
 		}
 		lease.State = "processing"
 		lease.SourceFile = ""
