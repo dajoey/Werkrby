@@ -3005,7 +3005,11 @@ func isQuotaError(err error) bool {
 		strings.Contains(msg, "too many requests") ||
 		// A prepaid API credit that is spent ("Credit balance is too low") walls the seat too.
 		strings.Contains(msg, "credit balance is too low") ||
-		strings.Contains(msg, "credit balance too low")
+		strings.Contains(msg, "credit balance too low") ||
+		// Kimi's 5-hour and weekly walls: "403 You've reached your 5-hour usage limit. Your quota will
+		// reset ..." carries none of the words above.
+		strings.Contains(msg, "usage limit") ||
+		strings.Contains(msg, "quota will reset")
 }
 
 func resolveRunnerName(document Document, lease Lease) string {

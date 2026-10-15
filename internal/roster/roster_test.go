@@ -595,3 +595,11 @@ func TestReloadKeepsPreviousRosterWhenNewOneIsRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestHeadlessKimiStaffLoadsAndExpands(t *testing.T) {
+	dir := write(t, "staff:\n  researcher: {runner: kimi, headless: true, args: [\"--model\", \"kimi-code/k3\"]}\n")
+	s, ok, err := ExpandStaff(dir, "@researcher")
+	if err != nil || !ok || !s.Headless || s.Runner != "kimi" {
+		t.Fatalf("ExpandStaff = %+v %v %v, want a headless kimi seat", s, ok, err)
+	}
+}

@@ -41,6 +41,9 @@ type Herdr struct {
 	composerWaitTimeout   time.Duration
 	// headlessCommand is the Claude Code executable for `headless: true` staff (default "claude").
 	headlessCommand string
+	// headlessKimiCommand is the Kimi Code executable for `headless: true` kimi staff (default:
+	// kimiExecutable).
+	headlessKimiCommand string
 }
 
 type herdrTurn struct {
@@ -789,7 +792,7 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 	h.mu.Unlock()
 
 	cfg.Model = h.rosterModelForKey(key, cfg)
-	// A `headless: true` staff runs as `claude -p`, not in a pane. A roster error falls through to
+	// A `headless: true` staff runs as `claude -p` or `kimi -p`, not in a pane. A roster error falls through to
 	// resolveTarget, which reports it.
 	if staff, ok, err := roster.ExpandStaff(filepath.Join(cfg.Cwd, roster.StateDirName), strings.TrimSpace(cfg.Model)); ok && err == nil && staff.Headless {
 		name := strings.TrimPrefix(strings.TrimSpace(cfg.Model), roster.StaffPrefix)

@@ -2,6 +2,7 @@ package harness
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -80,8 +83,16 @@ func headlessSecretEnvName(name string) bool {
 // transcript exists, so continuations and operator messages keep their context. The caller holds the
 // key lock.
 func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string, staff roster.Staff, cfg HarnessConfig, emit core.Emit) (string, bool, error) {
+	kimi := staff.Runner == "kimi"
+	runner := "claude"
 	command := h.headlessCommand
-	if command == "" {
+	if kimi {
+		runner = "kimi"
+		command = h.headlessKimiCommand
+		if command == "" {
+			command = kimiExecutable()
+		}
+	} else if command == "" {
 		command = "claude"
 	}
 	target := "headless:" + staffName
@@ -98,16 +109,27 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		close(turn.done)
 	}()
 
-	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
 	h.mu.Lock()
 	previous := h.sessions[key]
 	h.mu.Unlock()
-	if path := transcriptPath("claude", previous, cfg.Cwd); path != "" {
-		if _, err := os.Stat(path); err == nil {
-			args = append(args, "--resume", previous)
+	var args []string
+	if kimi {
+		// Kimi takes the prompt as the -p value (the pane path already hands Herdr the prompt as one
+		// argument, so it fits the same limit) and runs tools without asking in prompt mode.
+		args = []string{"-p", prompt, "--output-format", "stream-json"}
+		if kimiSessionExists(previous) {
+			args = append(args, "-S", previous)
 		}
+		args = append(args, staff.Args...)
+	} else {
+		args = []string{"-p", "--output-format", "stream-json", "--verbose"}
+		if path := transcriptPath("claude", previous, cfg.Cwd); path != "" {
+			if _, err := os.Stat(path); err == nil {
+				args = append(args, "--resume", previous)
+			}
+		}
+		args = append(append(args, claudePermissionArgs(cfg)...), staff.Args...)
 	}
-	args = append(append(args, claudePermissionArgs(cfg)...), staff.Args...)
 	// procContext ends the process; turnContext ends the turn. They differ once a result is in:
 	// a process still running headlessResultGrace after its result line is killed, and the
 	// result stands.
@@ -116,7 +138,13 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	cmd := exec.CommandContext(procContext, command, args...)
 	cmd.Dir = cfg.Cwd
 	cmd.Env = headlessChildEnv(os.Environ())
-	cmd.Stdin = strings.NewReader(prompt)
+	// The task id names the run on the Agent Wall and marks it as Werkrby's own agent for the guards.
+	if taskID := headlessTaskID(key); taskID != "" {
+		cmd.Env = append(cmd.Env, "WERKRBY_TASK_ID="+taskID)
+	}
+	if !kimi {
+		cmd.Stdin = strings.NewReader(prompt)
+	}
 	// Claude Code starts tool and MCP children that can inherit stdout. On cancel the whole process
 	// group is killed, and WaitDelay bounds Wait if a pipe is still held open anyway.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -130,12 +158,17 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	}
 	turn.cmd = cmd
 	if err := cmd.Start(); err != nil {
-		startErr := fmt.Errorf("start headless Claude Code for %s: %w", target, err)
+		startErr := fmt.Errorf("start headless %s for %s: %w", runner, target, err)
 		emitHeadlessError(emit, "", startErr.Error())
 		return "", false, startErr
 	}
 	if emit != nil {
-		emit(core.Event{Kind: core.EventStatus, Text: fmt.Sprintf("Headless: running staff %s as claude -p in %s", staffName, cfg.Cwd)})
+		emit(core.Event{Kind: core.EventStatus, Text: fmt.Sprintf("Headless: running staff %s as %s -p in %s", staffName, runner, cfg.Cwd)})
+	}
+	// Claude Code writes its own Agent Wall log (the run-activity mod); Kimi's is written from its stream.
+	var activity *headlessActivity
+	if kimi {
+		activity = newHeadlessActivity(headlessActivityDir(), cmd.Process.Pid, cfg.Cwd, prompt, kimiModelArg(staff.Args))
 	}
 
 	// The ticker is joined before any terminal event so a status event never follows it.
@@ -166,9 +199,31 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 
 	var threadID string
 	var final *headlessResultLine
+	var kimiReply string
 	reader := bufio.NewReader(stdout)
 	for {
 		line, readErr := reader.ReadBytes('\n')
+		if kimi {
+			if msg, ok := parseKimiLine(line); ok {
+				if msg.sessionID != "" && threadID == "" {
+					threadID = msg.sessionID
+					h.rememberSession(key, threadID)
+				}
+				if msg.reply != "" {
+					kimiReply = msg.reply
+				}
+				for _, call := range msg.calls {
+					activity.call(call.ID, call.Function.Name, call.Function.Arguments)
+				}
+				if msg.resultFor != "" {
+					activity.result(msg.resultFor)
+				}
+			}
+			if readErr != nil {
+				break
+			}
+			continue
+		}
 		var msg headlessResultLine
 		if len(line) > 0 && json.Unmarshal(line, &msg) == nil {
 			if msg.SessionID != "" && threadID == "" {
@@ -201,12 +256,25 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		h.forgetSession(key)
 	}
 	if turnContext.Err() != nil {
+		activity.finish("stopped: " + turnContext.Err().Error())
 		if errors.Is(turnContext.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			detail := fmt.Sprintf("headless worker %s exceeded %s", target, herdrWaitCeiling)
 			emitHeadlessError(emit, threadID, detail)
 			return threadID, false, fmt.Errorf("runner turn failed: %s", detail)
 		}
 		return threadID, false, turnContext.Err()
+	}
+	if kimi {
+		// Kimi prints no result line: exit 0 is a finished turn, anything else failed, and the reason
+		// (`error: failed to run prompt: 403 You've reached your 5-hour usage limit ...`) is on stderr.
+		if waitErr != nil {
+			detail := kimiFailureDetail(waitErr, stderr.String())
+			activity.finish(detail)
+			emitHeadlessError(emit, threadID, detail)
+			return threadID, false, fmt.Errorf("runner turn failed: %s", detail)
+		}
+		activity.finish("")
+		final = &headlessResultLine{Type: "result", Subtype: "success", Result: kimiReply, SessionID: threadID}
 	}
 	// A success result stands whatever the exit status: the process may have been killed after
 	// its result, or exited non-zero while shutting down.
@@ -272,4 +340,137 @@ func emitHeadlessError(emit core.Emit, threadID, detail string) {
 		Done:      true,
 		Execution: &core.ExecutionStatus{State: "error", Detail: detail},
 	})
+}
+
+// kimiSessionPattern is the shape of a Kimi Code session id (`session_<uuid>`); anything else is
+// never resumed, and it keeps the id safe to use as a path element.
+var kimiSessionPattern = regexp.MustCompile(`^session_[A-Za-z0-9-]+$`)
+
+// kimiHome is Kimi Code's state directory: KIMI_CODE_HOME, else ~/.kimi-code.
+func kimiHome() string {
+	if dir := strings.TrimSpace(os.Getenv("KIMI_CODE_HOME")); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".kimi-code")
+}
+
+// kimiExecutable is the kimi binary for a headless seat: kimi on PATH, else the installer's
+// ~/.kimi-code/bin/kimi (the Werkrby service's PATH need not include it).
+func kimiExecutable() string {
+	if path, err := exec.LookPath("kimi"); err == nil {
+		return path
+	}
+	if home := kimiHome(); home != "" {
+		candidate := filepath.Join(home, "bin", "kimi")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "kimi"
+}
+
+// kimiSessionExists reports whether a remembered Kimi session can be resumed: Kimi keeps each session
+// in <home>/sessions/<workdir key>/<session id>.
+func kimiSessionExists(id string) bool {
+	if !kimiSessionPattern.MatchString(id) {
+		return false
+	}
+	home := kimiHome()
+	if home == "" {
+		return false
+	}
+	matches, err := filepath.Glob(filepath.Join(home, "sessions", "*", id))
+	return err == nil && len(matches) > 0
+}
+
+// kimiStreamLine is the part of a `kimi -p --output-format stream-json` line a headless turn reads.
+type kimiStreamLine struct {
+	Role       string          `json:"role"`
+	Type       string          `json:"type"`
+	SessionID  string          `json:"session_id"`
+	Content    json.RawMessage `json:"content"`
+	ToolCalls  []kimiToolCall  `json:"tool_calls"`
+	ToolCallID string          `json:"tool_call_id"`
+}
+
+type kimiToolCall struct {
+	ID       string `json:"id"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// kimiLine is what one stream-json line says: the session id (resume hint), an assistant reply's
+// text, the tool calls it makes, or the id of the call a tool result answers.
+type kimiLine struct {
+	sessionID string
+	reply     string
+	calls     []kimiToolCall
+	resultFor string
+}
+
+// parseKimiLine reads one stream-json line; ok is false for a line that is not JSON.
+func parseKimiLine(line []byte) (kimiLine, bool) {
+	var msg kimiStreamLine
+	if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &msg) != nil {
+		return kimiLine{}, false
+	}
+	switch {
+	case msg.Role == "meta" && msg.Type == "session.resume_hint":
+		return kimiLine{sessionID: msg.SessionID}, true
+	case msg.Role == "tool":
+		return kimiLine{resultFor: msg.ToolCallID}, true
+	case msg.Role != "assistant":
+		return kimiLine{}, true
+	}
+	out := kimiLine{calls: msg.ToolCalls}
+	if len(msg.Content) > 0 {
+		var text string
+		if json.Unmarshal(msg.Content, &text) == nil {
+			out.reply = strings.TrimSpace(text)
+		} else {
+			var parts []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(msg.Content, &parts) == nil {
+				var b strings.Builder
+				for _, part := range parts {
+					if part.Type == "text" {
+						b.WriteString(part.Text)
+					}
+				}
+				out.reply = strings.TrimSpace(b.String())
+			}
+		}
+	}
+	return out, true
+}
+
+// kimiModelArg is the --model / -m value in a seat's launch args, for the wall's footer.
+func kimiModelArg(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--model" || args[i] == "-m" {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// kimiFailureDetail names why a headless Kimi turn failed: Kimi's own error line on stderr when it
+// printed one (the orchestrator's quota handling reads provider text such as "usage limit"), else the
+// exit status.
+func kimiFailureDetail(waitErr error, stderrTail string) string {
+	if tail := strings.TrimSpace(stderrTail); tail != "" {
+		if len(tail) > 2000 {
+			tail = tail[len(tail)-2000:]
+		}
+		return tail
+	}
+	return "kimi -p failed: " + waitErr.Error()
 }

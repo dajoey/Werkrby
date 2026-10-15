@@ -55,9 +55,12 @@ type Staff struct {
 	// derive it from the --model launch argument; see FamilyOf. Review picks a reviewer from a
 	// different family than the seat that wrote the work.
 	Family string `yaml:"family,omitempty"`
-	// Headless runs each turn of a `runner: claude` staff as `claude -p` (stream-json) in the workspace
-	// instead of an interactive Herdr pane. Anthropic bills the Max plan's monthly API credit only for
-	// headless (Agent SDK) Claude Code runs, so a seat paid by that credit must set it.
+	// Headless runs each turn of a `runner: claude` staff as `claude -p` (stream-json), or of a
+	// `runner: kimi` staff as `kimi -p` (stream-json), in the workspace instead of an interactive Herdr
+	// pane: the process exit ends the turn and a failed turn (a provider 403, a quota wall) is a
+	// non-zero exit, so nothing has to infer the turn's end from a screen or a hook. Anthropic bills the
+	// Max plan's monthly API credit only for headless (Agent SDK) Claude Code runs, so a seat paid by
+	// that credit must set it.
 	Headless bool `yaml:"headless,omitempty"`
 	// ExplicitOutcome makes a headless seat return its task turn's outcome as data (result.json in
 	// its run directory, or a werkrby-outcome block in its final reply) instead of editing and moving
@@ -350,8 +353,8 @@ func (r *Roster) validate() error {
 		if !namePattern.MatchString(s.Runner) {
 			return fmt.Errorf("staff %s: runner %q is invalid", name, s.Runner)
 		}
-		if s.Headless && s.Runner != "claude" {
-			return fmt.Errorf("staff %s: headless needs runner claude, not %q", name, s.Runner)
+		if s.Headless && s.Runner != "claude" && s.Runner != "kimi" {
+			return fmt.Errorf("staff %s: headless needs runner claude or kimi, not %q", name, s.Runner)
 		}
 		if s.ExplicitOutcome && !s.Headless {
 			return fmt.Errorf("staff %s: explicit_outcome needs headless: true", name)

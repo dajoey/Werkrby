@@ -400,3 +400,120 @@ fi
 		t.Fatalf("key still maps to %q after a turn that reported no session", got)
 	}
 }
+
+// kimiHeadlessFixture is headlessFixture for a `runner: kimi` headless seat; KIMI_CODE_HOME points at
+// the workspace so session lookups never read the real ~/.kimi-code.
+func kimiHeadlessFixture(t *testing.T, fakeKimi string) (*Herdr, string) {
+	t.Helper()
+	root := t.TempDir()
+	state := filepath.Join(root, roster.StateDirName)
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "staff:\n  researcher:\n    runner: kimi\n    headless: true\n    args: [\"--model\", \"kimi-code/k3\"]\n"
+	if err := os.WriteFile(roster.Path(state), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "fake-kimi")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+fakeKimi), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KIMI_CODE_HOME", filepath.Join(root, "kimi-home"))
+	h, err := NewHerdr(HarnessConfig{Command: filepath.Join(root, "no-such-herdr"), Cwd: root, Sandbox: "danger-full-access", ApprovalPolicy: "never"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.headlessCommand = filepath.Join(root, "no-such-claude")
+	h.headlessKimiCommand = script
+	return h, root
+}
+
+const kimiTurnOK = `printf '%s\n' "$@" > "$(dirname "$0")/argv"
+if [ -t 0 ]; then echo tty > "$(dirname "$0")/stdin"; else cat > "$(dirname "$0")/stdin"; fi
+echo '{"role":"meta","type":"system.version","version":"2.2.0"}'
+echo '{"role":"assistant","tool_calls":[{"type":"function","id":"t1","function":{"name":"Bash","arguments":"{}"}}]}'
+echo '{"role":"tool","tool_call_id":"t1","content":"ok"}'
+echo '{"role":"assistant","content":"DONE: handed to review"}'
+echo '{"role":"meta","type":"session.resume_hint","session_id":"session_abc-123","command":"kimi -r session_abc-123"}'
+`
+
+func TestHerdrHeadlessKimiStaffRunsKimiPrint(t *testing.T) {
+	h, root := kimiHeadlessFixture(t, kimiTurnOK)
+	var log eventLog
+	thread, steered, err := h.SendWithModel(context.Background(), headlessKey, "do the task", "@researcher", log.emit)
+	if err != nil || steered || thread != "session_abc-123" {
+		t.Fatalf("SendWithModel = %q, %v, %v; want session_abc-123, false, nil", thread, steered, err)
+	}
+	argv, _ := os.ReadFile(filepath.Join(root, "argv"))
+	got := strings.Split(strings.TrimSpace(string(argv)), "\n")
+	want := []string{"-p", "do the task", "--output-format", "stream-json", "--model", "kimi-code/k3"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+	if stdin, _ := os.ReadFile(filepath.Join(root, "stdin")); len(stdin) != 0 {
+		t.Fatalf("stdin = %q, want nothing (the prompt is the -p value)", stdin)
+	}
+	done := log.done()
+	if len(done) != 1 || done[0].Kind != core.EventFinal || done[0].FinalText == nil || *done[0].FinalText != "DONE: handed to review" || done[0].ThreadID != "session_abc-123" {
+		t.Fatalf("done events = %+v, want one final with the last assistant text", done)
+	}
+	if h.IsActive(headlessKey) {
+		t.Fatal("turn still active after the process exited")
+	}
+}
+
+// The 2026-10-15 stall: a Kimi worker hit its 5-hour wall, printed the 403 and sat at its prompt for
+// 10.5 h while Herdr reported it working. Headless, the same failure ends the turn at once with the
+// provider text, which the quota handling reads.
+func TestHerdrHeadlessKimiQuotaWallFailsTheTurnAtOnce(t *testing.T) {
+	h, _ := kimiHeadlessFixture(t, `echo '{"role":"meta","type":"system.version","version":"2.2.0"}'
+echo "error: failed to run prompt: [provider.auth_error] 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends." >&2
+exit 1
+`)
+	var log eventLog
+	start := time.Now()
+	_, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@researcher", log.emit)
+	if err == nil || !strings.Contains(err.Error(), "runner turn failed: error: failed to run prompt: [provider.auth_error] 403 You've reached your 5-hour usage limit") {
+		t.Fatalf("err = %v, want the provider 403 as a runner turn failure", err)
+	}
+	if time.Since(start) > 10*time.Second {
+		t.Fatalf("failed turn took %s, want it to end when the process exits", time.Since(start))
+	}
+	done := log.done()
+	if len(done) != 1 || done[0].Kind != core.EventError || !strings.Contains(done[0].Text, "usage limit") {
+		t.Fatalf("done events = %+v, want one error event carrying the provider text", done)
+	}
+}
+
+func TestHerdrHeadlessKimiFollowUpResumesItsSession(t *testing.T) {
+	h, root := kimiHeadlessFixture(t, kimiTurnOK)
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "first", "@researcher", nil); err != nil {
+		t.Fatal(err)
+	}
+	// No session directory yet: the remembered id is not resumed.
+	argv, _ := os.ReadFile(filepath.Join(root, "argv"))
+	if strings.Contains(string(argv), "-S\n") {
+		t.Fatalf("argv = %q, resumed a session Kimi does not have", argv)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "kimi-home", "sessions", "wd_x", "session_abc-123"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "second", "@researcher", nil); err != nil {
+		t.Fatal(err)
+	}
+	argv, _ = os.ReadFile(filepath.Join(root, "argv"))
+	got := strings.Split(strings.TrimSpace(string(argv)), "\n")
+	want := []string{"-p", "second", "--output-format", "stream-json", "-S", "session_abc-123", "--model", "kimi-code/k3"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+}
+
+func TestKimiSessionIDMustLookLikeOne(t *testing.T) {
+	t.Setenv("KIMI_CODE_HOME", t.TempDir())
+	for _, id := range []string{"", "sess-123", "session_../../etc", "session_*", "/abs"} {
+		if kimiSessionExists(id) {
+			t.Fatalf("kimiSessionExists(%q) = true", id)
+		}
+	}
+}
