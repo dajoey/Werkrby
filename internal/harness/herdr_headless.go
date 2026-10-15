@@ -113,12 +113,14 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	previous := h.sessions[key]
 	h.mu.Unlock()
 	var args []string
+	resumed := false // a kimi turn passed -S previous
 	if kimi {
 		// Kimi takes the prompt as the -p value (the pane path already hands Herdr the prompt as one
 		// argument, so it fits the same limit) and runs tools without asking in prompt mode.
 		args = []string{"-p", prompt, "--output-format", "stream-json"}
 		if kimiSessionExists(previous) {
 			args = append(args, "-S", previous)
+			resumed = true
 		}
 		args = append(args, staff.Args...)
 	} else {
@@ -200,6 +202,7 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	var threadID string
 	var final *headlessResultLine
 	var kimiReply string
+	kimiDone := false // Kimi printed its closing session.resume_hint: the turn's answer is complete
 	reader := bufio.NewReader(stdout)
 	for {
 		line, readErr := reader.ReadBytes('\n')
@@ -208,6 +211,14 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 				if msg.sessionID != "" && threadID == "" {
 					threadID = msg.sessionID
 					h.rememberSession(key, threadID)
+				}
+				// The resume hint is Kimi's last line, its result line: a child that outlives Kimi
+				// (an MCP server, a background command) and holds stdout or stderr open must not
+				// turn the finished turn into a hang or a failure, so the process group gets the
+				// same grace as Claude's after its result.
+				if msg.sessionID != "" && !kimiDone {
+					kimiDone = true
+					time.AfterFunc(headlessResultGrace, procCancel)
 				}
 				if msg.reply != "" {
 					kimiReply = msg.reply
@@ -252,7 +263,9 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	// turn would be handed back by ThreadID and resumed by the next turn as if this one had
 	// continued it. An interrupted or timed-out turn keeps the earlier session, since it may have
 	// died before Claude Code printed one.
-	if threadID == "" && turnContext.Err() == nil {
+	// Kimi prints its session id only when a turn finishes, so a resumed (-S) turn that failed
+	// still has its session: keep it.
+	if threadID == "" && turnContext.Err() == nil && !(kimi && resumed) {
 		h.forgetSession(key)
 	}
 	if turnContext.Err() != nil {
@@ -267,7 +280,9 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	if kimi {
 		// Kimi prints no result line: exit 0 is a finished turn, anything else failed, and the reason
 		// (`error: failed to run prompt: 403 You've reached your 5-hour usage limit ...`) is on stderr.
-		if waitErr != nil {
+		// After the resume hint the turn stands whatever the exit: a child holding a pipe ends Wait
+		// with ErrWaitDelay, and the grace kill ends it with a signal.
+		if waitErr != nil && !kimiDone {
 			detail := kimiFailureDetail(waitErr, stderr.String())
 			activity.finish(detail)
 			emitHeadlessError(emit, threadID, detail)
@@ -462,10 +477,17 @@ func kimiModelArg(args []string) string {
 	return ""
 }
 
-// kimiFailureDetail names why a headless Kimi turn failed: Kimi's own error line on stderr when it
-// printed one (the orchestrator's quota handling reads provider text such as "usage limit"), else the
-// exit status.
+// kimiFailureDetail names why a headless Kimi turn failed: Kimi's own `error:` line on stderr when it
+// printed one (the orchestrator's quota handling reads provider text such as "usage limit"; the rest
+// of stderr can carry MCP-server or hook output that must not), else the stderr tail, else the exit
+// status.
 func kimiFailureDetail(waitErr error, stderrTail string) string {
+	lines := strings.Split(strings.TrimSpace(stderrTail), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); strings.HasPrefix(line, "error:") {
+			return line
+		}
+	}
 	if tail := strings.TrimSpace(stderrTail); tail != "" {
 		if len(tail) > 2000 {
 			tail = tail[len(tail)-2000:]

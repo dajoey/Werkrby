@@ -1900,7 +1900,13 @@ func TestIsQuotaErrorMatchesKimiUsageLimitWalls(t *testing.T) {
 			t.Errorf("isQuotaError(%q) = false, want true", msg)
 		}
 	}
-	if isQuotaError(errors.New("runner turn failed: error: failed to run prompt: [provider.auth_error] 401 invalid token")) {
-		t.Error("an auth failure is not a quota wall")
+	for _, msg := range []string{
+		"runner turn failed: error: failed to run prompt: [provider.auth_error] 401 invalid token",
+		"runner turn failed: error: failed to run prompt: process exceeded its memory usage limit",
+		"runner turn failed: MCP server venice: usage limit for this tool is 10 calls",
+	} {
+		if isQuotaError(errors.New(msg)) {
+			t.Errorf("isQuotaError(%q) = true; only Kimi's wall wording is a quota wall", msg)
+		}
 	}
 }

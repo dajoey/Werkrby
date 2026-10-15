@@ -124,7 +124,7 @@ func (a *headlessActivity) finish(failure string) {
 	}
 	now := headlessActivityNow()
 	if failure != "" {
-		reason := strings.TrimPrefix(activityLastLine(failure), "error: failed to run prompt: ")
+		reason := strings.TrimPrefix(activityErrorLine(failure), "error: failed to run prompt: ")
 		a.emit(fmt.Sprintf("%s  ✗ run failed  %s", activityHMS(now), activityClip(activityRedact(reason), headlessActivityWidth)))
 	} else {
 		a.emit(fmt.Sprintf("%s  ◼ turn done  %s", activityHMS(now), activitySpan(now.Sub(a.started))))
@@ -166,6 +166,18 @@ func activityFirstLine(text string) string {
 		}
 	}
 	return ""
+}
+
+// activityErrorLine is the line that says why a run failed: the last line starting with "error:"
+// (Kimi follows it with a "See log: ..." line), else the last non-empty line.
+func activityErrorLine(text string) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); strings.HasPrefix(strings.ToLower(line), "error:") {
+			return line
+		}
+	}
+	return activityLastLine(text)
 }
 
 func activityLastLine(text string) string {
@@ -235,13 +247,17 @@ func activitySummary(tool, arguments string) string {
 	if c := str("command"); c != "" {
 		return activityClip(activityRedact(activityFirstLine(c)), headlessActivityWidth)
 	}
+	if p := str("pattern"); p != "" {
+		where := activityFirstLine(str("path"))
+		if where != "" {
+			where = "  in " + where
+		}
+		return activityClip(activityRedact(activityFirstLine(p)+where), headlessActivityWidth)
+	}
 	for _, key := range []string{"path", "file_path", "notebook_path"} {
-		if p := str(key); p != "" {
+		if p := activityFirstLine(str(key)); p != "" {
 			return activityClipLeft(p, headlessActivityWidth)
 		}
-	}
-	if p := str("pattern"); p != "" {
-		return activityClip(activityRedact(p), headlessActivityWidth)
 	}
 	if u := str("url"); u != "" {
 		if parsed, err := url.Parse(u); err == nil {
@@ -250,18 +266,19 @@ func activitySummary(tool, arguments string) string {
 		return ""
 	}
 	for _, key := range []string{"query", "description"} {
-		if q := str(key); q != "" {
+		if q := activityFirstLine(str(key)); q != "" {
 			return activityClip(activityRedact(q), headlessActivityWidth)
 		}
 	}
 	return ""
 }
 
-// headlessTaskID is the task or goal id in an orchestrator session key
-// (orchestrator:<route>:<phase>:<id>:<attempt>), else "".
+// headlessTaskID is the task or goal id in a document session key
+// (orchestrator:<tasks|goals>:<phase>:<id>:<attempt>), else "" (chat, notification and heartbeat keys
+// name no document).
 func headlessTaskID(key string) string {
 	parts := strings.Split(strings.TrimSpace(key), ":")
-	if len(parts) >= 5 && parts[0] == "orchestrator" {
+	if len(parts) >= 5 && parts[0] == "orchestrator" && (parts[1] == "tasks" || parts[1] == "goals") {
 		return parts[3]
 	}
 	return ""

@@ -517,3 +517,57 @@ func TestKimiSessionIDMustLookLikeOne(t *testing.T) {
 		}
 	}
 }
+
+// Review 2026-10-15: a child that outlives Kimi (an MCP server, a background command) and keeps
+// stdout or stderr open must not turn a finished turn into a hang or a failure.
+func TestHerdrHeadlessKimiChildHoldingPipesDoesNotFailAFinishedTurn(t *testing.T) {
+	saved := headlessResultGrace
+	headlessResultGrace = 200 * time.Millisecond
+	t.Cleanup(func() { headlessResultGrace = saved })
+	h, _ := kimiHeadlessFixture(t, `echo '{"role":"assistant","content":"DONE"}'
+echo '{"role":"meta","type":"session.resume_hint","session_id":"session_abc-123"}'
+sleep 30 &
+exit 0
+`)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	start := time.Now()
+	var log eventLog
+	thread, _, err := h.SendWithModel(ctx, headlessKey, "x", "@researcher", log.emit)
+	if err != nil || thread != "session_abc-123" {
+		t.Fatalf("SendWithModel = %q, %v; want the finished turn", thread, err)
+	}
+	if time.Since(start) > 15*time.Second {
+		t.Fatalf("turn took %s; the grace should end it", time.Since(start))
+	}
+	if done := log.done(); len(done) != 1 || done[0].FinalText == nil || *done[0].FinalText != "DONE" {
+		t.Fatalf("done events = %+v", done)
+	}
+}
+
+func TestHerdrHeadlessKimiFailedResumedTurnKeepsItsSession(t *testing.T) {
+	h, root := kimiHeadlessFixture(t, `if [ -f "$(dirname "$0")/fail" ]; then echo "error: failed to run prompt: 403 You've reached your 5-hour usage limit." >&2; exit 1; fi
+`+kimiTurnOK)
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "first", "@researcher", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "kimi-home", "sessions", "wd_x", "session_abc-123"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "fail"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "second", "@researcher", nil); err == nil {
+		t.Fatal("want the walled turn to fail")
+	}
+	if got := h.ThreadID(headlessKey); got != "session_abc-123" {
+		t.Fatalf("session after a failed resumed turn = %q, want session_abc-123 kept", got)
+	}
+}
+
+func TestKimiFailureDetailIsKimisErrorLine(t *testing.T) {
+	stderr := "[mcp venice] usage limit noise\nerror: failed to run prompt: boom\nSee log: /x/kimi-code.log\n"
+	if got := kimiFailureDetail(errors.New("exit status 1"), stderr); got != "error: failed to run prompt: boom" {
+		t.Fatalf("kimiFailureDetail = %q", got)
+	}
+}

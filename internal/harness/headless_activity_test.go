@@ -46,6 +46,7 @@ env > "$(dirname "$0")/env"
 func TestHeadlessKimiQuotaWallReadsRedOnTheWall(t *testing.T) {
 	h, root := kimiHeadlessFixture(t, `echo $$ > "$(dirname "$0")/pid"
 echo "error: failed to run prompt: [provider.auth_error] 403 You've reached your 5-hour usage limit." >&2
+echo "See log: /home/x/.kimi-code/logs/kimi-code.log" >&2
 exit 1
 `)
 	dir := filepath.Join(root, "activity")
@@ -100,4 +101,24 @@ func TestHeadlessTaskIDFromSessionKey(t *testing.T) {
 		}
 	}
 	_ = strconv.Itoa
+}
+
+func TestHeadlessTaskIDNamesOnlyDocuments(t *testing.T) {
+	for _, key := range []string{"orchestrator:notification:lease123:task_review:1", "orchestrator:semantic-heartbeat"} {
+		if got := headlessTaskID(key); got != "" {
+			t.Errorf("headlessTaskID(%q) = %q, want \"\"", key, got)
+		}
+	}
+	if got := headlessTaskID("orchestrator:goals:goal_planning:goals-x-01:2"); got != "goals-x-01" {
+		t.Errorf("goal key = %q", got)
+	}
+}
+
+func TestActivitySummaryFirstLinesAndGrepWhere(t *testing.T) {
+	if got := activitySummary("Grep", `{"pattern":"TODO","path":"internal/x"}`); got != "TODO  in internal/x" {
+		t.Errorf("grep summary = %q", got)
+	}
+	if got := activitySummary("Search", `{"query":"first line\nsecond line"}`); got != "first line" {
+		t.Errorf("query summary = %q", got)
+	}
 }
