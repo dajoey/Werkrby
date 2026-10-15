@@ -277,6 +277,8 @@ func (m *Manager) SetNotificationDelivery(deliver func(context.Context, Origin, 
 }
 
 func (m *Manager) Run(ctx context.Context) error {
+	harness.SetRosterObserver(m.shadowRoster)
+	defer harness.SetRosterObserver(nil)
 	if err := m.ScanOnce(ctx); err != nil {
 		m.log("orchestrator scan: " + err.Error())
 	}

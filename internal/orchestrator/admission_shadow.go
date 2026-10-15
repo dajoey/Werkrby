@@ -21,6 +21,8 @@ import (
 //   - dispatch: resolveRosterModel compares admission, asked before Assign counts the session, with
 //     the seat Assign gave the claim. Recovery of running work is not compared: a continuation is
 //     never stopped by a quota decision.
+//   - chat, notification, heartbeat: harness.Herdr's rosterModelForKey tells shadowRoster (installed
+//     by Run) the seat the roster maps the role to and the seat Assign chose.
 //
 // A comparison for one document and phase is made at most once a minute (a pass that reaches the same
 // document through two sites counts once). A disagreement is logged once an hour per document and
@@ -160,6 +162,44 @@ func (m *Manager) shadowDispatchPending(lease Lease, phase, name string, frontMa
 	return func(assigned string) {
 		defer m.shadowRecover()
 		m.shadowRecord("dispatch", phase, filepath.Base(lease.File), name, shadowOld{Verdict: admission.Run, Seat: assigned}, decision)
+	}
+}
+
+// shadowRoster is the chat, notification and heartbeat site (harness.RosterObserver): the harness asks
+// before the roster counts the session; the returned function records the comparison once the roster
+// has chosen a seat. The old path never holds these turns, so its outcome is run on the assigned seat.
+// A conversation is compared once a minute. It returns nil when shadow is off, the role has no
+// admission kind or the turn was sampled in the last minute.
+func (m *Manager) shadowRoster(role, key, asked string) func(assigned string) {
+	if !m.admissionShadowOn() {
+		return nil
+	}
+	var kind admission.Kind
+	switch role {
+	case "chat":
+		kind = admission.KindChat
+	case "notification":
+		kind = admission.KindNotification
+	case "heartbeat":
+		kind = admission.KindHeartbeat
+	default:
+		return nil
+	}
+	var decision admission.Decision
+	var ok bool
+	func() {
+		defer m.shadowRecover()
+		if !m.shadowDue(role + "\x00" + key) {
+			return
+		}
+		decision, ok = m.shadowDecider().Decide(admission.Request{Kind: kind, Doc: key, Asked: asked}), true
+	}()
+	if !ok {
+		return nil
+	}
+	return func(assigned string) {
+		defer m.shadowRecover()
+		m.shadowRecord(role, role, key, asked, shadowOld{Verdict: admission.Run, Seat: assigned}, decision)
 	}
 }
 
