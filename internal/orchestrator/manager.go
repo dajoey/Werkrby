@@ -116,6 +116,8 @@ type Manager struct {
 	scanTimerMu                 sync.Mutex
 	holdLogMu                   sync.Mutex
 	holdLogged                  map[string]time.Time
+	shadow                      admissionShadowState
+	admissionSnapshotPath       string // tests; empty means the collector's default snapshot
 	scanTimer                   *time.Timer
 	scanTimerGeneration         uint64
 	scanNext                    time.Time
@@ -624,7 +626,7 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 		// A paced seat's work waits where it is (no claim, no attempt, no fallback) until
 		// its hold lifts. Checked before capacity so held goal work never pauses a running
 		// standalone task for a slot it will not use.
-		if m.rosterHeld(route, phase, candidate.name, document) {
+		if m.rosterHeld("queue", route, phase, candidate.name, document) {
 			continue
 		}
 		if !m.canAdmitClaim() {
@@ -728,7 +730,7 @@ func (m *Manager) startExistingClaim(ctx context.Context, route workflowRoute, p
 		if deferred {
 			recovery, incrementAttempt = false, true
 		}
-		if m.rosterHeld(route, phase, filepath.Base(path), document) {
+		if m.rosterHeld("start", route, phase, filepath.Base(path), document) {
 			if incrementAttempt && !deferred {
 				note := "Spynel deferred this goal's planning round: its seat is on a quota pace hold. No attempt was spent; planning starts when the hold lifts."
 				if err := updateDocumentProgressWithUpdate(path, time.Now().UTC(), note, func(frontMatter map[string]any) {
@@ -1739,7 +1741,7 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 				}
 				// A goal resuming planning on a paced seat stays parked: no move, no note, no
 				// attempt. It is due again every scan and wakes once the hold lifts.
-				if targetStatus == "planning" && m.rosterHeld(route, phaseGoalPlanning, entry.Name(), document) {
+				if targetStatus == "planning" && m.rosterHeld("wake", route, phaseGoalPlanning, entry.Name(), document) {
 					continue
 				}
 			}
@@ -2131,6 +2133,7 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 	if !ok {
 		return "", false
 	}
+	shadowDone := m.shadowDispatchPending(lease, phase, name, frontMatter)
 	assigned, err := staffing.Assign(stateDir, name, lease.SessionKey, time.Now())
 	if err != nil {
 		m.log("roster usage: " + err.Error())
@@ -2147,6 +2150,9 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 		if err := roster.RecordImplementer(stateDir, filepath.Base(lease.File), assigned, time.Now()); err != nil {
 			m.log("roster implementer: " + err.Error())
 		}
+	}
+	if shadowDone != nil {
+		shadowDone(assigned)
 	}
 	return staffing.Model(assigned), true
 }
@@ -2240,7 +2246,13 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 // is holding (runtime/roster-holds.json, roster.HeldUntil). The seat is found the way dispatch
 // finds it (rosterSeat, then Assign's fallback walk past caps and stops) without counting a
 // session. A held document is logged at most once an hour.
-func (m *Manager) rosterHeld(route workflowRoute, phase, name string, document Document) bool {
+func (m *Manager) rosterHeld(site string, route workflowRoute, phase, name string, document Document) bool {
+	held := m.rosterHeldNow(route, phase, name, document)
+	m.shadowQueued(site, route, phase, name, document, held)
+	return held
+}
+
+func (m *Manager) rosterHeldNow(route workflowRoute, phase, name string, document Document) bool {
 	stateDir := m.Config.StatePath()
 	now := time.Now()
 	if !roster.AnyHeld(stateDir, now) {
