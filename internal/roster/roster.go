@@ -462,6 +462,26 @@ func (r *Roster) Has(name string) bool {
 	return ok
 }
 
+// Routable reports whether a filer may stamp name as a task's `staff:` on its own: the routing
+// table names it (a work-type lane such as ops or architect) or a role maps to it. Any other seat
+// is a model or fallback rung, reached through chains and escalation, not pinned by a filer.
+func (r *Roster) Routable(name string) bool {
+	if r == nil || name == "" {
+		return false
+	}
+	for _, entry := range r.Routing {
+		if entry.Staff == name {
+			return true
+		}
+	}
+	for _, staff := range r.Roles {
+		if staff == name {
+			return true
+		}
+	}
+	return false
+}
+
 // ForRole returns the staff name mapped to a workflow role, or "".
 func (r *Roster) ForRole(role string) string {
 	if r == nil {
