@@ -118,7 +118,7 @@ type Manager struct {
 	holdLogged                  map[string]time.Time
 	shadow                      admissionShadowState
 	admissionSnapshotPath       string // tests; empty means the collector's default snapshot
-	scanTimer                 *time.Timer
+	scanTimer                   *time.Timer
 	scanTimerGeneration         uint64
 	scanNext                    time.Time
 	scanTimerChanged            chan struct{}
@@ -2133,6 +2133,7 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 	if !ok {
 		return "", false
 	}
+	shadowDone := m.shadowDispatchPending(lease, phase, name, frontMatter)
 	assigned, err := staffing.Assign(stateDir, name, lease.SessionKey, time.Now())
 	if err != nil {
 		m.log("roster usage: " + err.Error())
@@ -2150,7 +2151,9 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 			m.log("roster implementer: " + err.Error())
 		}
 	}
-	m.shadowDispatched(phase, filepath.Base(lease.File), name, assigned, frontMatter)
+	if shadowDone != nil {
+		shadowDone(assigned)
+	}
 	return staffing.Model(assigned), true
 }
 
