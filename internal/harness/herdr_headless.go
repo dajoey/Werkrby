@@ -2,6 +2,7 @@ package harness
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,9 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -80,8 +84,24 @@ func headlessSecretEnvName(name string) bool {
 // transcript exists, so continuations and operator messages keep their context. The caller holds the
 // key lock.
 func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string, staff roster.Staff, cfg HarnessConfig, emit core.Emit) (string, bool, error) {
+	kimi := staff.Runner == "kimi"
+	agy := staff.Runner == "agy"
+	runner := "claude"
 	command := h.headlessCommand
-	if command == "" {
+	switch {
+	case kimi:
+		runner = "kimi"
+		command = h.headlessKimiCommand
+		if command == "" {
+			command = kimiExecutable()
+		}
+	case agy:
+		runner = "agy"
+		command = h.headlessAgyCommand
+		if command == "" {
+			command = agyExecutable()
+		}
+	case command == "":
 		command = "claude"
 	}
 	target := "headless:" + staffName
@@ -98,16 +118,39 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		close(turn.done)
 	}()
 
-	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
 	h.mu.Lock()
 	previous := h.sessions[key]
 	h.mu.Unlock()
-	if path := transcriptPath("claude", previous, cfg.Cwd); path != "" {
-		if _, err := os.Stat(path); err == nil {
-			args = append(args, "--resume", previous)
+	var args []string
+	resumed := false // a kimi (-S) or agy (--conversation) turn resumed the remembered session
+	if kimi {
+		// Kimi takes the prompt as the -p value (the pane path already hands Herdr the prompt as one
+		// argument, so it fits the same limit) and runs tools without asking in prompt mode.
+		args = []string{"-p", prompt, "--output-format", "stream-json"}
+		if kimiSessionExists(previous) {
+			args = append(args, "-S", previous)
+			resumed = true
 		}
+		args = append(args, staff.Args...)
+	} else if agy {
+		// agy takes the prompt as its print argument and runs with the same permission policy as
+		// the Claude seats (its panes start with --dangerously-skip-permissions; plan and read-only
+		// configurations start it in plan mode).
+		args = []string{"-p", prompt, "--output-format", "stream-json"}
+		if agyConversationExists(previous) {
+			args = append(args, "--conversation", previous)
+			resumed = true
+		}
+		args = append(append(args, agyPermissionArgs(cfg)...), staff.Args...)
+	} else {
+		args = []string{"-p", "--output-format", "stream-json", "--verbose"}
+		if path := transcriptPath("claude", previous, cfg.Cwd); path != "" {
+			if _, err := os.Stat(path); err == nil {
+				args = append(args, "--resume", previous)
+			}
+		}
+		args = append(append(args, claudePermissionArgs(cfg)...), staff.Args...)
 	}
-	args = append(append(args, claudePermissionArgs(cfg)...), staff.Args...)
 	// procContext ends the process; turnContext ends the turn. They differ once a result is in:
 	// a process still running headlessResultGrace after its result line is killed, and the
 	// result stands.
@@ -116,7 +159,13 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	cmd := exec.CommandContext(procContext, command, args...)
 	cmd.Dir = cfg.Cwd
 	cmd.Env = headlessChildEnv(os.Environ())
-	cmd.Stdin = strings.NewReader(prompt)
+	// The task id names the run on the Agent Wall and marks it as Werkrby's own agent for the guards.
+	if taskID := headlessTaskID(key); taskID != "" {
+		cmd.Env = append(cmd.Env, "WERKRBY_TASK_ID="+taskID)
+	}
+	if !kimi && !agy {
+		cmd.Stdin = strings.NewReader(prompt)
+	}
 	// Claude Code starts tool and MCP children that can inherit stdout. On cancel the whole process
 	// group is killed, and WaitDelay bounds Wait if a pipe is still held open anyway.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -130,12 +179,18 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	}
 	turn.cmd = cmd
 	if err := cmd.Start(); err != nil {
-		startErr := fmt.Errorf("start headless Claude Code for %s: %w", target, err)
+		startErr := fmt.Errorf("start headless %s for %s: %w", runner, target, err)
 		emitHeadlessError(emit, "", startErr.Error())
 		return "", false, startErr
 	}
 	if emit != nil {
-		emit(core.Event{Kind: core.EventStatus, Text: fmt.Sprintf("Headless: running staff %s as claude -p in %s", staffName, cfg.Cwd)})
+		emit(core.Event{Kind: core.EventStatus, Text: fmt.Sprintf("Headless: running staff %s as %s -p in %s", staffName, runner, cfg.Cwd)})
+	}
+	// Claude Code writes its own Agent Wall log (the run-activity mod); Kimi's and agy's are written
+	// from their streams.
+	var activity *headlessActivity
+	if kimi || agy {
+		activity = newHeadlessActivity(headlessActivityDir(), cmd.Process.Pid, cfg.Cwd, prompt, kimiModelArg(staff.Args))
 	}
 
 	// The ticker is joined before any terminal event so a status event never follows it.
@@ -166,9 +221,67 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 
 	var threadID string
 	var final *headlessResultLine
+	var kimiReply string
+	kimiDone := false // Kimi printed its closing session.resume_hint: the turn's answer is complete
 	reader := bufio.NewReader(stdout)
 	for {
 		line, readErr := reader.ReadBytes('\n')
+		if kimi {
+			if msg, ok := parseKimiLine(line); ok {
+				if msg.sessionID != "" && threadID == "" {
+					threadID = msg.sessionID
+					h.rememberSession(key, threadID)
+				}
+				// The resume hint is Kimi's last line, its result line: a child that outlives Kimi
+				// (an MCP server, a background command) and holds stdout or stderr open must not
+				// turn the finished turn into a hang or a failure, so the process group gets the
+				// same grace as Claude's after its result.
+				if msg.sessionID != "" && !kimiDone {
+					kimiDone = true
+					time.AfterFunc(headlessResultGrace, procCancel)
+				}
+				if msg.reply != "" {
+					kimiReply = msg.reply
+				}
+				for _, call := range msg.calls {
+					activity.call(call.ID, call.Function.Name, call.Function.Arguments)
+				}
+				if msg.resultFor != "" {
+					activity.result(msg.resultFor)
+				}
+			}
+			if readErr != nil {
+				break
+			}
+			continue
+		}
+		if agy {
+			if ev, ok := parseAgyLine(line); ok {
+				if ev.sessionID != "" && threadID == "" {
+					threadID = ev.sessionID
+					h.rememberSession(key, threadID)
+				}
+				switch ev.toolState {
+				case "ACTIVE":
+					activity.call(ev.toolID, ev.toolName, ev.toolArgs)
+				case "DONE", "ERROR", "CANCELLED":
+					activity.result(ev.toolID)
+				}
+				if ev.final != nil {
+					if final == nil {
+						time.AfterFunc(headlessResultGrace, procCancel)
+					}
+					final = ev.final
+				}
+			}
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					final = nil
+				}
+				break
+			}
+			continue
+		}
 		var msg headlessResultLine
 		if len(line) > 0 && json.Unmarshal(line, &msg) == nil {
 			if msg.SessionID != "" && threadID == "" {
@@ -197,10 +310,13 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	// turn would be handed back by ThreadID and resumed by the next turn as if this one had
 	// continued it. An interrupted or timed-out turn keeps the earlier session, since it may have
 	// died before Claude Code printed one.
-	if threadID == "" && turnContext.Err() == nil {
+	// Kimi prints its session id only when a turn finishes, and an agy turn that fails early may
+	// print none, so a resumed turn that failed without one still has its session: keep it.
+	if threadID == "" && turnContext.Err() == nil && !((kimi || agy) && resumed) {
 		h.forgetSession(key)
 	}
 	if turnContext.Err() != nil {
+		activity.finish("stopped: " + turnContext.Err().Error())
 		if errors.Is(turnContext.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
 			detail := fmt.Sprintf("headless worker %s exceeded %s", target, herdrWaitCeiling)
 			emitHeadlessError(emit, threadID, detail)
@@ -208,12 +324,30 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		}
 		return threadID, false, turnContext.Err()
 	}
+	if kimi {
+		// Kimi prints no result line: exit 0 is a finished turn, anything else failed, and the reason
+		// (`error: failed to run prompt: 403 You've reached your 5-hour usage limit ...`) is on stderr.
+		// After the resume hint the turn stands whatever the exit: a child holding a pipe ends Wait
+		// with ErrWaitDelay, and the grace kill ends it with a signal.
+		if waitErr != nil && !kimiDone {
+			detail := kimiFailureDetail(waitErr, stderr.String())
+			activity.finish(detail)
+			emitHeadlessError(emit, threadID, detail)
+			return threadID, false, fmt.Errorf("runner turn failed: %s", detail)
+		}
+		activity.finish("")
+		final = &headlessResultLine{Type: "result", Subtype: "success", Result: kimiReply, SessionID: threadID}
+	}
 	// A success result stands whatever the exit status: the process may have been killed after
 	// its result, or exited non-zero while shutting down.
 	if final == nil || final.IsError || final.Subtype != "success" {
-		detail := headlessFailureDetail(final, waitErr, stderr.String())
+		detail := headlessFailureDetail(runner, final, waitErr, stderr.String())
+		activity.finish(detail)
 		emitHeadlessError(emit, threadID, detail)
 		return threadID, false, fmt.Errorf("runner turn failed: %s", detail)
+	}
+	if agy {
+		activity.finish("")
 	}
 	finalText := final.Result
 	if emit != nil {
@@ -242,7 +376,7 @@ func (h *Herdr) forgetSession(key string) {
 // Code marked it an error (for example a provider 429 or "Credit balance is too low", which the
 // orchestrator's quota handling reads): a non-error result is the agent's own reply, and quoting it
 // could make a reply that mentions a 429 read as a quota wall.
-func headlessFailureDetail(final *headlessResultLine, waitErr error, stderrTail string) string {
+func headlessFailureDetail(runner string, final *headlessResultLine, waitErr error, stderrTail string) string {
 	if final != nil && final.IsError && strings.TrimSpace(final.Result) != "" {
 		return strings.TrimSpace(final.Result)
 	}
@@ -253,12 +387,12 @@ func headlessFailureDetail(final *headlessResultLine, waitErr error, stderrTail 
 		return tail
 	}
 	if final != nil && final.Subtype != "" {
-		return "claude -p ended with " + final.Subtype
+		return runner + " -p ended with " + final.Subtype
 	}
 	if waitErr != nil {
-		return "claude -p failed: " + waitErr.Error()
+		return runner + " -p failed: " + waitErr.Error()
 	}
-	return "claude -p ended without a result"
+	return runner + " -p ended without a result"
 }
 
 func emitHeadlessError(emit core.Emit, threadID, detail string) {
@@ -272,4 +406,282 @@ func emitHeadlessError(emit core.Emit, threadID, detail string) {
 		Done:      true,
 		Execution: &core.ExecutionStatus{State: "error", Detail: detail},
 	})
+}
+
+// kimiSessionPattern is the shape of a Kimi Code session id (`session_<uuid>`); anything else is
+// never resumed, and it keeps the id safe to use as a path element.
+var kimiSessionPattern = regexp.MustCompile(`^session_[A-Za-z0-9-]+$`)
+
+// kimiHome is Kimi Code's state directory: KIMI_CODE_HOME, else ~/.kimi-code.
+func kimiHome() string {
+	if dir := strings.TrimSpace(os.Getenv("KIMI_CODE_HOME")); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".kimi-code")
+}
+
+// kimiExecutable is the kimi binary for a headless seat: kimi on PATH, else the installer's
+// ~/.kimi-code/bin/kimi (the Werkrby service's PATH need not include it).
+func kimiExecutable() string {
+	if path, err := exec.LookPath("kimi"); err == nil {
+		return path
+	}
+	if home := kimiHome(); home != "" {
+		candidate := filepath.Join(home, "bin", "kimi")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "kimi"
+}
+
+// kimiSessionExists reports whether a remembered Kimi session can be resumed: Kimi keeps each session
+// in <home>/sessions/<workdir key>/<session id>.
+func kimiSessionExists(id string) bool {
+	if !kimiSessionPattern.MatchString(id) {
+		return false
+	}
+	home := kimiHome()
+	if home == "" {
+		return false
+	}
+	matches, err := filepath.Glob(filepath.Join(home, "sessions", "*", id))
+	return err == nil && len(matches) > 0
+}
+
+// kimiStreamLine is the part of a `kimi -p --output-format stream-json` line a headless turn reads.
+type kimiStreamLine struct {
+	Role       string          `json:"role"`
+	Type       string          `json:"type"`
+	SessionID  string          `json:"session_id"`
+	Content    json.RawMessage `json:"content"`
+	ToolCalls  []kimiToolCall  `json:"tool_calls"`
+	ToolCallID string          `json:"tool_call_id"`
+}
+
+type kimiToolCall struct {
+	ID       string `json:"id"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// kimiLine is what one stream-json line says: the session id (resume hint), an assistant reply's
+// text, the tool calls it makes, or the id of the call a tool result answers.
+type kimiLine struct {
+	sessionID string
+	reply     string
+	calls     []kimiToolCall
+	resultFor string
+}
+
+// parseKimiLine reads one stream-json line; ok is false for a line that is not JSON.
+func parseKimiLine(line []byte) (kimiLine, bool) {
+	var msg kimiStreamLine
+	if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &msg) != nil {
+		return kimiLine{}, false
+	}
+	switch {
+	case msg.Role == "meta" && msg.Type == "session.resume_hint":
+		return kimiLine{sessionID: msg.SessionID}, true
+	case msg.Role == "tool":
+		return kimiLine{resultFor: msg.ToolCallID}, true
+	case msg.Role != "assistant":
+		return kimiLine{}, true
+	}
+	out := kimiLine{calls: msg.ToolCalls}
+	if len(msg.Content) > 0 {
+		var text string
+		if json.Unmarshal(msg.Content, &text) == nil {
+			out.reply = strings.TrimSpace(text)
+		} else {
+			var parts []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}
+			if json.Unmarshal(msg.Content, &parts) == nil {
+				var b strings.Builder
+				for _, part := range parts {
+					if part.Type == "text" {
+						b.WriteString(part.Text)
+					}
+				}
+				out.reply = strings.TrimSpace(b.String())
+			}
+		}
+	}
+	return out, true
+}
+
+// kimiModelArg is the --model / -m value in a seat's launch args, for the wall's footer.
+func kimiModelArg(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "--model" || args[i] == "-m" {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// kimiFailureDetail names why a headless Kimi turn failed: Kimi's own `error:` line on stderr when it
+// printed one (the orchestrator's quota handling reads provider text such as "usage limit"; the rest
+// of stderr can carry MCP-server or hook output that must not), else the stderr tail, else the exit
+// status.
+func kimiFailureDetail(waitErr error, stderrTail string) string {
+	lines := strings.Split(strings.TrimSpace(stderrTail), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(lines[i]); strings.HasPrefix(line, "error:") {
+			return line
+		}
+	}
+	if tail := strings.TrimSpace(stderrTail); tail != "" {
+		if len(tail) > 2000 {
+			tail = tail[len(tail)-2000:]
+		}
+		return tail
+	}
+	return "kimi -p failed: " + waitErr.Error()
+}
+
+// agyExecutable is the agy binary for a headless seat: agy on PATH, else ~/.local/bin/agy.
+func agyExecutable() string {
+	if path, err := exec.LookPath("agy"); err == nil {
+		return path
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidate := filepath.Join(home, ".local", "bin", "agy")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "agy"
+}
+
+var agyConversationPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// agyHome is the Antigravity CLI state directory (~/.gemini/antigravity-cli; AGY_HOME overrides it
+// for tests).
+func agyHome() string {
+	if dir := strings.TrimSpace(os.Getenv("AGY_HOME")); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".gemini", "antigravity-cli")
+}
+
+// agyConversationExists reports whether agy still has a remembered conversation
+// (<agy home>/conversations/<id>.db).
+func agyConversationExists(id string) bool {
+	if !agyConversationPattern.MatchString(id) {
+		return false
+	}
+	home := agyHome()
+	if home == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(home, "conversations", id+".db"))
+	return err == nil && !info.IsDir()
+}
+
+// agyEvent is what one `agy -p --output-format stream-json` line says.
+type agyEvent struct {
+	sessionID string
+	toolID    string
+	toolName  string
+	toolArgs  string
+	toolState string
+	final     *headlessResultLine
+}
+
+// agyObject decodes a JSON object leniently: a field of an unexpected type is dropped, never the line.
+func agyObject(raw json.RawMessage) map[string]json.RawMessage {
+	var out map[string]json.RawMessage
+	if json.Unmarshal(raw, &out) != nil {
+		return nil
+	}
+	return out
+}
+
+func agyString(raw json.RawMessage) string {
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		return text
+	}
+	return ""
+}
+
+// agyIndex reads a step index written as a number or a string.
+func agyIndex(raw json.RawMessage) string {
+	var n float64
+	if json.Unmarshal(raw, &n) == nil {
+		return strconv.FormatInt(int64(n), 10)
+	}
+	return agyString(raw)
+}
+
+// parseAgyLine reads one agy stream-json line: the conversation id (init, and every later event),
+// a tool step's state, and the closing result (status SUCCESS or ERROR, with response or error).
+// ok is false only for a line that is not a JSON object; fields of an unexpected type are skipped.
+func parseAgyLine(line []byte) (agyEvent, bool) {
+	if len(bytes.TrimSpace(line)) == 0 {
+		return agyEvent{}, false
+	}
+	top := agyObject(line)
+	if top == nil {
+		return agyEvent{}, false
+	}
+	ev := agyEvent{sessionID: agyString(top["conversation_id"])}
+	if su := agyObject(top["step_update"]); su != nil {
+		if ev.sessionID == "" {
+			ev.sessionID = agyString(su["conversation_id"])
+		}
+		if agyString(su["step_type"]) == "tool" {
+			info := agyObject(su["tool_info"])
+			ev.toolID = agyIndex(su["step_index"])
+			ev.toolName = agyString(su["tool_name"])
+			if ev.toolName == "" {
+				ev.toolName = agyString(info["name"])
+			}
+			ev.toolState = agyString(su["state"])
+			ev.toolArgs = string(info["parameters"])
+		}
+	}
+	if r := agyObject(top["result"]); r != nil {
+		if ev.sessionID == "" {
+			ev.sessionID = agyString(r["conversation_id"])
+		}
+		final := &headlessResultLine{Type: "result", SessionID: ev.sessionID, Subtype: "success", Result: strings.TrimSpace(agyString(r["response"]))}
+		if status := agyString(r["status"]); status != "SUCCESS" {
+			// An empty error leaves Result empty, so the failure detail falls back to agy's stderr.
+			final.Subtype = "error"
+			final.IsError = true
+			final.Result = strings.TrimSpace(agyString(r["error"]))
+		}
+		ev.final = final
+	}
+	return ev, true
+}
+
+// agyPermissionArgs maps Werkrby's approval and sandbox settings onto agy: plan and read-only
+// configurations run it in plan mode; full access with no approvals skips its permission prompts
+// (as the Claude seats do); anything else leaves agy's own defaults.
+func agyPermissionArgs(cfg HarnessConfig) []string {
+	claude := claudePermissionArgs(cfg)
+	for i, arg := range claude {
+		if arg == "--permission-mode" && i+1 < len(claude) && claude[i+1] == "plan" {
+			return []string{"--mode", "plan"}
+		}
+		if arg == "--dangerously-skip-permissions" {
+			return []string{arg}
+		}
+	}
+	return nil
 }

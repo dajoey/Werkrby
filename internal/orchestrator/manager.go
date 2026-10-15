@@ -2990,6 +2990,10 @@ func leaseID(route, path string) string {
 
 // httpTooManyRequestsRegex matches 429 only as a whole token (the HTTP status), never as digits
 // inside a path ("fix-issue-429.md"), a date ("20260429"), a version ("1.429.0") or an id.
+// kimiUsageLimitRegex matches Kimi's wall wording: "reached your 5-hour usage limit",
+// "reached your weekly (7-day) usage limit".
+var kimiUsageLimitRegex = regexp.MustCompile(`reached your [a-z0-9() -]*usage limit`)
+
 var httpTooManyRequestsRegex = regexp.MustCompile(`(?:^|[^0-9a-z_./-])429(?:$|[^0-9a-z_/-]|\.(?:$|[^0-9a-z]))`)
 
 func isQuotaError(err error) bool {
@@ -3005,7 +3009,12 @@ func isQuotaError(err error) bool {
 		strings.Contains(msg, "too many requests") ||
 		// A prepaid API credit that is spent ("Credit balance is too low") walls the seat too.
 		strings.Contains(msg, "credit balance is too low") ||
-		strings.Contains(msg, "credit balance too low")
+		strings.Contains(msg, "credit balance too low") ||
+		// Kimi's 5-hour and weekly walls: "403 You've reached your 5-hour usage limit. Your quota will
+		// reset ..." carries none of the words above. Matched on Kimi's own wording, not a bare
+		// "usage limit", which other errors can carry (a parked quota wall never reaches failed/).
+		kimiUsageLimitRegex.MatchString(msg) ||
+		strings.Contains(msg, "quota will reset")
 }
 
 func resolveRunnerName(document Document, lease Lease) string {

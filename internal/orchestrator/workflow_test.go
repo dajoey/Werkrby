@@ -1888,3 +1888,25 @@ func TestPathDigitsInErrorAreNotAQuotaWall(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// Kimi's walls are a 403 without "429", "quota limit" or "rate limit" in the text (the 2026-10-15
+// 10.5 h stall); a headless Kimi seat hands this line back as its turn failure.
+func TestIsQuotaErrorMatchesKimiUsageLimitWalls(t *testing.T) {
+	for _, msg := range []string{
+		"runner turn failed: error: failed to run prompt: [provider.auth_error] 403 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.",
+		"runner turn failed: error: failed to run prompt: 403 You've reached your weekly (7-day) usage limit",
+	} {
+		if !isQuotaError(errors.New(msg)) {
+			t.Errorf("isQuotaError(%q) = false, want true", msg)
+		}
+	}
+	for _, msg := range []string{
+		"runner turn failed: error: failed to run prompt: [provider.auth_error] 401 invalid token",
+		"runner turn failed: error: failed to run prompt: process exceeded its memory usage limit",
+		"runner turn failed: MCP server venice: usage limit for this tool is 10 calls",
+	} {
+		if isQuotaError(errors.New(msg)) {
+			t.Errorf("isQuotaError(%q) = true; only Kimi's wall wording is a quota wall", msg)
+		}
+	}
+}
