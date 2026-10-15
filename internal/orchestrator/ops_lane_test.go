@@ -1,8 +1,11 @@
 package orchestrator
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/agent0ai/spynel/internal/config"
 )
@@ -224,4 +227,154 @@ func TestOpsLaneRecordsTheClassOnTheLease(t *testing.T) {
 		t.Fatalf("lease classes = %v, want ops for the standalone task and goal for the goal task", got)
 	}
 	finish()
+}
+
+// A same-named copy refiled into todo/ while the original runs is skipped by the claim loop, so it
+// is not "waiting": holding goal work for it would leave a slot idle for as long as the original runs.
+func TestOpsLaneIgnoresACopyOfARunningOpsTask(t *testing.T) {
+	manager, finish, todoDir, base := slots(t, 4)
+	setOpsLane(manager, opsLaneOn(2))
+	writeClaimFixture(t, todoDir, "tasks-ops-a.md", "2026-10-15T09:00:00Z")
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-a.md", "2026-10-15T10:00:00Z")
+	scan(t, manager)
+	assertWorking(t, base, "tasks-ops-a.md", true)
+	assertWorking(t, base, "tasks-goal-a.md", true)
+
+	writeClaimFixture(t, todoDir, "tasks-ops-a.md", "2026-10-15T09:00:00Z")
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-b.md", "2026-10-15T11:00:00Z")
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-c.md", "2026-10-15T11:01:00Z")
+	scan(t, manager)
+	assertWorking(t, base, "tasks-goal-b.md", true)
+	assertWorking(t, base, "tasks-goal-c.md", true)
+	finish()
+}
+
+// An ops task waiting for its review counts as waiting too.
+func TestOpsLaneCountsAnOpsTaskWaitingForReview(t *testing.T) {
+	manager, finish, todoDir, base := slots(t, 2)
+	setOpsLane(manager, opsLaneOn(1))
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-a.md", "2026-10-15T10:00:00Z")
+	scan(t, manager)
+	assertWorking(t, base, "tasks-goal-a.md", true)
+
+	reviewDir := filepath.Join(base, "review")
+	if err := os.MkdirAll(reviewDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeClaimFixture(t, reviewDir, "tasks-ops-review.md", "2026-10-15T09:00:00Z")
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-b.md", "2026-10-15T11:00:00Z")
+	scan(t, manager)
+	if !manager.opsWaiting.Load() {
+		t.Fatal("an ops task in review/ was not counted as waiting")
+	}
+	assertWorking(t, base, "tasks-goal-b.md", false)
+	finish()
+}
+
+// A lease whose document can no longer be read is of unknown class: it is not counted as ops.
+func TestOpsLaneUnreadableLeaseIsNotOps(t *testing.T) {
+	manager, finish, _, _ := slots(t, 2)
+	lease := Lease{ID: "old", Route: "tasks", File: filepath.Join(t.TempDir(), "gone.md")}
+	if got := manager.leaseSlotClass(lease); got != "" {
+		t.Fatalf("class of an unreadable lease = %q, want unknown", got)
+	}
+	finish()
+}
+
+// A goal review that ends in planning while ops tasks are waiting and the lane is short starts no
+// session and spends no attempt; once the ops task is gone it starts as a fresh round.
+func TestOpsLaneDefersGoalPlanningStartForWaitingOps(t *testing.T) {
+	fx := newGoalHoldFixture(t)
+	fx.manager.capacityLimit = 2
+	setOpsLane(fx.manager, opsLaneOn(1))
+	todoDir := fx.cfg.Resolve(workflowRoutes()[0].Source)
+	opsPath := writeClaimFixture(t, todoDir, "tasks-ops-a.md", "2026-10-15T09:00:00Z")
+	fx.manager.setInflight("a-running-goal-task", true)
+	fx.manager.refreshOpsWaiting(fx.manager.runtimeSnapshot())
+	name := fx.finishedGoalReview(t)
+
+	for i := 0; i < 2; i++ {
+		if err := fx.manager.reconcileTransitions(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := fx.manager.recoverOrphanClaims(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fx.manager.Wait()
+	if got := fx.sessions(); got != 0 {
+		t.Fatalf("a planning session started while ops work waits for the lane: %d", got)
+	}
+	if got := fx.planningAttempt(t, "planning", name); got != 1 {
+		t.Fatalf("planning_attempt changed under the hold: %d", got)
+	}
+	document, _ := ReadDocument(filepath.Join(fx.goalsBase, "planning", name))
+	if marked, _ := document.FrontMatter["planning_hold_deferred"].(bool); !marked {
+		t.Error("the deferral was not marked")
+	}
+
+	if err := os.Remove(opsPath); err != nil {
+		t.Fatal(err)
+	}
+	fx.manager.refreshOpsWaiting(fx.manager.runtimeSnapshot())
+	if err := fx.manager.recoverOrphanClaims(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fx.manager.Wait()
+	if got := fx.sessions(); got != 1 {
+		t.Fatalf("planning did not start after the ops task left: %d sessions", got)
+	}
+	if got := fx.planningAttempt(t, "planning", name); got != 2 {
+		t.Fatalf("planning_attempt = %d after the deferred start, want 2", got)
+	}
+}
+
+// A goal due to resume planning from waiting/ stays put while the ops lane is short.
+func TestOpsLaneKeepsAWokenGoalWaitingForWaitingOps(t *testing.T) {
+	fx := newGoalHoldFixture(t)
+	fx.manager.capacityLimit = 2
+	setOpsLane(fx.manager, opsLaneOn(1))
+	todoDir := fx.cfg.Resolve(workflowRoutes()[0].Source)
+	opsPath := writeClaimFixture(t, todoDir, "tasks-ops-a.md", "2026-10-15T09:00:00Z")
+	fx.manager.setInflight("a-running-goal-task", true)
+	fx.manager.refreshOpsWaiting(fx.manager.runtimeSnapshot())
+	path, err := Create(fx.cfg, "goals", "woken goal", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(path)
+	editFrontMatter(t, path, func(fm map[string]any) {
+		fm["planning_attempt"] = 1
+		fm["resume_status"] = "planning"
+		fm["wake_at"] = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	})
+	waiting := filepath.Join(fx.goalsBase, "waiting", name)
+	if err := moveDocument(path, waiting, "waiting", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(waiting)
+
+	if err := fx.manager.wakeWaitingDocuments(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fx.manager.Wait()
+	after, err := os.ReadFile(waiting)
+	if err != nil {
+		t.Fatalf("the held goal left waiting/: %v", err)
+	}
+	if string(before) != string(after) || fx.sessions() != 0 {
+		t.Fatal("a woken goal started or was rewritten while the ops lane is short")
+	}
+
+	if err := os.Remove(opsPath); err != nil {
+		t.Fatal(err)
+	}
+	fx.manager.refreshOpsWaiting(fx.manager.runtimeSnapshot())
+	if err := fx.manager.wakeWaitingDocuments(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fx.manager.Wait()
+	if got := fx.sessions(); got != 1 {
+		t.Fatalf("planning did not start once the ops task left: %d sessions", got)
+	}
 }

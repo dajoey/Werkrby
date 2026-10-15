@@ -61,7 +61,13 @@ func (m *Manager) leaseSlotClass(lease Lease) string {
 	if lease.Route == "goals" {
 		return slotClassGoal
 	}
-	if document, err := ReadDocument(lease.File); err == nil && documentIsGoalDerived(document) {
+	// A document that cannot be read is unknown, not ops: counting it would lower the hold and
+	// switch on pause protection for a lease that may be goal work.
+	document, err := ReadDocument(lease.File)
+	switch {
+	case err != nil:
+		return ""
+	case documentIsGoalDerived(document):
 		return slotClassGoal
 	}
 	return slotClassOps
@@ -125,6 +131,15 @@ func (m *Manager) opsDocumentWaiting(cfg config.Config) bool {
 				continue
 			}
 			if !documentDue(document, now, queue.phase) || m.rosterHeldNow(route, queue.phase, entry.Name(), document) {
+				continue
+			}
+			// The claim loop skips a document a lease or running job still owns (a same-named copy
+			// refiled while the original runs); counting it would hold goal work for nothing.
+			documentID := documentID(document)
+			if documentID == "" {
+				documentID = leaseID(route.Name+":"+queue.phase, filepath.Join(queue.dir, entry.Name()))
+			}
+			if leased, err := m.claimBlockedByLease(route, queue.phase, entry.Name(), leaseID(route.Name+":"+queue.phase, documentID)); err != nil || leased {
 				continue
 			}
 			return true

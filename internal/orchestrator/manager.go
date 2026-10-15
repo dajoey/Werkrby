@@ -682,15 +682,11 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 			documentID = leaseID(route.Name+":"+phase, source)
 		}
 		key := leaseID(route.Name+":"+phase, documentID)
-		// A provider can move a document after the reconciliation pass but
-		// before this queue is scanned. Do not claim the next phase while the
-		// preceding phase still owns the same durable document; its lease must
-		// reconcile the move first.
-		_, documentLeased, leaseErr := m.leaseForDocument(route.Name, candidate.name, "", "")
+		leased, leaseErr := m.claimBlockedByLease(route, phase, candidate.name, key)
 		if leaseErr != nil {
 			return leaseErr
 		}
-		if m.isInflight(key) || m.leaseExists(key) || documentLeased {
+		if leased {
 			continue
 		}
 		// A paced seat's work waits where it is (no claim, no attempt, no fallback) until
@@ -808,6 +804,19 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 		m.dispatch(ctx, route, lease, false)
 	}
 	return nil
+}
+
+// claimBlockedByLease reports whether a queued document cannot be claimed because a lease or a
+// running job still owns it. A provider can move a document after the reconciliation pass but
+// before the queue is scanned; the next phase must not be claimed while the preceding phase still
+// owns the same durable document, so its lease reconciles the move first. The ops lane's waiting
+// check shares this rule so it never counts a document the claim loop will skip.
+func (m *Manager) claimBlockedByLease(route workflowRoute, phase, name, key string) (bool, error) {
+	_, documentLeased, err := m.leaseForDocument(route.Name, name, "", "")
+	if err != nil {
+		return false, err
+	}
+	return m.isInflight(key) || m.leaseExists(key) || documentLeased, nil
 }
 
 // planningHoldDeferredField marks a goal whose fresh planning round was deferred by a pace hold.
