@@ -99,12 +99,12 @@ func TestLiveParallelLimitRaisesPromptlyAndLowersWithoutCancelling(t *testing.T)
 	manager := New(cfg, newFakeRecipient(), extensions.Runner{})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if !manager.acquireCapacity(ctx) {
+	if !manager.acquireCapacity(ctx, false) {
 		t.Fatal("initial capacity was unavailable")
 	}
 	acquired := make(chan struct{})
 	go func() {
-		if manager.acquireCapacity(ctx) {
+		if manager.acquireCapacity(ctx, false) {
 			close(acquired)
 		}
 	}()
@@ -124,23 +124,23 @@ func TestLiveParallelLimitRaisesPromptlyAndLowersWithoutCancelling(t *testing.T)
 	manager.ApplyRuntimeConfig(cfg)
 	third := make(chan struct{})
 	go func() {
-		if manager.acquireCapacity(ctx) {
+		if manager.acquireCapacity(ctx, false) {
 			close(third)
 		}
 	}()
-	manager.releaseCapacity()
+	manager.releaseCapacity(false)
 	select {
 	case <-third:
 		t.Fatal("lowered limit admitted work while active count remained at the bound")
 	case <-time.After(25 * time.Millisecond):
 	}
-	manager.releaseCapacity()
+	manager.releaseCapacity(false)
 	select {
 	case <-third:
 	case <-time.After(time.Second):
 		t.Fatal("waiting work was not admitted after active work drained below the new bound")
 	}
-	manager.releaseCapacity()
+	manager.releaseCapacity(false)
 }
 
 func TestLiveScanIntervalResetsRunningSchedulerFromAcceptedChange(t *testing.T) {

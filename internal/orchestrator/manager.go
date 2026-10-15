@@ -68,6 +68,10 @@ type Lease struct {
 	// lease, or a review adopted without a claim) and never earns a credit.
 	ReviewRisk             string          `json:"review_risk,omitempty"`
 	TerminalHooksCompleted map[string]bool `json:"terminal_hooks_completed,omitempty"`
+	// Lane is the document's front-matter lane (repairLane for lane: repair
+	// tasks); it decides whether a dispatch may acquire the reserved repair
+	// capacity beyond orchestrator.max_parallel (2026-10-15).
+	Lane string `json:"lane,omitempty"`
 }
 
 type ScheduledCheckpoint struct {
@@ -109,6 +113,8 @@ type Manager struct {
 	capacityMu                  sync.Mutex
 	capacityActive              int
 	capacityLimit               int
+	repairActive                int // lane: repair dispatches holding capacity
+	repairSlots                 int // reserved capacity beyond capacityLimit for lane: repair
 	capacityChanged             chan struct{}
 	Outbox                      *Outbox
 	ownerID                     string
@@ -210,6 +216,15 @@ func (m *Manager) ApplyRuntimeConfig(cfg config.Config) {
 			m.requestScan()
 		}
 	}
+	if previous.Orchestrator.RepairSlots != cfg.Orchestrator.RepairSlots {
+		m.capacityMu.Lock()
+		m.repairSlots = max(0, cfg.Orchestrator.RepairSlots)
+		m.capacityMu.Unlock()
+		m.signalCapacityChanged()
+		if cfg.Orchestrator.RepairSlots > previous.Orchestrator.RepairSlots {
+			m.requestScan()
+		}
+	}
 	if cfg.Orchestrator.Enabled && !wasEnabled {
 		m.requestScan()
 	}
@@ -249,7 +264,7 @@ func New(cfg config.Config, target harness.Harness, hooks extensions.Runner) *Ma
 		parallel = 1
 	}
 	manager := &Manager{
-		Config: cfg, runtimeConfig: cfg, Harness: target, Hooks: hooks, inflight: map[string]bool{}, runtimeJobs: map[string]int{}, controlCancelled: map[string]int{}, operatorStops: map[string]time.Time{}, preemptions: map[string]time.Time{}, capacityLimit: parallel,
+		Config: cfg, runtimeConfig: cfg, Harness: target, Hooks: hooks, inflight: map[string]bool{}, runtimeJobs: map[string]int{}, controlCancelled: map[string]int{}, operatorStops: map[string]time.Time{}, preemptions: map[string]time.Time{}, capacityLimit: parallel, repairSlots: max(0, cfg.Orchestrator.RepairSlots),
 		Outbox:                 &Outbox{Directory: cfg.StatePath("runtime", "outbox")},
 		ownerID:                fmt.Sprintf("%d-%d-%s", os.Getpid(), time.Now().UTC().UnixNano(), randomSuffix()),
 		scanNow:                make(chan struct{}, 1),
@@ -438,11 +453,18 @@ func (m *Manager) signalCapacityChanged() {
 	}
 }
 
-func (m *Manager) acquireCapacity(ctx context.Context) bool {
+func (m *Manager) acquireCapacity(ctx context.Context, isRepair bool) bool {
 	for {
 		m.capacityMu.Lock()
-		if m.capacityActive < m.capacityLimit {
+		limit := m.capacityLimit
+		if isRepair {
+			limit += m.repairSlots
+		}
+		if m.capacityActive < limit && (!isRepair || m.repairActive < m.repairSlots) {
 			m.capacityActive++
+			if isRepair {
+				m.repairActive++
+			}
 			m.capacityMu.Unlock()
 			return true
 		}
@@ -455,10 +477,13 @@ func (m *Manager) acquireCapacity(ctx context.Context) bool {
 	}
 }
 
-func (m *Manager) releaseCapacity() {
+func (m *Manager) releaseCapacity(isRepair bool) {
 	m.capacityMu.Lock()
 	if m.capacityActive > 0 {
 		m.capacityActive--
+	}
+	if isRepair && m.repairActive > 0 {
+		m.repairActive--
 	}
 	m.capacityMu.Unlock()
 	m.signalCapacityChanged()
@@ -619,15 +644,25 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 		if m.isInflight(key) || m.leaseExists(key) || documentLeased {
 			continue
 		}
-		if !m.canAdmitClaim() {
-			// Every slot is taken. Goal work is the top priority: it claims
-			// first (sort order above) and, when it cannot get a slot, a running
-			// standalone task is paused so the next scan can claim it. Idle slots
-			// are never held back for it; they simply run whatever is queued.
+		isRepair := documentIsRepair(document)
+		if !m.canAdmitClaim(isRepair) {
+			// Every slot (including the repair reserve for repair work) is
+			// taken. Goal work is the top priority: it claims first (sort order
+			// above) and, when it cannot get a slot, a running standalone task
+			// is paused so the next scan can claim it. Idle slots are never held
+			// back for it; they simply run whatever is queued.
 			if route.Name == "goals" || documentIsGoalDerived(document) {
 				m.pauseStandaloneForGoalWork(ctx)
+				break
 			}
-			break
+			if isRepair {
+				break
+			}
+			// A normal task cannot claim while the normal slots are full, but a
+			// later lane: repair candidate may still take the reserved slot, so
+			// keep scanning instead of stopping at the first full house
+			// (2026-10-15).
+			continue
 		}
 		if phase == phaseTaskReview && m.harnessSettings().Reviews == config.TaskReviewsNever {
 			target := filepath.Join(filepath.Dir(sourceDir), "todo", candidate.name)
@@ -648,6 +683,9 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 			OwnerID: m.ownerID,
 			File:    target, SourceFile: source, SessionKey: phaseSessionKey(route.Name, documentID, phase, attempt),
 			State: "claiming", Phase: phase, ClaimAttempt: attempt, StartedAt: now, HeartbeatAt: now,
+		}
+		if isRepair {
+			lease.Lane = repairLane
 		}
 		if phase == phaseTaskReview {
 			lease.ImplementerThread, _ = document.FrontMatter["implementation_thread"].(string)
@@ -730,6 +768,9 @@ func (m *Manager) startExistingClaim(ctx context.Context, route workflowRoute, p
 		File:    path, SessionKey: phaseSessionKey(route.Name, id, phase, attempt), State: state,
 		Phase: phase, ClaimAttempt: attempt, StartedAt: now, HeartbeatAt: now,
 	}
+	if documentIsRepair(document) {
+		lease.Lane = repairLane
+	}
 	if phase == phaseTaskReview {
 		lease.ImplementerThread, _ = document.FrontMatter["implementation_thread"].(string)
 	}
@@ -764,6 +805,7 @@ func (m *Manager) ensureRouteDirectories() error {
 
 func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease, recovery bool) {
 	m.setInflight(lease.ID, true)
+	isRepair := lease.Lane == repairLane
 	m.jobs.Add(1)
 	go func() {
 		defer m.jobs.Done()
@@ -774,10 +816,10 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 			// waiting for the periodic recovery scan.
 			m.requestScan()
 		}()
-		if !m.acquireCapacity(ctx) {
+		if !m.acquireCapacity(ctx, isRepair) {
 			return
 		}
-		defer m.releaseCapacity()
+		defer m.releaseCapacity(isRepair)
 		promptPath := route.Prompt
 		if recovery {
 			promptPath = route.RecoveryPrompt
@@ -2740,10 +2782,23 @@ func (m *Manager) isInflight(key string) bool {
 	return m.inflight[key]
 }
 
-func (m *Manager) canAdmitClaim() bool {
+// canAdmitClaim reports whether one more claim fits. A lane: repair claim may
+// use the reserved capacity beyond capacityLimit (orchestrator.repair_slots),
+// so a repair for stuck workers can be claimed while those workers hold every
+// normal slot; a normal claim still stops at capacityLimit. repairActive also
+// bounds concurrent repair dispatches at repairSlots.
+func (m *Manager) canAdmitClaim(isRepair bool) bool {
 	m.capacityMu.Lock()
 	limit := m.capacityLimit
+	repairSlots := m.repairSlots
+	repairActive := m.repairActive
 	m.capacityMu.Unlock()
+	if isRepair {
+		limit += repairSlots
+		if repairActive >= repairSlots {
+			return false
+		}
+	}
 	m.mu.Lock()
 	count := len(m.inflight)
 	m.mu.Unlock()
