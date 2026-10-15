@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -84,15 +85,23 @@ func headlessSecretEnvName(name string) bool {
 // key lock.
 func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string, staff roster.Staff, cfg HarnessConfig, emit core.Emit) (string, bool, error) {
 	kimi := staff.Runner == "kimi"
+	agy := staff.Runner == "agy"
 	runner := "claude"
 	command := h.headlessCommand
-	if kimi {
+	switch {
+	case kimi:
 		runner = "kimi"
 		command = h.headlessKimiCommand
 		if command == "" {
 			command = kimiExecutable()
 		}
-	} else if command == "" {
+	case agy:
+		runner = "agy"
+		command = h.headlessAgyCommand
+		if command == "" {
+			command = agyExecutable()
+		}
+	case command == "":
 		command = "claude"
 	}
 	target := "headless:" + staffName
@@ -123,6 +132,19 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 			resumed = true
 		}
 		args = append(args, staff.Args...)
+	} else if agy {
+		// agy takes the prompt as its print argument and runs with the same permission policy as
+		// the Claude seats (its panes start with --dangerously-skip-permissions).
+		args = []string{"-p", prompt, "--output-format", "stream-json"}
+		if agyConversationExists(previous) {
+			args = append(args, "--conversation", previous)
+		}
+		for _, arg := range claudePermissionArgs(cfg) {
+			if arg == "--dangerously-skip-permissions" {
+				args = append(args, arg)
+			}
+		}
+		args = append(args, staff.Args...)
 	} else {
 		args = []string{"-p", "--output-format", "stream-json", "--verbose"}
 		if path := transcriptPath("claude", previous, cfg.Cwd); path != "" {
@@ -144,7 +166,7 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	if taskID := headlessTaskID(key); taskID != "" {
 		cmd.Env = append(cmd.Env, "WERKRBY_TASK_ID="+taskID)
 	}
-	if !kimi {
+	if !kimi && !agy {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
 	// Claude Code starts tool and MCP children that can inherit stdout. On cancel the whole process
@@ -167,9 +189,10 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	if emit != nil {
 		emit(core.Event{Kind: core.EventStatus, Text: fmt.Sprintf("Headless: running staff %s as %s -p in %s", staffName, runner, cfg.Cwd)})
 	}
-	// Claude Code writes its own Agent Wall log (the run-activity mod); Kimi's is written from its stream.
+	// Claude Code writes its own Agent Wall log (the run-activity mod); Kimi's and agy's are written
+	// from their streams.
 	var activity *headlessActivity
-	if kimi {
+	if kimi || agy {
 		activity = newHeadlessActivity(headlessActivityDir(), cmd.Process.Pid, cfg.Cwd, prompt, kimiModelArg(staff.Args))
 	}
 
@@ -235,6 +258,33 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 			}
 			continue
 		}
+		if agy {
+			if ev, ok := parseAgyLine(line); ok {
+				if ev.sessionID != "" && threadID == "" {
+					threadID = ev.sessionID
+					h.rememberSession(key, threadID)
+				}
+				switch ev.toolState {
+				case "ACTIVE":
+					activity.call(ev.toolID, ev.toolName, ev.toolArgs)
+				case "DONE", "ERROR", "CANCELLED":
+					activity.result(ev.toolID)
+				}
+				if ev.final != nil {
+					if final == nil {
+						time.AfterFunc(headlessResultGrace, procCancel)
+					}
+					final = ev.final
+				}
+			}
+			if readErr != nil {
+				if !errors.Is(readErr, io.EOF) {
+					final = nil
+				}
+				break
+			}
+			continue
+		}
 		var msg headlessResultLine
 		if len(line) > 0 && json.Unmarshal(line, &msg) == nil {
 			if msg.SessionID != "" && threadID == "" {
@@ -294,9 +344,13 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	// A success result stands whatever the exit status: the process may have been killed after
 	// its result, or exited non-zero while shutting down.
 	if final == nil || final.IsError || final.Subtype != "success" {
-		detail := headlessFailureDetail(final, waitErr, stderr.String())
+		detail := headlessFailureDetail(runner, final, waitErr, stderr.String())
+		activity.finish(detail)
 		emitHeadlessError(emit, threadID, detail)
 		return threadID, false, fmt.Errorf("runner turn failed: %s", detail)
+	}
+	if agy {
+		activity.finish("")
 	}
 	finalText := final.Result
 	if emit != nil {
@@ -325,7 +379,7 @@ func (h *Herdr) forgetSession(key string) {
 // Code marked it an error (for example a provider 429 or "Credit balance is too low", which the
 // orchestrator's quota handling reads): a non-error result is the agent's own reply, and quoting it
 // could make a reply that mentions a 429 read as a quota wall.
-func headlessFailureDetail(final *headlessResultLine, waitErr error, stderrTail string) string {
+func headlessFailureDetail(runner string, final *headlessResultLine, waitErr error, stderrTail string) string {
 	if final != nil && final.IsError && strings.TrimSpace(final.Result) != "" {
 		return strings.TrimSpace(final.Result)
 	}
@@ -336,12 +390,12 @@ func headlessFailureDetail(final *headlessResultLine, waitErr error, stderrTail 
 		return tail
 	}
 	if final != nil && final.Subtype != "" {
-		return "claude -p ended with " + final.Subtype
+		return runner + " -p ended with " + final.Subtype
 	}
 	if waitErr != nil {
-		return "claude -p failed: " + waitErr.Error()
+		return runner + " -p failed: " + waitErr.Error()
 	}
-	return "claude -p ended without a result"
+	return runner + " -p ended without a result"
 }
 
 func emitHeadlessError(emit core.Emit, threadID, detail string) {
@@ -495,4 +549,114 @@ func kimiFailureDetail(waitErr error, stderrTail string) string {
 		return tail
 	}
 	return "kimi -p failed: " + waitErr.Error()
+}
+
+// agyExecutable is the agy binary for a headless seat: agy on PATH, else ~/.local/bin/agy.
+func agyExecutable() string {
+	if path, err := exec.LookPath("agy"); err == nil {
+		return path
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidate := filepath.Join(home, ".local", "bin", "agy")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "agy"
+}
+
+var agyConversationPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// agyHome is the Antigravity CLI state directory (~/.gemini/antigravity-cli; AGY_HOME overrides it
+// for tests).
+func agyHome() string {
+	if dir := strings.TrimSpace(os.Getenv("AGY_HOME")); dir != "" {
+		return dir
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".gemini", "antigravity-cli")
+}
+
+// agyConversationExists reports whether agy still has a remembered conversation
+// (<agy home>/conversations/<id>.db).
+func agyConversationExists(id string) bool {
+	if !agyConversationPattern.MatchString(id) {
+		return false
+	}
+	home := agyHome()
+	if home == "" {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(home, "conversations", id+".db"))
+	return err == nil && !info.IsDir()
+}
+
+// agyEvent is what one `agy -p --output-format stream-json` line says.
+type agyEvent struct {
+	sessionID string
+	toolID    string
+	toolName  string
+	toolArgs  string
+	toolState string
+	final     *headlessResultLine
+}
+
+// parseAgyLine reads one agy stream-json line: the conversation id (init, and every later event),
+// a tool step's state, and the closing result (status SUCCESS or ERROR, with response or error).
+// ok is false for a line that is not JSON.
+func parseAgyLine(line []byte) (agyEvent, bool) {
+	var msg struct {
+		Event          string `json:"event"`
+		ConversationID string `json:"conversation_id"`
+		StepUpdate     *struct {
+			ConversationID string `json:"conversation_id"`
+			StepIndex      int    `json:"step_index"`
+			State          string `json:"state"`
+			StepType       string `json:"step_type"`
+			ToolName       string `json:"tool_name"`
+			ToolInfo       struct {
+				Parameters json.RawMessage `json:"parameters"`
+			} `json:"tool_info"`
+		} `json:"step_update"`
+		Result *struct {
+			ConversationID string `json:"conversation_id"`
+			Status         string `json:"status"`
+			Response       string `json:"response"`
+			Error          string `json:"error"`
+		} `json:"result"`
+	}
+	if len(bytes.TrimSpace(line)) == 0 || json.Unmarshal(line, &msg) != nil {
+		return agyEvent{}, false
+	}
+	ev := agyEvent{sessionID: msg.ConversationID}
+	if su := msg.StepUpdate; su != nil {
+		if ev.sessionID == "" {
+			ev.sessionID = su.ConversationID
+		}
+		if su.StepType == "tool" {
+			ev.toolID = strconv.Itoa(su.StepIndex)
+			ev.toolName = su.ToolName
+			ev.toolState = su.State
+			ev.toolArgs = string(su.ToolInfo.Parameters)
+		}
+	}
+	if r := msg.Result; r != nil {
+		if ev.sessionID == "" {
+			ev.sessionID = r.ConversationID
+		}
+		final := &headlessResultLine{Type: "result", SessionID: ev.sessionID, Subtype: "success", Result: strings.TrimSpace(r.Response)}
+		if r.Status != "SUCCESS" {
+			final.Subtype = "error"
+			final.IsError = true
+			final.Result = strings.TrimSpace(r.Error)
+			if final.Result == "" {
+				final.Result = "agy ended with status " + r.Status
+			}
+		}
+		ev.final = final
+	}
+	return ev, true
 }

@@ -571,3 +571,103 @@ func TestKimiFailureDetailIsKimisErrorLine(t *testing.T) {
 		t.Fatalf("kimiFailureDetail = %q", got)
 	}
 }
+
+func agyHeadlessFixture(t *testing.T, fakeAgy string) (*Herdr, string) {
+	t.Helper()
+	root := t.TempDir()
+	state := filepath.Join(root, roster.StateDirName)
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "staff:\n  researcher:\n    runner: agy\n    headless: true\n    args: [\"--model\", \"gemini-4-argon-high\"]\n"
+	if err := os.WriteFile(roster.Path(state), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "fake-agy")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+fakeAgy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGY_HOME", filepath.Join(root, "agy-home"))
+	h, err := NewHerdr(HarnessConfig{Command: filepath.Join(root, "no-such-herdr"), Cwd: root, Sandbox: "danger-full-access", ApprovalPolicy: "never"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.headlessCommand = filepath.Join(root, "no-such-claude")
+	h.headlessAgyCommand = script
+	return h, root
+}
+
+const agyConv = "bb3d5513-a6a9-4be1-afab-f7f71ef1ccf6"
+
+const agyTurnOK = `printf '%s\n' "$@" > "$(dirname "$0")/argv"
+echo $$ > "$(dirname "$0")/pid"
+echo '{"event":"init","conversation_id":"` + agyConv + `","init":{"model":"gemini-4-argon-high"}}'
+echo '{"event":"step_update","step_update":{"conversation_id":"` + agyConv + `","step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"ls"}}}}'
+echo '{"event":"step_update","step_update":{"conversation_id":"` + agyConv + `","step_index":2,"state":"DONE","step_type":"tool","tool_name":"run_command"}}'
+echo '{"event":"result","result":{"conversation_id":"` + agyConv + `","status":"SUCCESS","response":"DONE","num_turns":1}}'
+`
+
+func TestHerdrHeadlessAgyStaffRunsAgyPrint(t *testing.T) {
+	h, root := agyHeadlessFixture(t, agyTurnOK)
+	dir := filepath.Join(root, "activity")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("AGENT_ACTIVITY_DIR", dir)
+	var log eventLog
+	thread, _, err := h.SendWithModel(context.Background(), headlessKey, "do the task", "@researcher", log.emit)
+	if err != nil || thread != agyConv {
+		t.Fatalf("SendWithModel = %q, %v; want %s, nil", thread, err, agyConv)
+	}
+	argv, _ := os.ReadFile(filepath.Join(root, "argv"))
+	got := strings.Join(strings.Split(strings.TrimSpace(string(argv)), "\n"), " ")
+	want := "-p do the task --output-format stream-json --dangerously-skip-permissions --model gemini-4-argon-high"
+	if got != want {
+		t.Fatalf("argv = %q, want %q", got, want)
+	}
+	done := log.done()
+	if len(done) != 1 || done[0].Kind != core.EventFinal || done[0].FinalText == nil || *done[0].FinalText != "DONE" {
+		t.Fatalf("done events = %+v, want one final DONE", done)
+	}
+	pid, _ := os.ReadFile(filepath.Join(root, "pid"))
+	wall, _ := os.ReadFile(filepath.Join(dir, strings.TrimSpace(string(pid))+".log"))
+	for _, line := range []string{"▶ run_command  ls", "✓ run_command", "◼ turn done", "● run finished"} {
+		if !strings.Contains(string(wall), line) {
+			t.Fatalf("wall log lacks %q:\n%s", line, wall)
+		}
+	}
+}
+
+func TestHerdrHeadlessAgyErrorResultFailsTheTurn(t *testing.T) {
+	h, _ := agyHeadlessFixture(t, `echo '{"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"RESOURCE_EXHAUSTED: quota exceeded for gemini-4-argon"}}'
+echo 'error: RESOURCE_EXHAUSTED: quota exceeded for gemini-4-argon' >&2
+exit 1
+`)
+	_, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@researcher", nil)
+	if err == nil || !strings.Contains(err.Error(), "runner turn failed: RESOURCE_EXHAUSTED: quota exceeded") {
+		t.Fatalf("err = %v, want agy's error as the turn failure", err)
+	}
+}
+
+func TestHerdrHeadlessAgyFollowUpResumesItsConversation(t *testing.T) {
+	h, root := agyHeadlessFixture(t, agyTurnOK)
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "first", "@researcher", nil); err != nil {
+		t.Fatal(err)
+	}
+	if argv, _ := os.ReadFile(filepath.Join(root, "argv")); strings.Contains(string(argv), "--conversation") {
+		t.Fatalf("resumed a conversation agy does not have: %q", argv)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "agy-home", "conversations"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "agy-home", "conversations", agyConv+".db"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "second", "@researcher", nil); err != nil {
+		t.Fatal(err)
+	}
+	argv, _ := os.ReadFile(filepath.Join(root, "argv"))
+	if !strings.Contains(strings.ReplaceAll(string(argv), "\n", " "), "--conversation "+agyConv) {
+		t.Fatalf("argv = %q, want --conversation %s", argv, agyConv)
+	}
+}

@@ -234,30 +234,37 @@ func activitySpan(d time.Duration) string {
 // activitySummary says what a tool call is about, never what it carries (no file contents or edits):
 // the command's first line, a path, a pattern, a host or a query.
 func activitySummary(tool, arguments string) string {
-	var args map[string]any
-	if json.Unmarshal([]byte(arguments), &args) != nil {
+	var raw map[string]any
+	if json.Unmarshal([]byte(arguments), &raw) != nil {
 		return ""
 	}
-	str := func(key string) string {
-		if v, ok := args[key].(string); ok {
-			return v
+	// Keys are matched case-insensitively: Kimi and Claude use command/path, agy CommandLine/TargetFile.
+	args := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if text, ok := v.(string); ok {
+			args[strings.ToLower(k)] = text
+		}
+	}
+	str := func(keys ...string) string {
+		for _, key := range keys {
+			if v := activityFirstLine(args[key]); v != "" {
+				return v
+			}
 		}
 		return ""
 	}
-	if c := str("command"); c != "" {
-		return activityClip(activityRedact(activityFirstLine(c)), headlessActivityWidth)
+	if c := str("command", "commandline", "cmd"); c != "" {
+		return activityClip(activityRedact(c), headlessActivityWidth)
 	}
-	if p := str("pattern"); p != "" {
-		where := activityFirstLine(str("path"))
-		if where != "" {
-			where = "  in " + where
+	paths := []string{"path", "file_path", "filepath", "targetfile", "absolutepath", "notebook_path", "searchpath", "directorypath", "searchdirectory"}
+	if p := str("pattern", "includes"); p != "" {
+		if where := str(paths...); where != "" {
+			p += "  in " + where
 		}
-		return activityClip(activityRedact(activityFirstLine(p)+where), headlessActivityWidth)
+		return activityClip(activityRedact(p), headlessActivityWidth)
 	}
-	for _, key := range []string{"path", "file_path", "notebook_path"} {
-		if p := activityFirstLine(str(key)); p != "" {
-			return activityClipLeft(p, headlessActivityWidth)
-		}
+	if p := str(paths...); p != "" {
+		return activityClipLeft(p, headlessActivityWidth)
 	}
 	if u := str("url"); u != "" {
 		if parsed, err := url.Parse(u); err == nil {
@@ -265,10 +272,8 @@ func activitySummary(tool, arguments string) string {
 		}
 		return ""
 	}
-	for _, key := range []string{"query", "description"} {
-		if q := activityFirstLine(str(key)); q != "" {
-			return activityClip(activityRedact(q), headlessActivityWidth)
-		}
+	if q := str("query", "description"); q != "" {
+		return activityClip(activityRedact(q), headlessActivityWidth)
 	}
 	return ""
 }
