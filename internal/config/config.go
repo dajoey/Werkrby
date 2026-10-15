@@ -194,6 +194,8 @@ type Orchestrator struct {
 	// run (pid, start, end, outcome) in the runs store beside the task files, which stay the source
 	// of truth.
 	RunsMode string `yaml:"runs_mode,omitempty"`
+	// WorkWindow keeps one slot free for work Claude cards during working hours (see WorkWindow).
+	WorkWindow WorkWindow `yaml:"work_window,omitempty"`
 }
 
 const (
@@ -470,6 +472,7 @@ func (c Config) Validate() error {
 	if c.Orchestrator.MaxParallel <= 0 {
 		problems = append(problems, "orchestrator.max_parallel must be positive")
 	}
+	problems = append(problems, c.Orchestrator.WorkWindow.validate()...)
 	if minutes := c.Orchestrator.SemanticHeartbeatMinutes; minutes != 0 && (minutes < 5 || minutes > 1440) {
 		problems = append(problems, "orchestrator.semantic_heartbeat_minutes must be 0 (disabled) or between 5 and 1440")
 	}
