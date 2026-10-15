@@ -25,3 +25,20 @@ func TestOpsLaneValidation(t *testing.T) {
 		t.Fatalf("a blank enabled lane is valid, got %v", problems)
 	}
 }
+
+func TestOpsLaneReadsFromTheConfigFile(t *testing.T) {
+	cfg, err := decode([]byte("version: 1\norchestrator:\n  max_parallel: 6\n  ops_lane:\n    enabled: true\n    reserved_slots: 3\n"), "config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lane := cfg.Orchestrator.OpsLane; !lane.Enabled || lane.Reserved() != 3 {
+		t.Fatalf("ops_lane = %+v, want enabled with 3 reserved", lane)
+	}
+	off, err := decode([]byte("version: 1\norchestrator:\n  max_parallel: 6\n"), "config.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if off.Orchestrator.OpsLane.Enabled {
+		t.Fatal("the lane must be off unless the config turns it on")
+	}
+}
