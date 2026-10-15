@@ -1815,10 +1815,12 @@ func (h *Herdr) rosterModelForKey(key string, cfg HarnessConfig) string {
 	if name == "" {
 		return cfg.Model
 	}
+	record := observeRoster(role, key, name)
 	assigned, err := staffing.Assign(stateDir, name, key, time.Now())
 	if assigned == "" || (err != nil && !staffing.Has(assigned)) {
 		return cfg.Model
 	}
+	recordRoster(record, assigned)
 	return staffing.Model(assigned)
 }
 
