@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	_ "time/tzdata" // the window's zone must resolve on a host with no zoneinfo
 )
 
 // WorkWindow keeps capacity free for work Claude cards during working hours.
@@ -16,7 +17,7 @@ type WorkWindow struct {
 	Days          []string `yaml:"days,omitempty"`           // mon..sun; blank means Mon-Fri
 	Start         string   `yaml:"start,omitempty"`          // HH:MM, inclusive; blank means 09:00
 	End           string   `yaml:"end,omitempty"`            // HH:MM, exclusive; blank means 18:00
-	Timezone      string   `yaml:"timezone,omitempty"`       // IANA name; blank means the host's local zone
+	Timezone      string   `yaml:"timezone,omitempty"`       // IANA name; required while enabled
 	ReservedSlots int      `yaml:"reserved_slots,omitempty"` // blank or 0 means 1
 }
 
@@ -64,11 +65,8 @@ func (w WorkWindow) validate() []string {
 	if w.ReservedSlots < 0 {
 		problems = append(problems, "orchestrator.work_window.reserved_slots cannot be negative")
 	}
-	if _, err := clockMinutes(withDefault(w.Start, workWindowDefaultStart)); err != nil {
-		problems = append(problems, "orchestrator.work_window.start must be HH:MM")
-	}
-	if _, err := clockMinutes(withDefault(w.End, workWindowDefaultEnd)); err != nil {
-		problems = append(problems, "orchestrator.work_window.end must be HH:MM")
+	if strings.TrimSpace(w.Timezone) == "" {
+		problems = append(problems, "orchestrator.work_window.timezone is required (an IANA name such as America/New_York)")
 	}
 	if _, _, _, _, err := w.resolve(); err != nil {
 		problems = append(problems, err.Error())

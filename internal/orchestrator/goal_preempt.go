@@ -100,8 +100,12 @@ func (m *Manager) pauseStandaloneForGoalWork(ctx context.Context) {
 		if lease.Route != "tasks" || lease.Phase != phaseTaskImplementation || lease.State != "processing" || !m.isInflight(lease.ID) {
 			continue
 		}
+		// A work Claude card is never the one paused for goal work.
+		if lease.WorkCard {
+			continue
+		}
 		document, readErr := ReadDocument(lease.File)
-		if readErr != nil || documentIsGoalDerived(document) {
+		if readErr != nil || documentIsGoalDerived(document) || documentIsWorkCard(document) {
 			continue
 		}
 		if victim == nil || lease.StartedAt.After(victim.StartedAt) {

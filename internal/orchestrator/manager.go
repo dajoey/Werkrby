@@ -68,6 +68,9 @@ type Lease struct {
 	// lease, or a review adopted without a claim) and never earns a credit.
 	ReviewRisk             string          `json:"review_risk,omitempty"`
 	TerminalHooksCompleted map[string]bool `json:"terminal_hooks_completed,omitempty"`
+	// WorkCard marks a lease whose document was a work Claude card when it was claimed, so the
+	// work window's personal count survives the card's file moving between folders.
+	WorkCard bool `json:"work_card,omitempty"`
 }
 
 type ScheduledCheckpoint struct {
@@ -514,6 +517,17 @@ func (m *Manager) scanOnce(ctx context.Context) error {
 	if err := m.advanceActiveGoals(); err != nil {
 		return err
 	}
+	// Work window: work Claude cards claim before any personal claim in any queue.
+	if m.workWindowActive(cfg) {
+		taskRoute, _ := routeByName("tasks")
+		taskBase := filepath.Dir(cfg.Resolve(taskRoute.Source))
+		if err := m.scanPhaseQueueMode(ctx, taskRoute, filepath.Join(taskBase, "review"), filepath.Join(taskBase, "reviewing"), phaseTaskReview, true); err != nil {
+			return err
+		}
+		if err := m.scanPhaseQueueMode(ctx, taskRoute, cfg.Resolve(taskRoute.Source), cfg.Resolve(taskRoute.Working), phaseTaskImplementation, true); err != nil {
+			return fmt.Errorf("route tasks (work cards): %w", err)
+		}
+	}
 	// Finish before starting: review queues claim free capacity ahead of new
 	// implementation and planning. Implementation-first starved reviews behind
 	// a whole batch (spyjo-observer 2026-09-17: cronaudit-01/02 sat in review
@@ -554,6 +568,12 @@ func (m *Manager) scanOnce(ctx context.Context) error {
 }
 
 func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourceDir, claimedDir, phase string) error {
+	return m.scanPhaseQueueMode(ctx, route, sourceDir, claimedDir, phase, false)
+}
+
+// scanPhaseQueueMode is scanPhaseQueue; workOnly restricts it to work Claude cards, which the
+// work window scans ahead of every other queue.
+func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, sourceDir, claimedDir, phase string, workOnly bool) error {
 	entries, err := os.ReadDir(sourceDir)
 	if os.IsNotExist(err) {
 		return os.MkdirAll(sourceDir, 0o700)
@@ -579,6 +599,9 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 			continue
 		}
 		if !documentDue(document, time.Now(), phase) {
+			continue
+		}
+		if workOnly && !documentIsWorkCard(document) {
 			continue
 		}
 		candidates = append(candidates, queueCandidate{name: entry.Name(), document: document})
@@ -685,6 +708,7 @@ func (m *Manager) scanPhaseQueue(ctx context.Context, route workflowRoute, sourc
 			OwnerID: m.ownerID,
 			File:    target, SourceFile: source, SessionKey: phaseSessionKey(route.Name, documentID, phase, attempt),
 			State: "claiming", Phase: phase, ClaimAttempt: attempt, StartedAt: now, HeartbeatAt: now,
+			WorkCard: documentIsWorkCard(document),
 		}
 		if phase == phaseTaskReview {
 			lease.ImplementerThread, _ = document.FrontMatter["implementation_thread"].(string)
@@ -760,9 +784,16 @@ func (m *Manager) startExistingClaim(ctx context.Context, route workflowRoute, p
 		if deferred {
 			recovery, incrementAttempt = false, true
 		}
-		if m.rosterHeld("start", route, phase, filepath.Base(path), document) {
+		paced := m.rosterHeld("start", route, phase, filepath.Base(path), document)
+		// Work window: a fresh planning round is personal work and may not take the slot kept for
+		// work Claude cards. A recovery of a round already running is never held.
+		windowHeld := !paced && incrementAttempt && m.workWindowHolds(document)
+		if paced || windowHeld {
 			if incrementAttempt && !deferred {
 				note := "Spynel deferred this goal's planning round: its seat is on a quota pace hold. No attempt was spent; planning starts when the hold lifts."
+				if windowHeld {
+					note = "Spynel deferred this goal's planning round: the work window is open and the slot left for personal work is taken. No attempt was spent; planning starts when a slot frees or the window closes."
+				}
 				if err := updateDocumentProgressWithUpdate(path, time.Now().UTC(), note, func(frontMatter map[string]any) {
 					frontMatter[planningHoldDeferredField] = true
 				}); err != nil {
@@ -794,6 +825,7 @@ func (m *Manager) startExistingClaim(ctx context.Context, route workflowRoute, p
 		OwnerID: m.ownerID,
 		File:    path, SessionKey: phaseSessionKey(route.Name, id, phase, attempt), State: state,
 		Phase: phase, ClaimAttempt: attempt, StartedAt: now, HeartbeatAt: now,
+		WorkCard: documentIsWorkCard(document),
 	}
 	if phase == phaseTaskReview {
 		lease.ImplementerThread, _ = document.FrontMatter["implementation_thread"].(string)
@@ -1781,6 +1813,10 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 				// A goal resuming planning on a paced seat stays parked: no move, no note, no
 				// attempt. It is due again every scan and wakes once the hold lifts.
 				if targetStatus == "planning" && m.rosterHeld("wake", route, phaseGoalPlanning, entry.Name(), document) {
+					continue
+				}
+				// Same for the work window: a woken planning round is personal work.
+				if targetStatus == "planning" && m.workWindowHolds(document) {
 					continue
 				}
 			}

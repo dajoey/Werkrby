@@ -64,12 +64,27 @@ func (m *Manager) personalInflight() int {
 		if !running[lease.ID] {
 			continue
 		}
+		if lease.WorkCard {
+			work++
+			continue
+		}
+		// A lease from before the flag existed: fall back to its document.
 		document, readErr := ReadDocument(lease.File)
 		if readErr == nil && documentIsWorkCard(document) {
 			work++
 		}
 	}
 	return len(running) - work
+}
+
+// workWindowHolds reports whether a personal document must wait because the window is open
+// and the slots left for personal work are all taken.
+func (m *Manager) workWindowHolds(document Document) bool {
+	cfg := m.runtimeSnapshot()
+	if documentIsWorkCard(document) || !m.workWindowActive(cfg) {
+		return false
+	}
+	return m.personalInflight() >= m.personalSlotCap(cfg)
 }
 
 // logWorkReserveHold notes that personal work is being held for the reserved

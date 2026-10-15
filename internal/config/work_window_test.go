@@ -156,3 +156,26 @@ orchestrator:
 		t.Fatalf("work_window did not load: %+v", window)
 	}
 }
+
+func TestWorkWindowEnabledNeedsATimezone(t *testing.T) {
+	cfg := Default()
+	cfg.Orchestrator.WorkWindow = WorkWindow{Enabled: true, Start: "09:00", End: "18:00"}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "work_window.timezone") {
+		t.Fatalf("Validate() = %v, want an error naming work_window.timezone", err)
+	}
+}
+
+// An enabled window that cannot be understood stops the workspace from loading rather than
+// silently running without the reserve.
+func TestWorkWindowBadEnabledWindowFailsToLoad(t *testing.T) {
+	_, err := decode([]byte(`version: 1
+orchestrator:
+  work_window:
+    enabled: true
+    timezone: Mars/Olympus
+`), "/tmp/config.yaml")
+	if err == nil || !strings.Contains(err.Error(), "work_window.timezone") {
+		t.Fatalf("decode() = %v, want a load error naming work_window.timezone", err)
+	}
+}

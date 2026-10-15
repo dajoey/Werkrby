@@ -266,3 +266,209 @@ func TestWorkWindowSurvivesConfigFileRoundTripAndHoldsTheSlot(t *testing.T) {
 	assertWorking(t, base, "tasks-personal-a.md", true)
 	assertWorking(t, base, "tasks-personal-b.md", false)
 }
+
+// A running work card is never the task paused to make room for goal work.
+func TestWorkWindowNeverPausesARunningWorkCardForGoalWork(t *testing.T) {
+	manager, finish, todoDir, base := slots(t, 2)
+	setWorkWindow(manager, workWindowFixture(), inWindow(t))
+	probe := newPreemptProbe(manager)
+	writeWorkCardFixture(t, todoDir, "tasks-helm-work-a.md", "2026-10-15T16:00:00Z")
+	writeWorkCardFixture(t, todoDir, "tasks-helm-work-b.md", "2026-10-15T16:01:00Z")
+	scan(t, manager)
+	scan(t, manager)
+	assertWorking(t, base, "tasks-helm-work-a.md", true)
+	assertWorking(t, base, "tasks-helm-work-b.md", true)
+
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-late.md", "2026-10-15T17:00:00Z")
+	scan(t, manager)
+	probe.expectNoCall(t, "both slots hold work cards; goal work must wait")
+	assertWorking(t, base, "tasks-goal-late.md", false)
+	finish()
+}
+
+// Work cards claim before personal work in every queue, not only inside their own:
+// the only slot goes to the work card in todo/, not to a personal task in review/.
+func TestWorkWindowWorkCardBeatsAPersonalReviewForTheOnlySlot(t *testing.T) {
+	cfg, _, manager, finish := claimOrderTestManager(t)
+	setWorkWindow(manager, workWindowFixture(), inWindow(t))
+	todoDir := cfg.Resolve(workflowRoutes()[0].Source)
+	base := filepath.Dir(todoDir)
+	review := writeClaimFixture(t, todoDir, "tasks-personal-review.md", "2026-09-01T00:00:00Z")
+	if err := moveDocument(review, filepath.Join(base, "review", "tasks-personal-review.md"), "review", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkCardFixture(t, todoDir, "tasks-helm-work-card.md", "2026-10-15T16:00:00Z")
+	scan(t, manager)
+	assertWorking(t, base, "tasks-helm-work-card.md", true)
+	if _, err := os.Stat(filepath.Join(base, "review", "tasks-personal-review.md")); err != nil {
+		t.Fatalf("the personal review took the slot ahead of the work card: %v", err)
+	}
+	finish()
+}
+
+// The slot that frees while a work card waits goes to the work card, and personal
+// work stays out until the personal count is under its allowance.
+func TestWorkWindowFreedSlotGoesToTheWorkCard(t *testing.T) {
+	manager, finish, todoDir, base := slots(t, 2)
+	setWorkWindow(manager, workWindowFixture(), outsideWindow(t))
+	writeClaimFixture(t, todoDir, "tasks-personal-a.md", "2026-10-15T10:00:00Z")
+	writeClaimFixture(t, todoDir, "tasks-personal-b.md", "2026-10-15T10:01:00Z")
+	scan(t, manager)
+	scan(t, manager)
+	setWorkWindow(manager, workWindowFixture(), inWindow(t))
+	writeWorkCardFixture(t, todoDir, "tasks-helm-work-card.md", "2026-10-15T16:00:00Z")
+	writeClaimFixture(t, todoDir, "tasks-personal-c.md", "2026-10-15T10:02:00Z")
+	scan(t, manager)
+	assertWorking(t, base, "tasks-helm-work-card.md", false)
+
+	// personal-a finishes: its lease and in-flight mark go away.
+	leases, err := manager.loadLeases()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, lease := range leases {
+		if filepath.Base(lease.File) == "tasks-personal-a.md" {
+			manager.setInflight(lease.ID, false)
+			_ = os.Remove(manager.leasePath(lease.ID))
+			if err := moveDocument(lease.File, filepath.Join(base, "done", "tasks-personal-a.md"), "done", time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	scan(t, manager)
+	assertWorking(t, base, "tasks-helm-work-card.md", true)
+	assertWorking(t, base, "tasks-personal-c.md", false)
+	finish()
+}
+
+// A running work card still counts as work after the agent moves its file out of working/.
+func TestWorkWindowCountsARunningWorkCardAsWorkWhenItsFileMoves(t *testing.T) {
+	manager, finish, todoDir, base := slots(t, 3)
+	setWorkWindow(manager, workWindowFixture(), inWindow(t))
+	writeWorkCardFixture(t, todoDir, "tasks-helm-work-card.md", "2026-10-15T16:00:00Z")
+	scan(t, manager)
+	assertWorking(t, base, "tasks-helm-work-card.md", true)
+	if got := manager.personalInflight(); got != 0 {
+		t.Fatalf("personalInflight = %d with only a work card running, want 0", got)
+	}
+	if err := moveDocument(filepath.Join(base, "working", "tasks-helm-work-card.md"), filepath.Join(base, "review", "tasks-helm-work-card.md"), "review", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if got := manager.personalInflight(); got != 0 {
+		t.Fatalf("personalInflight = %d after the work card's file moved to review/, want 0", got)
+	}
+	finish()
+}
+
+func TestDocumentIsWorkCardMarker(t *testing.T) {
+	cases := []struct {
+		value any
+		want  bool
+	}{{true, true}, {"true", true}, {" TRUE ", true}, {false, false}, {"false", false}, {"yes", false}, {nil, false}}
+	for _, tc := range cases {
+		document := Document{FrontMatter: map[string]any{}}
+		if tc.value != nil {
+			document.FrontMatter["claude_only"] = tc.value
+		}
+		if got := documentIsWorkCard(document); got != tc.want {
+			t.Errorf("claude_only %#v: documentIsWorkCard = %v, want %v", tc.value, got, tc.want)
+		}
+	}
+	if documentIsWorkCard(Document{FrontMatter: map[string]any{}}) {
+		t.Error("a document without claude_only is not a work card")
+	}
+}
+
+// A goal due to resume planning does not start while the slots left for personal work are
+// taken; it stays in waiting/ untouched and wakes once a slot frees.
+func TestWorkWindowHoldsAWokenGoalForTheReservedSlot(t *testing.T) {
+	fx := newGoalHoldFixture(t)
+	fx.manager.capacityMu.Lock()
+	fx.manager.capacityLimit = 2
+	fx.manager.capacityMu.Unlock()
+	setWorkWindow(fx.manager, workWindowFixture(), inWindow(t))
+	fx.manager.setInflight("personal-running", true)
+
+	path, err := Create(fx.cfg, "goals", "woken goal waits for the reserved slot", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(path)
+	editFrontMatter(t, path, func(fm map[string]any) {
+		fm["planning_attempt"] = 1
+		fm["resume_status"] = "planning"
+		fm["wake_at"] = time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)
+	})
+	waiting := filepath.Join(fx.goalsBase, "waiting", name)
+	if err := moveDocument(path, waiting, "waiting", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(waiting)
+
+	if err := fx.manager.wakeWaitingDocuments(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fx.manager.Wait()
+	after, err := os.ReadFile(waiting)
+	if err != nil {
+		t.Fatalf("the held goal left waiting/: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Error("the held goal's document was rewritten")
+	}
+	if got := fx.sessions(); got != 0 {
+		t.Fatalf("a planning session started on the reserved slot: %d", got)
+	}
+
+	fx.manager.setInflight("personal-running", false)
+	if err := fx.manager.wakeWaitingDocuments(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fx.manager.Wait()
+	if got := fx.sessions(); got != 1 {
+		t.Fatalf("planning did not start once a slot freed: %d sessions", got)
+	}
+	if got := fx.planningAttempt(t, "planning", name); got != 2 {
+		t.Fatalf("planning_attempt = %d after the woken start, want 2", got)
+	}
+}
+
+// A goal review that ends in planning is a fresh round: held for the reserved slot, spends no
+// attempt, and starts as a fresh round once a slot frees.
+func TestWorkWindowHoldsGoalReplanningForTheReservedSlot(t *testing.T) {
+	fx := newGoalHoldFixture(t)
+	fx.manager.capacityMu.Lock()
+	fx.manager.capacityLimit = 2
+	fx.manager.capacityMu.Unlock()
+	setWorkWindow(fx.manager, workWindowFixture(), inWindow(t))
+	fx.manager.setInflight("personal-running", true)
+	name := fx.finishedGoalReview(t)
+
+	for i := 0; i < 2; i++ {
+		if err := fx.manager.reconcileTransitions(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if err := fx.manager.recoverOrphanClaims(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fx.manager.Wait()
+	if got := fx.sessions(); got != 0 {
+		t.Fatalf("a planning session started on the reserved slot: %d", got)
+	}
+	if got := fx.planningAttempt(t, "planning", name); got != 1 {
+		t.Fatalf("planning_attempt changed while held: %d", got)
+	}
+
+	fx.manager.setInflight("personal-running", false)
+	if err := fx.manager.recoverOrphanClaims(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fx.manager.Wait()
+	if got := fx.sessions(); got != 1 {
+		t.Fatalf("planning did not start once a slot freed: %d sessions", got)
+	}
+	if got := fx.planningAttempt(t, "planning", name); got != 2 {
+		t.Fatalf("the deferred round did not spend its attempt when it started: planning_attempt = %d", got)
+	}
+}
