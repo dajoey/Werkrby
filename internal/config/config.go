@@ -190,12 +190,26 @@ type Orchestrator struct {
 	// AdmissionMode: "off" (the default; empty means off) or "shadow", where every claim site also asks
 	// internal/admission and logs its verdict beside the claim outcome without changing it.
 	AdmissionMode string `yaml:"admission_mode,omitempty"`
+	// RunsMode: "off" (the default; empty means off) or "shadow", where every dispatch also records a
+	// run (pid, start, end, outcome) in the runs store beside the task files, which stay the source
+	// of truth.
+	RunsMode string `yaml:"runs_mode,omitempty"`
 }
 
 const (
 	AdmissionModeOff    = "off"
 	AdmissionModeShadow = "shadow"
+	RunsModeOff         = "off"
+	RunsModeShadow      = "shadow"
 )
+
+// RunsModeOrOff is the configured runs mode, with the unset default made explicit.
+func (o Orchestrator) RunsModeOrOff() string {
+	if o.RunsMode == "" {
+		return RunsModeOff
+	}
+	return o.RunsMode
+}
 
 // AdmissionModeOrOff is the configured admission mode, with the unset default made explicit.
 func (o Orchestrator) AdmissionModeOrOff() string {
@@ -463,6 +477,11 @@ func (c Config) Validate() error {
 	case "", AdmissionModeOff, AdmissionModeShadow:
 	default:
 		problems = append(problems, "orchestrator.admission_mode must be off or shadow")
+	}
+	switch c.Orchestrator.RunsMode {
+	case "", RunsModeOff, RunsModeShadow:
+	default:
+		problems = append(problems, "orchestrator.runs_mode must be off or shadow")
 	}
 	switch c.Orchestrator.TaskNotifications {
 	case TaskNotificationsOff, TaskNotificationsDecide, TaskNotificationsAlways:
