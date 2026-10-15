@@ -106,11 +106,23 @@ func (r *runRecorder) endLocked(outcome runs.Outcome) {
 	}
 }
 
+// retrying forgets a terminal error seen during a send the dispatch is about to retry in place:
+// that refusal is not how the run ended.
+func (r *runRecorder) retrying() {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pendingErr = ""
+}
+
 // terminal records a terminal event of the turn.
 func (r *runRecorder) terminal(ctx context.Context, lease Lease, event core.Event) {
 	if r == nil {
 		return
 	}
+	defer r.m.runsRecover()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	switch {
@@ -129,6 +141,7 @@ func (r *runRecorder) sent(ctx context.Context, lease Lease, err error) {
 	if r == nil {
 		return
 	}
+	defer r.m.runsRecover()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sendReturned = true

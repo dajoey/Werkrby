@@ -171,6 +171,74 @@ func TestRunsShadowEndsAnAsyncTurnOnItsTerminalEvent(t *testing.T) {
 	}
 }
 
+// retryHarness refuses the first send as a transient provider refusal (the error event comes with
+// the error, as real harnesses emit it) and starts the retry like an ACP seat: Send returns, the
+// terminal event comes later.
+type retryHarness struct {
+	*fakeHarness
+	release chan core.Event
+	sends   int
+}
+
+func (h *retryHarness) Send(_ context.Context, key, _ string, emit core.Emit) (string, bool, error) {
+	h.sends++
+	if h.sends == 1 {
+		err := errors.New("prompt_not_delivered")
+		emit(core.Event{Kind: core.EventError, Text: err.Error(), Done: true})
+		return "", false, err
+	}
+	go func() { emit(<-h.release) }()
+	return "thread-" + key, false, nil
+}
+
+// The refusal an in-place retry recovers from is not how the run ended: the retry's own terminal
+// event is.
+func TestRunsShadowRetryInPlaceDoesNotEndTheRunOnTheRefusal(t *testing.T) {
+	f := newShadowFixture(t, "")
+	f.cfg.Orchestrator.RunsMode = "shadow"
+	name := f.newTask("retried", nil)
+	h := &retryHarness{fakeHarness: newFakeRecipient(), release: make(chan core.Event, 1)}
+	m := New(f.cfg, h, extensions.Runner{Directory: filepath.Join(t.TempDir(), "missing")})
+	t.Cleanup(m.Wait)
+	f.scanTodo(m)
+	m.Wait()
+	if h.sends != 2 {
+		t.Fatalf("sends = %d, want the refusal and one retry", h.sends)
+	}
+	if all := f.runsOf(name); len(all) != 1 || all[0].Outcome != runs.Running {
+		t.Fatalf("runs while the retry runs = %+v, want one open run", all)
+	}
+	h.release <- core.Event{Kind: core.EventFinal, Text: "done", Done: true}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		all := f.runsOf(name)
+		if len(all) == 1 && all[0].Outcome == runs.OK {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("runs after the retry's final event = %+v, want one ok run", all)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A turn that emitted its final event and then failed on the way back completed: the first
+// terminal event ends the run.
+func TestRunsShadowFinalThenSendErrorIsOK(t *testing.T) {
+	f := newShadowFixture(t, "")
+	f.cfg.Orchestrator.RunsMode = "shadow"
+	name := f.newTask("final then error", nil)
+	h := newFakeRecipient()
+	h.sendErrs = []error{errors.New("write reply: broken pipe")}
+	h.sendErrFinal = true
+	m := f.managerWith(h)
+	f.scanTodo(m)
+	m.Wait()
+	if all := f.runsOf(name); len(all) != 1 || all[0].Outcome != runs.OK {
+		t.Fatalf("runs = %+v, want one ok run", all)
+	}
+}
+
 // A run the previous owner never saw end is lost when the next owner opens the store, and
 // costs no attempt.
 func TestRunsShadowClosesTheOpenRunsOfAPreviousOwner(t *testing.T) {

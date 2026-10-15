@@ -105,7 +105,9 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	dsn := "file:" + filepath.ToSlash(path) + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(wal)"
+	// A short busy wait: a writer in another process must not hold a dispatch up, and the shadow
+	// writer logs and drops a record it cannot write.
+	dsn := "file:" + filepath.ToSlash(path) + "?_pragma=busy_timeout(1000)&_pragma=journal_mode(wal)"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, err

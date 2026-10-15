@@ -994,6 +994,7 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 				// retry is the same turn, so hand the lease back to live work
 				// before dispatching it.
 				m.restoreLeaseForRetry(lease.ID, recovery)
+				run.retrying()
 			}
 			lifecycleMu.Unlock()
 			if !eligible {
