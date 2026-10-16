@@ -118,7 +118,7 @@ type Manager struct {
 	preemptions                 map[string]time.Time // lease id -> when it was paused for goal work; consumed by recordError
 	workClock                   func() time.Time     // test clock for the work window; nil means time.Now
 	workReserveLoggedAt         time.Time            // last "holding for the reserved slot" log line
-	opsWaiting                  atomic.Bool          // an ops document is waiting for a slot (set once per scan)
+	opsWaitingCount             atomic.Int64         // ops documents waiting for a slot (set once per scan, lowered per claim)
 	opsLaneLoggedAt             time.Time            // last "holding goal work for the ops lane" log line
 	jobs                        sync.WaitGroup
 	capacityMu                  sync.Mutex
@@ -787,6 +787,7 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 		if personalClaims >= 0 && !documentIsWorkCard(document) {
 			personalClaims++
 		}
+		m.opsClaimed(route, document)
 		lease.State = "processing"
 		lease.SourceFile = ""
 		if err := m.saveLease(lease); err != nil {

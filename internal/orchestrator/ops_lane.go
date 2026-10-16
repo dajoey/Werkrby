@@ -94,23 +94,35 @@ func (m *Manager) opsInflight() int {
 	return count
 }
 
-// refreshOpsWaiting records, once per scan, whether an ops document is waiting for a slot.
+// refreshOpsWaiting records, once per scan, how many ops documents are waiting for a slot. The
+// claim loop takes one off as it claims each, so the hold ends with the last waiting document.
 func (m *Manager) refreshOpsWaiting(cfg config.Config) {
 	if m.opsLaneReserve(cfg) == 0 {
-		m.opsWaiting.Store(false)
+		m.opsWaitingCount.Store(0)
 		return
 	}
-	m.opsWaiting.Store(m.opsDocumentWaiting(cfg))
+	m.opsWaitingCount.Store(int64(m.opsDocumentsWaiting(cfg)))
 }
 
-// opsDocumentWaiting reports whether any standalone task in todo/ or review/ could be claimed
+// opsClaimed notes that the claim loop took a standalone document off the waiting count.
+func (m *Manager) opsClaimed(route workflowRoute, document Document) {
+	if documentSlotClass(route, document) != slotClassOps {
+		return
+	}
+	if m.opsWaitingCount.Add(-1) < 0 {
+		m.opsWaitingCount.Store(0)
+	}
+}
+
+// opsDocumentsWaiting counts the standalone tasks in todo/ and review/ that could be claimed
 // now. A document that is not yet due, or whose seat is held, is not waiting: holding goal work
 // for it would leave slots idle.
-func (m *Manager) opsDocumentWaiting(cfg config.Config) bool {
+func (m *Manager) opsDocumentsWaiting(cfg config.Config) int {
 	route, ok := routeByName("tasks")
 	if !ok {
-		return false
+		return 0
 	}
+	waiting := 0
 	todo := cfg.Resolve(route.Source)
 	base := filepath.Dir(todo)
 	now := time.Now()
@@ -142,20 +154,23 @@ func (m *Manager) opsDocumentWaiting(cfg config.Config) bool {
 			if leased, err := m.claimBlockedByLease(route, queue.phase, entry.Name(), leaseID(route.Name+":"+queue.phase, documentID)); err != nil || leased {
 				continue
 			}
-			return true
+			waiting++
 		}
 	}
-	return false
+	return waiting
 }
 
 // opsLaneHolds reports whether a claim in this route and document must wait because ops work is
 // waiting and taking the slot would leave the lane short of its reserve.
 func (m *Manager) opsLaneHolds(route workflowRoute, document Document) bool {
-	if documentSlotClass(route, document) != slotClassGoal || !m.opsWaiting.Load() {
+	waiting := int(m.opsWaitingCount.Load())
+	if documentSlotClass(route, document) != slotClassGoal || waiting == 0 {
 		return false
 	}
+	// The lane is short by what it still lacks of its reserve, but never by more than the number
+	// of documents that are waiting to fill it.
 	reserve := m.opsLaneReserve(m.runtimeSnapshot())
-	shortfall := reserve - m.opsInflight()
+	shortfall := min(reserve-m.opsInflight(), waiting)
 	if shortfall <= 0 {
 		return false
 	}
@@ -165,6 +180,11 @@ func (m *Manager) opsLaneHolds(route workflowRoute, document Document) bool {
 	m.mu.Lock()
 	count := len(m.inflight)
 	m.mu.Unlock()
+	// While the work window is open the slot kept for work Claude cards is not the lane's to use:
+	// ops and goal work share the personal slots, so the reserve is counted inside them.
+	if cfg := m.runtimeSnapshot(); m.workWindowActive(cfg) {
+		limit, count = m.personalSlotCap(cfg), m.personalInflight()
+	}
 	return count+1+shortfall > limit
 }
 

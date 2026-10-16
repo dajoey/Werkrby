@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/agent0ai/spynel/internal/config"
+	rosterpkg "github.com/agent0ai/spynel/internal/roster"
 )
 
 // Goal work claims first, so a goal that files more tasks than it settles used to hold every slot
@@ -263,10 +264,11 @@ func TestOpsLaneCountsAnOpsTaskWaitingForReview(t *testing.T) {
 	}
 	writeClaimFixture(t, reviewDir, "tasks-ops-review.md", "2026-10-15T09:00:00Z")
 	writeGoalDerivedFixture(t, todoDir, "tasks-goal-b.md", "2026-10-15T11:00:00Z")
-	scan(t, manager)
-	if !manager.opsWaiting.Load() {
-		t.Fatal("an ops task in review/ was not counted as waiting")
+	manager.refreshOpsWaiting(manager.runtimeSnapshot())
+	if got := manager.opsWaitingCount.Load(); got != 1 {
+		t.Fatalf("waiting ops count = %d, want 1: an ops task in review/ was not counted as waiting", got)
 	}
+	scan(t, manager)
 	assertWorking(t, base, "tasks-goal-b.md", false)
 	finish()
 }
@@ -377,4 +379,144 @@ func TestOpsLaneKeepsAWokenGoalWaitingForWaitingOps(t *testing.T) {
 	if got := fx.sessions(); got != 1 {
 		t.Fatalf("planning did not start once the ops task left: %d sessions", got)
 	}
+}
+
+func assertOpsWaiting(t *testing.T, manager *Manager, want int64) {
+	t.Helper()
+	manager.refreshOpsWaiting(manager.runtimeSnapshot())
+	if got := manager.opsWaitingCount.Load(); got != want {
+		t.Fatalf("waiting ops count = %d, want %d", got, want)
+	}
+}
+
+// The reserve ends the moment the last waiting ops task is claimed: with one ops task waiting the
+// lane is short one slot, not two, so a goal task that sorts ahead of it takes the other slot in
+// the same scan instead of idling it for one interval.
+func TestOpsLaneHoldsOnlyAsManySlotsAsOpsTasksWait(t *testing.T) {
+	manager, finish, todoDir, base := slots(t, 3)
+	setOpsLane(manager, opsLaneOn(2))
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-a.md", "2026-10-15T10:00:00Z")
+	scan(t, manager)
+	assertWorking(t, base, "tasks-goal-a.md", true)
+
+	writeClaimFixture(t, todoDir, "tasks-ops-a.md", "2026-10-15T12:00:00Z")
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-b.md", "2026-10-15T11:00:00Z")
+	scan(t, manager)
+	assertWorking(t, base, "tasks-ops-a.md", true)
+	assertWorking(t, base, "tasks-goal-b.md", true)
+	finish()
+}
+
+// A waiting ops task claimed earlier in the scan (its review, which scans before implementation)
+// lowers the count, so goal work later in the same scan is not held for a task that is running.
+func TestOpsLaneClaimLowersTheWaitingCountWithinTheScan(t *testing.T) {
+	manager, finish, todoDir, base := slots(t, 3)
+	setOpsLane(manager, opsLaneOn(2))
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-a.md", "2026-10-15T10:00:00Z")
+	scan(t, manager)
+	assertWorking(t, base, "tasks-goal-a.md", true)
+
+	reviewDir := filepath.Join(base, "review")
+	if err := os.MkdirAll(reviewDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeClaimFixture(t, reviewDir, "tasks-ops-review.md", "2026-10-15T09:00:00Z")
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-b.md", "2026-10-15T11:00:00Z")
+	scan(t, manager)
+	if _, err := os.Stat(filepath.Join(base, "reviewing", "tasks-ops-review.md")); err != nil {
+		t.Fatalf("the ops review was not claimed: %v", err)
+	}
+	assertWorking(t, base, "tasks-goal-b.md", true)
+	assertOpsWaiting(t, manager, 0)
+	finish()
+}
+
+// With the work window open the lane still counts and releases the same way.
+func TestOpsLaneWorksInsideAnOpenWorkWindow(t *testing.T) {
+	manager, finish, todoDir, base := slots(t, 4)
+	setWorkWindow(manager, workWindowFixture(), inWindow(t))
+	setOpsLane(manager, opsLaneOn(2))
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-a.md", "2026-10-15T10:00:00Z")
+	scan(t, manager)
+	assertWorking(t, base, "tasks-goal-a.md", true)
+
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-b.md", "2026-10-15T11:00:00Z")
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-c.md", "2026-10-15T11:01:00Z")
+	writeGoalDerivedFixture(t, todoDir, "tasks-goal-d.md", "2026-10-15T11:02:00Z")
+	writeClaimFixture(t, todoDir, "tasks-ops-a.md", "2026-10-15T12:00:00Z")
+	assertOpsWaiting(t, manager, 1)
+	scan(t, manager)
+	assertWorking(t, base, "tasks-ops-a.md", true)
+	assertWorking(t, base, "tasks-goal-b.md", true)
+	assertWorking(t, base, "tasks-goal-c.md", false)
+	assertWorking(t, base, "tasks-goal-d.md", false)
+	assertOpsWaiting(t, manager, 0)
+	finish()
+}
+
+// A waiting ops task whose seat is on a pace hold cannot be claimed, so it is not waiting and goal
+// work is not held for it. The held ops task is a review (its own seat); the goal tasks implement.
+func TestOpsLaneIgnoresARosterHeldOpsTask(t *testing.T) {
+	fx := newGoalHoldFixture(t)
+	fx.manager.capacityLimit = 3
+	setOpsLane(fx.manager, opsLaneOn(2))
+	roster := `
+staff:
+  implementer: {runner: opencode}
+  reviewer: {runner: pi}
+roles:
+  task_implementation: implementer
+  task_review: reviewer
+`
+	if err := os.WriteFile(rosterpkg.Path(fx.cfg.StatePath()), []byte(roster), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	todoDir := fx.cfg.Resolve(workflowRoutes()[0].Source)
+	base := filepath.Dir(todoDir)
+	reviewDir := filepath.Join(base, "review")
+	if err := os.MkdirAll(reviewDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeClaimFixture(t, reviewDir, "tasks-ops-review.md", "2026-10-15T09:00:00Z")
+	assertOpsWaiting(t, fx.manager, 1)
+
+	fx.writeHolds("reviewer")
+	assertOpsWaiting(t, fx.manager, 0)
+	for i, name := range []string{"tasks-goal-a.md", "tasks-goal-b.md", "tasks-goal-c.md"} {
+		writeGoalDerivedFixture(t, todoDir, name, "2026-10-15T10:0"+string(rune('0'+i))+":00Z")
+	}
+	if err := fx.manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"tasks-goal-a.md", "tasks-goal-b.md", "tasks-goal-c.md"} {
+		assertWorking(t, base, name, true)
+	}
+	if _, err := os.Stat(filepath.Join(reviewDir, "tasks-ops-review.md")); err != nil {
+		t.Fatalf("the held review left review/: %v", err)
+	}
+}
+
+// A lane: repair task has its own reserved capacity: it is not ops work waiting for a slot, so it
+// neither holds goal work back nor shrinks the slots goal tasks may fill.
+func TestOpsLaneIgnoresARepairTask(t *testing.T) {
+	manager, finish, todoDir, base := slots(t, 3)
+	setOpsLane(manager, opsLaneOn(2))
+	path := writeClaimFixture(t, todoDir, "tasks-repair-a.md", "2026-10-15T09:00:00Z")
+	document, err := ReadDocument(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	document.FrontMatter["lane"] = "repair"
+	if err := WriteDocument(path, document); err != nil {
+		t.Fatal(err)
+	}
+	for i, name := range []string{"tasks-goal-a.md", "tasks-goal-b.md", "tasks-goal-c.md"} {
+		writeGoalDerivedFixture(t, todoDir, name, "2026-10-15T10:0"+string(rune('0'+i))+":00Z")
+	}
+	assertOpsWaiting(t, manager, 0)
+	scan(t, manager)
+	for _, name := range []string{"tasks-goal-a.md", "tasks-goal-b.md", "tasks-goal-c.md"} {
+		assertWorking(t, base, name, true)
+	}
+	finish()
 }
