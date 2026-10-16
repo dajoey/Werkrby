@@ -673,7 +673,7 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 			return candidates[i].name < candidates[j].name
 		}
 	})
-	personalClaims := -1 // in-flight personal claims; counted on first use while the window is open
+	personalClaims := -1        // in-flight personal claims; counted on first use while the window is open
 	goalPauseAttempted := false // one standalone pause per scan, as the break below used to promise
 	for _, candidate := range candidates {
 		source := filepath.Join(sourceDir, candidate.name)
@@ -3164,6 +3164,10 @@ func isQuotaError(err error) bool {
 		strings.Contains(msg, "quota limit") ||
 		strings.Contains(msg, "resource_exhausted") ||
 		strings.Contains(msg, "too many requests") ||
+		// "Individual quota reached. Please upgrade your subscription ..."
+		// is Anthropic's subscription wall (seen live 2026-10-16); without
+		// this line those walls burn RecoveryCount and terminally fail tasks.
+		strings.Contains(msg, "quota reached") ||
 		// A prepaid API credit that is spent ("Credit balance is too low") walls the seat too.
 		strings.Contains(msg, "credit balance is too low") ||
 		strings.Contains(msg, "credit balance too low") ||
@@ -3187,6 +3191,13 @@ func resolveRunnerName(document Document, lease Lease) string {
 var (
 	rfc3339Regex     = regexp.MustCompile(`\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})`)
 	relativeSecRegex = regexp.MustCompile(`resets? in (\d+)\s*(?:s|sec|seconds?)`)
+	// relativeDurRegex captures a composite reset window such as the
+	// Anthropic subscription quota's "Resets in 4h10m9s" (seen live
+	// 2026-10-16: 360 dispatch errors and one terminal task failure because
+	// relativeSecRegex cannot read NhNmNs and isQuotaError did not know the
+	// message).
+	relativeDurRegex = regexp.MustCompile(`resets? in ((?:\d+(?:\.\d+)?[hms][\s]*)+)`)
+	relativeDurToken = regexp.MustCompile(`(\d+(?:\.\d+)?)([hms])`)
 	runnerPlanMap    = map[string]string{
 		"opencode": "opencode_go",
 		"kimi":     "kimi_coding",
@@ -3301,7 +3312,37 @@ func parseQuotaResetTime(errMsg string, now time.Time) (time.Time, bool) {
 			return now.Add(time.Duration(sec) * time.Second), true
 		}
 	}
+	if m := relativeDurRegex.FindStringSubmatch(strings.ToLower(errMsg)); len(m) == 2 {
+		if d, ok := compositeDuration(m[1]); ok && d > 0 {
+			return now.Add(d), true
+		}
+	}
 	return time.Time{}, false
+}
+
+// compositeDuration sums contiguous NhNmNs tokens (any order, at least one,
+// optional whitespace between). A span holding anything else is refused so a
+// coincidental "resets in 4..." next to unrelated text never wakes the task
+// at a wrong time.
+func compositeDuration(span string) (time.Duration, bool) {
+	unitSeconds := map[string]float64{"h": 3600, "m": 60, "s": 1}
+	var total float64
+	consumed, tokens := 0, 0
+	for _, loc := range relativeDurToken.FindAllStringSubmatchIndex(span, -1) {
+		if strings.TrimSpace(span[consumed:loc[0]]) != "" {
+			return 0, false
+		}
+		value, err := strconv.ParseFloat(span[loc[2]:loc[3]], 64)
+		if err != nil {
+			return 0, false
+		}
+		total += value * unitSeconds[span[loc[4]:loc[5]]]
+		consumed, tokens = loc[1], tokens+1
+	}
+	if tokens == 0 || strings.TrimSpace(span[consumed:]) != "" {
+		return 0, false
+	}
+	return time.Duration(total * float64(time.Second)), true
 }
 
 // readSnapshotResetTime reads the wake time for a usage plan from the quota

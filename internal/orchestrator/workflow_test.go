@@ -1595,6 +1595,59 @@ func TestQuotaErrorParksUntilResetWithoutSpendingAttempt(t *testing.T) {
 		}
 	}
 
+	// Variant 4: Anthropic subscription wall — "Individual quota reached ...
+	// Resets in 4h10m9s" (exact bytes from the 2026-10-16 incident: 360
+	// dispatch errors and one terminal task failure because isQuotaError did
+	// not know the message and the composite NhNmNs window could not be
+	// parsed). Must park like any other quota wall, wake at the composite
+	// reset, and spend no attempt.
+	{
+		cfg, fake, manager := workflowTestManager(t)
+		route := workflowRoutes()[0]
+		task, err := Create(cfg, "tasks", "task individual quota reached", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		name := filepath.Base(task)
+		base := filepath.Dir(cfg.Resolve(route.Source))
+		editFrontMatter(t, task, func(fm map[string]any) {
+			fm["agent"] = "kimi"
+		})
+
+		origSnapshot := usageSnapshotPath
+		usageSnapshotPath = filepath.Join(t.TempDir(), "nonexistent.json")
+		defer func() { usageSnapshotPath = origSnapshot }()
+
+		before := time.Now().UTC()
+		fake.sendErrs = []error{errors.New("runner turn failed: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 4h10m9s.")}
+		scanAndWait(t, manager)
+		after := time.Now().UTC()
+
+		waitingPath := filepath.Join(base, "waiting", name)
+		doc, err := ReadDocument(waitingPath)
+		if err != nil {
+			t.Fatalf("task was not parked in waiting/ (quota message misclassified): %v", err)
+		}
+		if doc.FrontMatter["status"] != "waiting" {
+			t.Fatalf("status = %v, want waiting", doc.FrontMatter["status"])
+		}
+		resetStr, _ := doc.FrontMatter["quota_reset_at"].(string)
+		parsedReset, err := time.Parse(time.RFC3339, resetStr)
+		if err != nil {
+			t.Fatalf("unparseable quota_reset_at: %v", resetStr)
+		}
+		want := 4*time.Hour + 10*time.Minute + 9*time.Second
+		if parsedReset.Before(before.Add(want-5*time.Second)) || parsedReset.After(after.Add(want+5*time.Second)) {
+			t.Fatalf("parsedReset = %v, want ~%v from now (%v..%v)", parsedReset, want, before.Add(want), after.Add(want))
+		}
+		if credit, _ := doc.FrontMatter[resumeCreditField].(bool); !credit {
+			t.Fatalf("resume_credit was not set: %#v", doc.FrontMatter)
+		}
+		if !strings.Contains(doc.Body, "; attempt not spent") {
+			t.Fatalf("attempt-not-spent note missing: %s", doc.Body)
+		}
+	}
+
 	// Variant 3: no reset time in error, no snapshot -> now + 1h
 	{
 		cfg, fake, manager := workflowTestManager(t)
