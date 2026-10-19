@@ -337,7 +337,7 @@ func runTaskOrGoalCreate(command string, requestArgs []string) error {
 
 func taskGoalReadonlyAlias(command string, requestArgs []string) (plural string, rest []string, ok bool) {
 	switch requestArgs[0] {
-	case "list", "ls", "status", "show":
+	case "list", "ls", "status", "show", "info":
 	default:
 		return "", nil, false
 	}

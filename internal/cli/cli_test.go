@@ -1827,6 +1827,8 @@ func TestTaskGoalCreateGuardsHelpFlagsAndReadonlyAliases(t *testing.T) {
 		{name: "task --bogus", args: []string{"task", "--bogus"}, wantErr: `unknown flag "--bogus"; usage: werkrby task [--no-review] <request>`},
 		{name: "task list", args: []string{"task", "list"}, wantErr: "did you mean `werkrby tasks`?"},
 		{name: "task status id", args: []string{"task", "status", "tasks-20260921-example"}, wantErr: "did you mean `werkrby tasks tasks-20260921-example`?"},
+		{name: "task info id", args: []string{"task", "info", "tasks-20260921-example"}, wantErr: "did you mean `werkrby tasks tasks-20260921-example`?"},
+		{name: "goal info id", args: []string{"goal", "info", "goals-20260921-example"}, wantErr: "did you mean `werkrby goals goals-20260921-example`?"},
 		{name: "no-review --help", args: []string{"task", "--no-review", "--help"}, wantOut: "usage: werkrby task [--no-review] <request>"},
 		{name: "multi-word list request", args: []string{"task", "list", "the", "stale", "leases", "in", "waiting/"}, wantCreate: true},
 	} {
