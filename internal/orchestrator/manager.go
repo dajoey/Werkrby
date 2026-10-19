@@ -118,6 +118,7 @@ type Manager struct {
 	operatorStops               map[string]time.Time // lease id -> when an operator stopped it; survives finishRuntimeJob
 	preemptions                 map[string]time.Time // lease id -> when it was paused for goal work; consumed by recordError
 	workClock                   func() time.Time     // test clock for the work window; nil means time.Now
+	unparseableNow              func() time.Time     // test clock for the unparseable repair grace; nil means time.Now
 	workReserveLoggedAt         time.Time            // last "holding for the reserved slot" log line
 	opsWaitingCount             atomic.Int64         // ops documents waiting for a slot (set once per scan, lowered per claim)
 	opsLaneLoggedAt             time.Time            // last "holding goal work for the ops lane" log line
@@ -517,6 +518,9 @@ func (m *Manager) requestScan() {
 func (m *Manager) ScanOnce(ctx context.Context) error {
 	m.scanMu.Lock()
 	defer m.scanMu.Unlock()
+	// A healed document never reaches the unparseable report path again, so its
+	// grace sighting is pruned here, once per scan (usually zero entries).
+	m.pruneUnparseableSightings()
 	return m.scanOnce(ctx)
 }
 

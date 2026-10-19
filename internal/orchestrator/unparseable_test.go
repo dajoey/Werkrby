@@ -138,6 +138,12 @@ func TestScanOnceFilesRepairTasksForUnparseableDocuments(t *testing.T) {
 	}
 	manager.Wait()
 
+	// The grace holds the first sighting; the backdated second scan files.
+	backdateUnparseableSightings(t, manager)
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
 	repairs := liveRepairTasks(t, cfg)
 	taskRepair := readRepairTask(t, repairs, corruptTask)
 	goalRepair := readRepairTask(t, repairs, corruptGoal)
@@ -299,6 +305,13 @@ func TestScanOnceClaimsAlongsideUnparseableReviewDocument(t *testing.T) {
 	manager.Wait()
 	assertValidTaskClaimed(t, cfg)
 
+	// The grace holds the first sighting; the backdated second scan files.
+	backdateUnparseableSightings(t, manager)
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+
 	repairs := liveRepairTasks(t, cfg)
 	if body := readRepairTask(t, repairs, corrupt); !strings.Contains(body, "tasks-scratch-corrupt.md") {
 		t.Fatalf("repair task does not name the corrupt review document:\n%s", body)
@@ -358,6 +371,13 @@ func TestScanOnceClaimsAlongsideUnparseableWorkingDocument(t *testing.T) {
 	}
 	manager.Wait()
 	assertValidTaskClaimed(t, cfg)
+
+	// The grace holds the first sighting; the backdated second scan files.
+	backdateUnparseableSightings(t, manager)
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
 	if body := readRepairTask(t, liveRepairTasks(t, cfg), corrupt); !strings.Contains(body, "tasks-scratch-corrupt.md") {
 		t.Fatalf("repair task does not name the corrupt working document:\n%s", body)
 	}
@@ -384,6 +404,13 @@ func TestScanOnceClaimsAlongsideUnparseableActiveGoal(t *testing.T) {
 	}
 	manager.Wait()
 	assertValidTaskClaimed(t, cfg)
+
+	// The grace holds the first sighting; the backdated second scan files.
+	backdateUnparseableSightings(t, manager)
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
 	if body := readRepairTask(t, liveRepairTasks(t, cfg), corrupt); !strings.Contains(body, "this goal document's YAML front matter") {
 		t.Fatalf("goal repair is not written as a goal repair:\n%s", body)
 	}
@@ -487,5 +514,112 @@ func TestUnparseableRepairTaskNotifyIsUsable(t *testing.T) {
 				t.Fatalf("repair task notify origin = %q, want %q", got, tc.origin)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Repair grace (2026-10-19 token-cut audit): about half of the sampled repair
+// tasks were no-ops - the document parsed again by the time a worker opened
+// it. A repair task now files only after the document has stayed unparseable
+// across unparseableGracePeriod, and never while it parses on re-read.
+
+// backdateUnparseableSightings pushes every recorded first sighting back two
+// grace periods, so the next scan treats the breakages as persistent.
+func backdateUnparseableSightings(t *testing.T, manager *Manager) {
+	t.Helper()
+	unparseableSightingsMu.Lock()
+	defer unparseableSightingsMu.Unlock()
+	sightings := manager.loadUnparseableSightings()
+	for path, seen := range sightings {
+		first, err := time.Parse(time.RFC3339, seen)
+		if err != nil {
+			continue
+		}
+		sightings[path] = first.Add(-2 * unparseableGracePeriod).UTC().Format(time.RFC3339)
+	}
+	manager.saveUnparseableSightings(sightings)
+}
+
+func TestRepairTaskWaitsOutTheGracePeriod(t *testing.T) {
+	root, cfg := newScratchWorkspace(t)
+	start := time.Date(2026, 10, 19, 10, 0, 0, 0, time.UTC)
+	now := start
+	manager := New(cfg, newFakeRecipient(), extensions.Runner{Directory: filepath.Join(root, "missing")})
+	manager.unparseableNow = func() time.Time { return now }
+	var errorRecords []string
+	manager.LogError = func(component, event, message string) {
+		errorRecords = append(errorRecords, component+"|"+event+"|"+message)
+	}
+
+	corrupt := cfg.StatePath("tasks", "todo", "tasks-scratch-corrupt.md")
+	writeScratchDocument(t, corrupt, corruptTaskFrontMatter)
+
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+	if repairs := liveRepairTasks(t, cfg); len(repairs) != 0 {
+		t.Fatalf("first sighting filed repair tasks: %v", keysOf(repairs))
+	}
+	if len(errorRecords) != 0 {
+		t.Fatalf("the grace period wrote an error record: %v", errorRecords)
+	}
+	unparseableSightingsMu.Lock()
+	_, seen := manager.loadUnparseableSightings()[corrupt]
+	unparseableSightingsMu.Unlock()
+	if !seen {
+		t.Fatal("first sighting was not recorded")
+	}
+
+	now = start.Add(unparseableGracePeriod + time.Minute)
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+	repairs := liveRepairTasks(t, cfg)
+	if len(repairs) != 1 {
+		t.Fatalf("persistent breakage filed %d repair tasks, want 1: %v", len(repairs), keysOf(repairs))
+	}
+	if len(errorRecords) != 1 || !strings.Contains(errorRecords[0], "|unparseable_document|") {
+		t.Fatalf("error records = %#v, want one on the filing scan", errorRecords)
+	}
+	unparseableSightingsMu.Lock()
+	_, stillSeen := manager.loadUnparseableSightings()[corrupt]
+	unparseableSightingsMu.Unlock()
+	if stillSeen {
+		t.Fatal("sighting was not cleared once the repair task filed")
+	}
+}
+
+func TestRepairSkipsWhenTheDocumentParsesAgain(t *testing.T) {
+	root, cfg := newScratchWorkspace(t)
+	start := time.Date(2026, 10, 19, 10, 0, 0, 0, time.UTC)
+	now := start
+	manager := New(cfg, newFakeRecipient(), extensions.Runner{Directory: filepath.Join(root, "missing")})
+	manager.unparseableNow = func() time.Time { return now }
+
+	corrupt := cfg.StatePath("tasks", "todo", "tasks-scratch-corrupt.md")
+	writeScratchDocument(t, corrupt, corruptTaskFrontMatter)
+
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+
+	// The document is repaired (rewritten validly) before the grace lapses.
+	writeScratchDocument(t, corrupt, validScratchTaskFrontMatter)
+	now = start.Add(2 * unparseableGracePeriod)
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+	if repairs := liveRepairTasks(t, cfg); len(repairs) != 0 {
+		t.Fatalf("a repair task filed for a document that parses again: %v", keysOf(repairs))
+	}
+	unparseableSightingsMu.Lock()
+	_, seen := manager.loadUnparseableSightings()[corrupt]
+	unparseableSightingsMu.Unlock()
+	if seen {
+		t.Fatal("a healed document kept its unparseable sighting")
 	}
 }

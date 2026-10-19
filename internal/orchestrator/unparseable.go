@@ -1,12 +1,14 @@
 package orchestrator
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -58,6 +60,110 @@ func unparseableRepairID(path string) string {
 	return unparseableRepairPrefix + slug
 }
 
+// unparseableGracePeriod: a document must stay unparseable this long before a
+// repair task files (2026-10-19 token-cut audit: about half of the sampled
+// repair tasks were no-ops - the document parsed again by the time a worker
+// opened it). A document that parses on re-read is never escalated and loses
+// its sighting.
+const unparseableGracePeriod = 30 * time.Minute
+
+// unparseableSightings records, per document path, when it was first seen
+// unparseable. Durable across restarts in runtime/unparseable-sightings.json.
+type unparseableSightings map[string]string // path -> first-seen RFC3339
+
+var unparseableSightingsMu sync.Mutex
+
+func (m *Manager) unparseableClock() time.Time {
+	if m.unparseableNow != nil {
+		return m.unparseableNow()
+	}
+	return time.Now()
+}
+
+func (m *Manager) unparseableSightingsPath() string {
+	return m.Config.StatePath("runtime", "unparseable-sightings.json")
+}
+
+func (m *Manager) loadUnparseableSightings() unparseableSightings {
+	data, err := os.ReadFile(m.unparseableSightingsPath())
+	if err != nil {
+		return unparseableSightings{}
+	}
+	sightings := unparseableSightings{}
+	if json.Unmarshal(data, &sightings) != nil {
+		return unparseableSightings{}
+	}
+	return sightings
+}
+
+func (m *Manager) saveUnparseableSightings(sightings unparseableSightings) {
+	path := m.unparseableSightingsPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		m.log("cannot record unparseable sightings: " + err.Error())
+		return
+	}
+	data, err := json.Marshal(sightings)
+	if err != nil {
+		return
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		m.log("cannot record unparseable sightings: " + err.Error())
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		m.log("cannot record unparseable sightings: " + err.Error())
+	}
+}
+
+// unparseableSightedAt returns the recorded first sighting, creating one
+// (within the grace) when the path is new.
+func (m *Manager) unparseableSightedAt(path string) (time.Time, bool) {
+	unparseableSightingsMu.Lock()
+	defer unparseableSightingsMu.Unlock()
+	sightings := m.loadUnparseableSightings()
+	now := m.unparseableClock()
+	if seen, ok := sightings[path]; ok {
+		first, err := time.Parse(time.RFC3339, seen)
+		if err == nil {
+			return first, true
+		}
+	}
+	sightings[path] = now.UTC().Format(time.RFC3339)
+	m.saveUnparseableSightings(sightings)
+	return now, false
+}
+
+func (m *Manager) forgetUnparseableDocument(path string) {
+	unparseableSightingsMu.Lock()
+	defer unparseableSightingsMu.Unlock()
+	sightings := m.loadUnparseableSightings()
+	if _, ok := sightings[path]; !ok {
+		return
+	}
+	delete(sightings, path)
+	m.saveUnparseableSightings(sightings)
+}
+
+// pruneUnparseableSightings drops sightings whose document now parses (it was
+// repaired) or has vanished: a healed document never reaches the report path
+// again, so its sighting would otherwise outlive the breakage forever.
+func (m *Manager) pruneUnparseableSightings() {
+	unparseableSightingsMu.Lock()
+	defer unparseableSightingsMu.Unlock()
+	sightings := m.loadUnparseableSightings()
+	changed := false
+	for path := range sightings {
+		if _, err := ReadDocument(path); err == nil || errors.Is(err, fs.ErrNotExist) {
+			delete(sightings, path)
+			changed = true
+		}
+	}
+	if changed {
+		m.saveUnparseableSightings(sightings)
+	}
+}
+
 // reportUnparseableDocument turns a silent YAML skip into work somebody sees.
 // Until 2026-09-19 an unreadable task or goal was written to the runtime log and
 // nothing else: the document kept its status on disk, the board drew it healthy,
@@ -82,11 +188,27 @@ func (m *Manager) reportUnparseableDocument(path string, parseErr error) {
 		return
 	}
 
+	// Two-stage grace. A document that parses on re-read right now was a
+	// transient (a partial or racing write): no task, sighting forgotten. A
+	// document inside its first grace period gets one more scan cycle before
+	// its breakage counts as persistent; only then does a repair task file.
+	m.pruneUnparseableSightings()
+	if _, err := ReadDocument(path); err == nil {
+		m.forgetUnparseableDocument(path)
+		m.log("unparseable document parses again on re-read; no repair task: " + path)
+		return
+	}
+	if first, seen := m.unparseableSightedAt(path); !seen || m.unparseableClock().Sub(first) < unparseableGracePeriod {
+		m.log(message + " (within the " + unparseableGracePeriod.String() + " repair grace; no task yet)")
+		return
+	}
+
 	filed, err := m.fileUnparseableRepairTask(path, parseErr)
 	switch {
 	case err != nil:
 		m.logUnparseable("unparseable_document", message+" (repair task not filed: "+err.Error()+")")
 	case filed:
+		m.forgetUnparseableDocument(path)
 		m.logUnparseable("unparseable_document", message)
 	default:
 		// Repair already filed; keep later scans out of the error record.

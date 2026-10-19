@@ -66,7 +66,14 @@ func TestUnparseableRoundTaskDoesNotBounceActiveGoal(t *testing.T) {
 		t.Fatal("goal was bounced to proposed/")
 	}
 	if _, err := os.Stat(m1RepairPath(manager, tasks[0].Path)); err != nil {
-		t.Fatalf("no repair task filed for the unreadable round task: %v", err)
+		// The grace holds the first sighting; the backdated second pass files.
+		backdateUnparseableSightings(t, manager)
+		if err := manager.advanceActiveGoals(); err != nil {
+			t.Fatalf("second advanceActiveGoals aborted: %v", err)
+		}
+		if _, err := os.Stat(m1RepairPath(manager, tasks[0].Path)); err != nil {
+			t.Fatalf("no repair task filed for the unreadable round task: %v", err)
+		}
 	}
 }
 
@@ -102,6 +109,12 @@ func TestScanOnceKeepsGoalWithUnreadableRoundTaskActive(t *testing.T) {
 	if _, err := os.Stat(goal); err != nil {
 		t.Fatalf("goal left active/ after a full scan: %v", err)
 	}
+	// The grace holds the first sighting; the backdated second scan files.
+	backdateUnparseableSightings(t, manager)
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("second ScanOnce aborted: %v", err)
+	}
+	manager.Wait()
 	if _, err := os.Stat(m1RepairPath(manager, tasks[0].Path)); err != nil {
 		if len(liveRepairTasks(t, cfg)) != 1 {
 			t.Fatalf("expected exactly one repair task: %v", err)
