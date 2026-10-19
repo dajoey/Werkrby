@@ -78,7 +78,7 @@ func recordCommandFailure(args []string, runErr error) {
 		return
 	}
 	runtimeState := app.NewRuntimeAt(cfg.StatePath("runtime", "logs"), fmt.Sprintf("pid-%d-error", os.Getpid()))
-	runtimeState.LogEvent("error", "process", "command_failed", fmt.Sprintf("Spynel command failed: %v", runErr))
+	runtimeState.LogEvent("error", "process", "command_failed", fmt.Sprintf("Werkrby command failed: %v", runErr))
 	runtimeState.Close()
 }
 

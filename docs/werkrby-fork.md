@@ -6,7 +6,7 @@ Werkrby (pronounced "worker bee"; formerly SpyJo) is Joey's personal fork of [Sp
 
 Local changes on top of upstream (newest first; see `git log` for detail):
 
-- `werkrby` rebrand: the TUI, CLI, replies, prompts and agent docs read Werkrby; new `./cmd/werkrby` entry point, with `./cmd/spyjo` and `./cmd/spynel` kept as compatibility entry points and `spyjo`/`spynel` kept as install aliases. Internal identifiers (`.spynel/`, `SPYNEL_*`, config keys, the Go module path) are unchanged for now.
+- `werkrby` rebrand: the TUI, CLI, replies, prompts, agent docs and workspace layout read Werkrby (`.werkrby/`); new `./cmd/werkrby` entry point, with `./cmd/spyjo` and `./cmd/spynel` kept as compatibility entry points and `spyjo`/`spynel` kept as install aliases. The Go module path (`github.com/agent0ai/spynel`) and `SPYNEL_*` environment variable names remain for compatibility.
 - Herdr automated workers isolated into dedicated collision-free workspaces (`[sj-worker] helm`, `[sj-worker] tasks`).
 - Ephemeral Herdr worker tabs auto-close; orphaned tabs are swept on startup.
 - Herdr worker agent names constrained to the 32-character limit.
@@ -17,7 +17,7 @@ Local changes on top of upstream (newest first; see `git log` for detail):
 - Herdr worker panes isolated to the caller workspace with fleet pane immunity.
 - Earlier `spyjo` rename (superseded by Werkrby): `./cmd/spyjo` entry point and Herdr assistant rendering cleanup.
 
-What has *not* changed: the Go module path (`github.com/agent0ai/spynel`), the `.spynel/` workspace layout and config schema, the task/goal lifecycle, and the offline `werkrby docs` topic catalog.
+What has *not* changed: the Go module path (`github.com/agent0ai/spynel`), the config schema, the task/goal lifecycle, and the offline `werkrby docs` topic catalog.
 
 ## Setup deltas
 

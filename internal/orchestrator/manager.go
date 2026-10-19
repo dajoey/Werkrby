@@ -63,7 +63,7 @@ type Lease struct {
 	// agent/runner pin, so without it every such park named "default" and
 	// woke a blind hour later (found live 2026-09-28).
 	TargetModel string `json:"target_model,omitempty"`
-	// ReviewRisk is the task's risk when Spynel claimed it for review:
+	// ReviewRisk is the task's risk when Werkrby claimed it for review:
 	// reviewRiskHigh or reviewRiskRoutine. Empty means unknown (an older
 	// lease, or a review adopted without a claim) and never earns a credit.
 	ReviewRisk             string          `json:"review_risk,omitempty"`
@@ -859,12 +859,12 @@ func (m *Manager) startExistingClaim(ctx context.Context, route workflowRoute, p
 		opsHeld := !paced && !windowHeld && incrementAttempt && m.opsLaneHolds(route, document)
 		if paced || windowHeld || opsHeld {
 			if incrementAttempt && !deferred {
-				note := "Spynel deferred this goal's planning round: its seat is on a quota pace hold. No attempt was spent; planning starts when the hold lifts."
+				note := "Werkrby deferred this goal's planning round: its seat is on a quota pace hold. No attempt was spent; planning starts when the hold lifts."
 				if windowHeld {
-					note = "Spynel deferred this goal's planning round: the work window is open and the slot left for personal work is taken. No attempt was spent; planning starts when a slot frees or the window closes."
+					note = "Werkrby deferred this goal's planning round: the work window is open and the slot left for personal work is taken. No attempt was spent; planning starts when a slot frees or the window closes."
 				}
 				if opsHeld {
-					note = "Spynel deferred this goal's planning round: normal-operations tasks are waiting and the ops lane is short of its reserved slots. No attempt was spent; planning starts when a slot frees."
+					note = "Werkrby deferred this goal's planning round: normal-operations tasks are waiting and the ops lane is short of its reserved slots. No attempt was spent; planning starts when a slot frees."
 				}
 				if err := updateDocumentProgressWithUpdate(path, time.Now().UTC(), note, func(frontMatter map[string]any) {
 					frontMatter[planningHoldDeferredField] = true
@@ -970,7 +970,7 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 				return
 			}
 			recoveryAttempt := lease.RecoveryCount + 1
-			note := fmt.Sprintf("Spynel started recovery attempt %d for %s after its durable execution ownership required reconciliation; the recovery agent must record its findings and outcome here.", recoveryAttempt, strings.ReplaceAll(normalizeLeasePhase(route.Name, lease.Phase), "_", " "))
+			note := fmt.Sprintf("Werkrby started recovery attempt %d for %s after its durable execution ownership required reconciliation; the recovery agent must record its findings and outcome here.", recoveryAttempt, strings.ReplaceAll(normalizeLeasePhase(route.Name, lease.Phase), "_", " "))
 			if err := updateDocumentProgress(lease.File, time.Now().UTC(), note); err != nil {
 				m.recordError(ctx, lease, fmt.Errorf("record recovery progress: %w", err))
 				return
@@ -1290,7 +1290,7 @@ func (m *Manager) reconcileTaskTransition(ctx context.Context, route workflowRou
 	base := filepath.Dir(m.Config.Resolve(route.Source))
 	name := filepath.Base(path)
 	// Whatever this turn wrote, its transition carries no resume credit
-	// unless Spynel grants one below for a park or a format-only rejection.
+	// unless Werkrby grants one below for a park or a format-only rejection.
 	if err := setResumeCredit(path, false); err != nil {
 		m.log("clear resume credit " + path + ": " + err.Error())
 	}
@@ -1901,7 +1901,7 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 				}
 			}
 			target := filepath.Join(base, targetStatus, entry.Name())
-			note := fmt.Sprintf("Spynel resumed this %s from waiting because its scheduled wake condition became due; it returned to %s for a fresh agent decision.", strings.TrimSuffix(route.Name, "s"), targetStatus)
+			note := fmt.Sprintf("Werkrby resumed this %s from waiting because its scheduled wake condition became due; it returned to %s for a fresh agent decision.", strings.TrimSuffix(route.Name, "s"), targetStatus)
 			// The dates that woke it are spent; left behind they would wake the
 			// document's next park early. A not_before still in the future is a
 			// dispatch gate rather than a park date, so it stays.
@@ -1999,7 +1999,7 @@ func (m *Manager) advanceActiveGoals() error {
 		if checkpoint && !settled {
 			reason = "the configured evidence checkpoint became due"
 		}
-		note := "Spynel queued this goal for independent review because " + reason + "."
+		note := "Werkrby queued this goal for independent review because " + reason + "."
 		if err := moveDocumentWithProgress(path, target, "review", now, note); err != nil {
 			return err
 		}
@@ -2137,7 +2137,7 @@ func (m *Manager) recoverStale(ctx context.Context) error {
 				}
 				base := filepath.Dir(m.Config.Resolve(route.Source))
 				target := filepath.Join(base, requeueStatus, filepath.Base(lease.File))
-				note := fmt.Sprintf("Spynel requeued this %s to %s because turn ended without moving the document after %d recovery attempt(s); attempt was spent.", strings.TrimSuffix(route.Name, "s"), requeueStatus, lease.RecoveryCount)
+				note := fmt.Sprintf("Werkrby requeued this %s to %s because turn ended without moving the document after %d recovery attempt(s); attempt was spent.", strings.TrimSuffix(route.Name, "s"), requeueStatus, lease.RecoveryCount)
 				update := func(fm map[string]any) {
 					delete(fm, resumeCreditField)
 				}
@@ -2944,7 +2944,7 @@ func (m *Manager) recordRestartInterrupt(lease Lease, err error) {
 // clears controlCancelled, so the first version of this check never fired live). The job's context is
 // cancelled by that stop, which restartInterrupted cannot tell from a service
 // restart, so the stop used to be filed as "interrupted by a service restart",
-// the lease was kept for re-adoption, and Spynel dispatched a recovery agent on
+// the lease was kept for re-adoption, and Werkrby dispatched a recovery agent on
 // work the operator had just stopped (found live 2026-10-03). Parking in
 // waiting/ with a wake_at is the same shape recordQuotaError uses: the lease is
 // removed, the runtime job ends, no attempt is spent, and a timer owns the task.
@@ -3059,7 +3059,7 @@ func (m *Manager) captureAutopsyAndAlert(lease Lease, err error) {
 		taskName := filepath.Base(lease.File)
 		cmd := exec.Command("python3", alerterPath,
 			"--title", "Runner Dispatch Error",
-			"--component", "spyjo-orchestrator",
+			"--component", "werkrby-orchestrator",
 			"--error", err.Error(),
 			"--severity", "P1",
 			"--task-id", taskName,
@@ -3205,7 +3205,7 @@ var (
 		"pi":       "zai",
 	}
 	// providerPlanMap is the provider-prefix half of the plan lookup, the
-	// same table ~/ops/spyjo-quota-gate.py's PLAN_BY_PROVIDER uses, so the
+	// same table ~/ops/werkrby-quota-gate.py's PLAN_BY_PROVIDER uses, so the
 	// orchestrator and the gate can never disagree about which plan a
 	// provider/model pin spends.
 	providerPlanMap = map[string]string{

@@ -17,7 +17,7 @@ import (
 )
 
 // The acceptance gate (opt-in, pilot). A task whose front matter carries an
-// acceptance block has its check run by Spynel itself when the implementation
+// acceptance block has its check run by Werkrby itself when the implementation
 // turn hands the task off (to review, or directly to done), instead of relying
 // on the worker's own claims. Pass: the hand-off proceeds unchanged. Fail: the
 // task returns to todo with the bounded check output, and the failed round
@@ -30,7 +30,7 @@ import (
 // the one fail-closed case: the hand-off is refused until the registered
 // content is restored.
 //
-// The worker runs as the same user as Spynel, so the pinned hash and the
+// The worker runs as the same user as Werkrby, so the pinned hash and the
 // append-only registry make tampering evident, not impossible.
 
 const (
@@ -45,8 +45,11 @@ const (
 )
 
 // acceptanceRegistryFile resolves the append-only registration log. Tests
-// redirect it with SPYJO_ACCEPTANCE_REGISTRY.
+// redirect it with WERKRBY_ACCEPTANCE_REGISTRY (or legacy SPYJO_ACCEPTANCE_REGISTRY).
 func acceptanceRegistryFile() string {
+	if path := strings.TrimSpace(os.Getenv("WERKRBY_ACCEPTANCE_REGISTRY")); path != "" {
+		return path
+	}
 	if path := strings.TrimSpace(os.Getenv("SPYJO_ACCEPTANCE_REGISTRY")); path != "" {
 		return path
 	}

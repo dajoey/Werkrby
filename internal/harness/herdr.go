@@ -679,10 +679,10 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 		if json.Unmarshal(out, &listResp) == nil {
 			for _, a := range listResp.Result.Agents {
 				inWorkspace := workspaceID == "" || a.WorkspaceID == workspaceID || strings.HasPrefix(a.PaneID, workspaceID+":")
-				isSpyJoWorker := a.Name == expectedWorkerName || hasWorkerPrefix(a.Name)
+				isWorker := a.Name == expectedWorkerName || hasWorkerPrefix(a.Name)
 
 				// STRICT IMMUNITY: Never touch external fleet panes (w1, w2, w4, w5, etc.)!
-				if !inWorkspace && !isSpyJoWorker {
+				if !inWorkspace && !isWorker {
 					continue
 				}
 
@@ -1031,7 +1031,7 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 			}
 		}
 
-		// If that also yields nothing, return an error that Spynel retries in place, never EventFinal.
+		// If that also yields nothing, return an error that Werkrby retries in place, never EventFinal.
 		if promptErr != nil || (!hasRealSession && finalText == "") {
 			notDeliveredErr := fmt.Errorf("prompt_not_delivered: worker %s never received prompt, please retry", target)
 			if emit != nil {
@@ -1155,7 +1155,7 @@ func cleanHerdrTerminalOutput(text string) string {
 	// Strip Kimi bottom input box if present
 	text = kimiInputBoxPattern.ReplaceAllString(text, "")
 
-	// Strip Antigravity / SpyJo bottom input box if present
+	// Strip Antigravity / Werkrby bottom input box if present
 	text = agyInputBoxPattern.ReplaceAllString(text, "")
 
 	// Strip Hermes bottom composer if present

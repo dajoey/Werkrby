@@ -209,7 +209,7 @@ func TestColdCacheHelperCleansFailedRunOutsideWorkspace(t *testing.T) {
 		t.Fatal("cold-cache helper unexpectedly succeeded")
 	}
 	cacheDir := string(output)
-	if !strings.HasPrefix(cacheDir, tempBase+string(filepath.Separator)+"spynel-gocache.") {
+	if !strings.HasPrefix(cacheDir, tempBase+string(filepath.Separator)+"werkrby-gocache.") {
 		t.Fatalf("cold cache path %q is not a unique child of %q", cacheDir, tempBase)
 	}
 	if _, statErr := os.Stat(cacheDir); !os.IsNotExist(statErr) {
@@ -240,7 +240,7 @@ func TestColdCacheHelperCleansCompletedRunWithDescendant(t *testing.T) {
 		t.Fatalf("completed cold-cache diagnostic failed: %v output=%q", err, output)
 	}
 	cacheDir := string(output)
-	if !strings.HasPrefix(cacheDir, tempBase+string(filepath.Separator)+"spynel-gocache.") {
+	if !strings.HasPrefix(cacheDir, tempBase+string(filepath.Separator)+"werkrby-gocache.") {
 		t.Fatalf("cold cache path %q is not a unique child of %q", cacheDir, tempBase)
 	}
 	if _, err := os.Stat(cacheDir); !os.IsNotExist(err) {

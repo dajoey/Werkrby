@@ -286,7 +286,7 @@ func signalRegisteredProcess(record ProcessRegistration, signal os.Signal) error
 	return process.Signal(signal)
 }
 
-// KillAll stops verified Spynel processes, including older releases and
+// KillAll stops verified Werkrby processes, including older releases and
 // different installations. Normal termination retains provider cleanup.
 func KillAll(ctx context.Context, beforeStop func([]ProcessRegistration) error) (int, error) {
 	records, err := liveProcesses()

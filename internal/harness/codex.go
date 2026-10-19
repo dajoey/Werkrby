@@ -483,7 +483,7 @@ func (c *Codex) ensureThread(ctx context.Context, key, model string) (string, er
 		return threadID, nil
 	}
 	if threadID != "" {
-		// Codex retains the full conversation internally. Spynel needs only
+		// Codex retains the full conversation internally. Werkrby needs only
 		// its identity; returning the history can overflow the shared stream.
 		result, err := c.call(ctx, "thread/resume", map[string]any{"threadId": threadID, "excludeTurns": true})
 		if err != nil {
@@ -859,7 +859,7 @@ func (c *Codex) readLoop(reader io.Reader) {
 			continue
 		}
 		if len(message.ID) > 0 && message.Method != "" {
-			// Spynel defaults to non-interactive approval policy. Decline any
+			// Werkrby defaults to non-interactive approval policy. Decline any
 			// unexpected server request instead of granting hidden authority.
 			_ = c.write(map[string]any{"id": json.RawMessage(message.ID), "result": "decline"})
 			continue

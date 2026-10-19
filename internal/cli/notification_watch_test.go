@@ -104,9 +104,9 @@ func TestRestartHistorySnapshotAndRecoveredTailHaveOneStableOrder(t *testing.T) 
 	for _, entry := range []history.Entry{
 		{Role: "user", Content: "ordinary question"},
 		{Role: "user", Content: "/restart"},
-		{Role: "assistant", Content: "Restarting Spynel..."},
+		{Role: "assistant", Content: "Restarting Werkrby..."},
 		{Role: "user", Content: "/restart"},
-		{Role: "assistant", Content: "Restarting Spynel..."},
+		{Role: "assistant", Content: "Restarting Werkrby..."},
 	} {
 		if _, err := store.Append("tui", "restart", entry); err != nil {
 			t.Fatal(err)
@@ -124,7 +124,7 @@ func TestRestartHistorySnapshotAndRecoveredTailHaveOneStableOrder(t *testing.T) 
 	}
 	select {
 	case event := <-events:
-		if len(initial) != 5 || initial[0].Content != "ordinary question" || initial[1].Content != "/restart" || initial[2].Content != "Restarting Spynel..." || initial[3].Content != "/restart" || initial[4].Content != "Restarting Spynel..." || event.Text != "recovered answer" || !event.Recovery {
+		if len(initial) != 5 || initial[0].Content != "ordinary question" || initial[1].Content != "/restart" || initial[2].Content != "Restarting Werkrby..." || initial[3].Content != "/restart" || initial[4].Content != "Restarting Werkrby..." || event.Text != "recovered answer" || !event.Recovery {
 			t.Fatalf("restart/recovery live sequence = initial %#v event %#v", initial, event)
 		}
 	case <-time.After(2 * time.Second):

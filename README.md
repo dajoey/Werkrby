@@ -28,7 +28,7 @@ It isn't a competing product. It's one homelab's tuned build: a particular harne
           (TUI, Telegram,   │        claude-code · codex · kimi · opencode
            web front desk)  │        gemini · agy · hermes · pi · …
                             ▼
-             .spynel/tasks/{todo,working,review,done,…}/*.md
+             .werkrby/tasks/{todo,working,review,done,…}/*.md
              goals · leases · evidence · history
 ```
 

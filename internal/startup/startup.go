@@ -161,7 +161,7 @@ func (m *Manager) run(ctx context.Context, name string, arguments ...string) (st
 
 // Native syntax validation precedes replacement of any existing registration.
 func (m *Manager) writeValidated(ctx context.Context, path string, data []byte, command string, args ...string) error {
-	stage, err := os.MkdirTemp(filepath.Dir(path), ".spynel-verify-")
+	stage, err := os.MkdirTemp(filepath.Dir(path), ".werkrby-verify-")
 	if err != nil {
 		return err
 	}

@@ -15,11 +15,11 @@ import (
 // (2026-09-24: 30 of 40 ops tasks with attempt>1 climbed through a park or a
 // restart, five through a genuine model failure).
 //
-// Provenance: Spynel writes the mark itself while reconciling the transition
+// Provenance: Werkrby writes the mark itself while reconciling the transition
 // a turn made, and removes it from every other transition it reconciles, so a
 // turn cannot credit its own requeue. A park made outside a turn (the attempt
 // cap parks a task straight out of todo/ after its attempt already ended) is
-// never marked. Resume paths — Spynel's scheduled wake and external scripts
+// never marked. Resume paths — Werkrby's scheduled wake and external scripts
 // moving waiting/ back to todo/ — only have to keep the field; every claim
 // removes it, so it is honoured at most once.
 const resumeCreditField = "resume_credit"
@@ -77,7 +77,7 @@ func claimAttempt(frontMatter map[string]any, field string) (int, claimCredit) {
 }
 
 func resumeCreditNote(attempt int) string {
-	return fmt.Sprintf("Spynel continued attempt %d instead of starting attempt %d: the previous turn parked this task, handed it to the risk-high reviewer, or was rejected only on completion_summary format, and none of those is a failed attempt; attempt not spent.", attempt, attempt+1)
+	return fmt.Sprintf("Werkrby continued attempt %d instead of starting attempt %d: the previous turn parked this task, handed it to the risk-high reviewer, or was rejected only on completion_summary format, and none of those is a failed attempt; attempt not spent.", attempt, attempt+1)
 }
 
 const (
@@ -100,7 +100,7 @@ func taskRiskHigh(path string) bool {
 }
 
 func resumeCreditExhaustedNote(attempt int) string {
-	return fmt.Sprintf("Spynel did not continue attempt %d: %d parks in one attempt; this claim spends attempt %d. Parks and format-only repairs share a budget of %d continued claims per attempt so a task that keeps re-parking still reaches the escalation ladder and the attempt cap.", attempt-1, maxResumeCreditsPerAttempt, attempt, maxResumeCreditsPerAttempt)
+	return fmt.Sprintf("Werkrby did not continue attempt %d: %d parks in one attempt; this claim spends attempt %d. Parks and format-only repairs share a budget of %d continued claims per attempt so a task that keeps re-parking still reaches the escalation ladder and the attempt cap.", attempt-1, maxResumeCreditsPerAttempt, attempt, maxResumeCreditsPerAttempt)
 }
 
 // setResumeCredit writes or removes the mark under the provider-turn lock. It

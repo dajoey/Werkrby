@@ -247,7 +247,7 @@ func startPrimaryTerm(parent context.Context, original config.Config, version st
 		}
 		return nil, errOwnershipLost
 	}
-	service.Runtime.LogEvent("info", "runtime", "primary_started", "Spynel primary server started")
+	service.Runtime.LogEvent("info", "runtime", "primary_started", "Werkrby primary server started")
 	term := &primaryTerm{
 		election: election, token: token, cancel: cancel, listener: listener, service: service,
 		apiDone: make(chan struct{}), apiError: make(chan error, 1), orchestratorDone: make(chan error, 1),

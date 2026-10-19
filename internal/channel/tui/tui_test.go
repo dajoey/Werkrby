@@ -2227,7 +2227,7 @@ func TestPastedFileIsCopiedIntoAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := testModel()
-	m.attachments = filepath.Join(root, ".spynel", "attachments")
+	m.attachments = filepath.Join(root, ".werkrby", "attachments")
 
 	command := m.enqueuePaste(source)
 	if command == nil {
@@ -4442,7 +4442,7 @@ func TestRecoveredTerminalReplacesActivityVisiblyWithoutTouchingNewerStream(t *t
 	m.transcript = []transcriptEntry{
 		{role: "user", text: "original question"},
 		{role: "user", text: "/restart"},
-		{role: "assistant", text: "Restarting Spynel..."},
+		{role: "assistant", text: "Restarting Werkrby..."},
 	}
 	next, _ := m.Update(uiEvent{event: core.Event{Kind: core.EventActivity, Active: true}, conversation: true})
 	m = next.(model)

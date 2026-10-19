@@ -10,7 +10,7 @@ func AtomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".spynel-write-*")
+	temp, err := os.CreateTemp(filepath.Dir(path), ".werkrby-write-*")
 	if err != nil {
 		return err
 	}
@@ -41,7 +41,7 @@ func AtomicCreateFile(path string, data []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".spynel-create-*")
+	temp, err := os.CreateTemp(filepath.Dir(path), ".werkrby-create-*")
 	if err != nil {
 		return err
 	}

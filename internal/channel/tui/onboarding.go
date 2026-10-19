@@ -58,7 +58,7 @@ func ParentWorkspaceScreen(launchRoot, parentRoot string) core.Screen {
 		},
 		Controls: []core.ScreenControl{
 			{Key: string(WorkspaceChoiceUseParent), Kind: "action", Value: "Use parent workspace", Description: "Switch to " + parentRoot + " and continue there"},
-			{Key: string(WorkspaceChoiceInitializeHere), Kind: "action", Value: "Initialize here", Description: "Create a new .spynel workspace in " + launchRoot},
+			{Key: string(WorkspaceChoiceInitializeHere), Kind: "action", Value: "Initialize here", Description: "Create a new .werkrby workspace in " + launchRoot},
 			{Key: string(WorkspaceChoiceExit), Kind: "action", Value: "Exit", Description: "Leave both directories unchanged"},
 		},
 	}

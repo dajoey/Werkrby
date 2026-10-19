@@ -18,7 +18,7 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
-cache_dir=$(mktemp -d "$temp_base/spynel-gocache.XXXXXX")
+cache_dir=$(mktemp -d "$temp_base/werkrby-gocache.XXXXXX")
 tree_alive() {
   [ -n "${child_pid:-}" ] && kill -0 -"$child_pid" 2>/dev/null
 }
@@ -55,7 +55,7 @@ cleanup() {
   terminate_tree KILL
   wait_tree
   case "$cache_dir" in
-    "$temp_base"/spynel-gocache.*)
+    "$temp_base"/werkrby-gocache.*)
       if [ -d "$cache_dir" ]; then
         rm -rf -- "$cache_dir"
       fi

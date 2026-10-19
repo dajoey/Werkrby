@@ -54,7 +54,7 @@ func TestOrphanedClaimedTaskReceivesRecoveryLease(t *testing.T) {
 		t.Fatalf("orphan recovery = lease %#v, calls %d", leases[0], fake.calls)
 	}
 	recovered, err := ReadDocument(working)
-	if err != nil || !strings.Contains(recovered.Body, "Spynel started recovery attempt 1 for task implementation") {
+	if err != nil || !strings.Contains(recovered.Body, "Werkrby started recovery attempt 1 for task implementation") {
 		t.Fatalf("recovery progress was not journaled: body=%q err=%v", recovered.Body, err)
 	}
 }
@@ -921,7 +921,7 @@ func TestEndedTurnThatMovedNothingRecoversBeforeTheExternalFailForward(t *testin
 	if document.FrontMatter["attempt"] != 1 {
 		t.Fatalf("recovery consumed an attempt: %#v", document.FrontMatter)
 	}
-	if !strings.Contains(document.Body, "Spynel started recovery attempt 1 for task implementation") {
+	if !strings.Contains(document.Body, "Werkrby started recovery attempt 1 for task implementation") {
 		t.Fatalf("recovery was not journaled: %q", document.Body)
 	}
 	base := filepath.Dir(cfg.Resolve(workflowRoutes()[0].Source))

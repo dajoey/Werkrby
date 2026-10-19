@@ -29,7 +29,7 @@ channels:
     theme: spynel
   telegram:
     enabled: false
-    name: spyjo
+    name: werkrby
     token_env: SPYNEL_TELEGRAM_TOKEN
     mode: polling
     webhook_url: ""

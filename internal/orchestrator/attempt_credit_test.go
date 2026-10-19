@@ -217,7 +217,7 @@ func TestRequeueAfterAWorkTurnStillSpendsAnAttempt(t *testing.T) {
 		forged bool
 	}{
 		{name: "incomplete work returned to todo"},
-		// An agent turn cannot mint the credit for itself: Spynel strips it
+		// An agent turn cannot mint the credit for itself: Werkrby strips it
 		// from every transition it reconciles that is not a park.
 		{name: "turn writes its own resume credit", forged: true},
 	} {
