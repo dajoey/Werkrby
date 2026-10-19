@@ -102,7 +102,7 @@ func New(executable string) (*Manager, error) {
 
 func (m *Manager) Sync(cfg config.Config, enabled bool) error {
 	if cfg.Path == "" {
-		return errors.New("cannot configure startup without a loaded .spynel/config.yaml")
+		return errors.New("cannot configure startup without a loaded .werkrby/config.yaml")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -227,7 +227,7 @@ func (m *Manager) environment() map[string]string {
 }
 
 func workspaceID(cfg config.Config) string {
-	identityPath := config.PathForRoot(cfg.Root)
+	identityPath := filepath.Join(cfg.Root, ".spynel", "config.yaml")
 	hash := sha256.Sum256([]byte(filepath.Clean(identityPath)))
 	return hex.EncodeToString(hash[:4])
 }
@@ -396,7 +396,7 @@ func (m *Manager) Enabled(cfg config.Config) (bool, error) {
 
 func (m *Manager) enabled(ctx context.Context, cfg config.Config) (bool, error) {
 	if cfg.Path == "" {
-		return false, errors.New("cannot check startup without a loaded .spynel/config.yaml")
+		return false, errors.New("cannot check startup without a loaded .werkrby/config.yaml")
 	}
 	switch m.GOOS {
 	case "linux":

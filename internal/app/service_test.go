@@ -295,7 +295,7 @@ func TestChatAgentPrefixAppliesToOrdinaryActiveTurnFollowups(t *testing.T) {
 	if err := service.Handle(context.Background(), message, func(core.Event) {}); err != nil {
 		t.Fatal(err)
 	}
-	if got := target.prompts[key][1]; !strings.HasPrefix(got, "/ultrathink ") || !strings.Contains(got, "user: follow up") || !strings.Contains(got, "Configured task review mode: skip-trivial") || !strings.Contains(got, "the chat agent from .spynel/instructions/agent-chat.md") || !strings.Contains(got, "fresh followup chat rule") || strings.Contains(got, "ordinary chat rule") || !strings.HasSuffix(got, "The precedence stated above still applies to every imported rule.") {
+	if got := target.prompts[key][1]; !strings.HasPrefix(got, "/ultrathink ") || !strings.Contains(got, "user: follow up") || !strings.Contains(got, "Configured task review mode: skip-trivial") || !strings.Contains(got, "the chat agent from .werkrby/instructions/agent-chat.md") || !strings.Contains(got, "fresh followup chat rule") || strings.Contains(got, "ordinary chat rule") || !strings.HasSuffix(got, "The precedence stated above still applies to every imported rule.") {
 		t.Fatalf("followup prompt = %q", got)
 	}
 }
@@ -731,7 +731,7 @@ func TestEveryChatTransportFreshLoadsTheSameChatInstructionsAtPromptEnd(t *testi
 			t.Fatal(err)
 		}
 		prompt := harness.prompts["chat:"+channelName+":memory"][0]
-		if strings.Count(prompt, instructions.ScopeDisciplineGuidance) != 1 || !strings.Contains(prompt, "\n"+instruction+"\n</workspace_owner_persistent_instructions>") || !strings.Contains(prompt, "the chat agent from .spynel/instructions/agent-chat.md") || !strings.HasSuffix(prompt, "The precedence stated above still applies to every imported rule.") {
+		if strings.Count(prompt, instructions.ScopeDisciplineGuidance) != 1 || !strings.Contains(prompt, "\n"+instruction+"\n</workspace_owner_persistent_instructions>") || !strings.Contains(prompt, "the chat agent from .werkrby/instructions/agent-chat.md") || !strings.HasSuffix(prompt, "The precedence stated above still applies to every imported rule.") {
 			t.Fatalf("%s prompt omitted final fresh chat instructions:\n%s", channelName, prompt)
 		}
 	}
@@ -1411,7 +1411,7 @@ func TestHelpRoutesToBriefIndexAndFocusedTopics(t *testing.T) {
 		"/help about":      "# About Werkrby",
 		"/help commands":   "/stop",
 		"/help extensions": "/extension install",
-		"/help config":     ".spynel/config.yaml",
+		"/help config":     ".werkrby/config.yaml",
 		"/help channels":   "Telegram",
 		"/help workflows":  "/task <request>",
 	}
@@ -1643,7 +1643,7 @@ func TestStatusSurvivesUnreadableGoalCheckpointPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	active := filepath.Join(root, ".spynel", "goals", "active")
+	active := filepath.Join(root, ".werkrby", "goals", "active")
 	if err := os.Remove(active); err != nil {
 		t.Fatal(err)
 	}

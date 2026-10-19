@@ -56,7 +56,7 @@ func (values *stringListFlag) Set(value string) error {
 
 func runSendCommand(name string, args []string, version string, followupOnly bool) error {
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	configPath := flags.String("config", "", "path to .spynel/config.yaml")
+	configPath := flags.String("config", "", "path to .werkrby/config.yaml")
 	conversation := flags.String("conversation", "local", "durable CLI conversation name")
 	requestID := flags.String("request-id", "", "client-owned message identity; reuse only for a retry of the same input")
 	socket := flags.String("socket", "", "explicit private Unix socket (no local workspace discovery)")
@@ -91,7 +91,7 @@ func runSendCommand(name string, args []string, version string, followupOnly boo
 
 func runEventsCommand(args []string) error {
 	flags := flag.NewFlagSet("events", flag.ContinueOnError)
-	configPath := flags.String("config", "", "path to .spynel/config.yaml")
+	configPath := flags.String("config", "", "path to .werkrby/config.yaml")
 	socket := flags.String("socket", "", "explicit private Unix socket")
 	conversation := flags.String("conversation", "local", "durable CLI conversation name")
 	after := flags.String("after", "", "reconnect after this processed event/checkpoint cursor")
@@ -129,7 +129,7 @@ func runEventsCommand(args []string) error {
 
 func runNotifyCommand(args []string, version string) error {
 	flags := flag.NewFlagSet("notify", flag.ContinueOnError)
-	configPath := flags.String("config", "", "path to .spynel/config.yaml")
+	configPath := flags.String("config", "", "path to .werkrby/config.yaml")
 	workdir := flags.String("workdir", "", "absolute Werkrby workspace path")
 	origin := flags.String("origin", "", "stable channel/conversation origin")
 	recentAuthorized := flags.Bool("recent-authorized", false, "route to the most recently active unambiguous authorized conversation")
@@ -249,7 +249,7 @@ func runFrameworkCLICommand(command string, args []string, version string) error
 		args = workflowListAliasArgs(args)
 	}
 	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	configPath := flags.String("config", "", "path to .spynel/config.yaml")
+	configPath := flags.String("config", "", "path to .werkrby/config.yaml")
 	conversation := flags.String("conversation", "local", "durable CLI conversation name")
 	jsonOutput := flags.Bool("json", false, "emit response events as NDJSON")
 	if err := flags.Parse(args); err != nil {
@@ -378,7 +378,7 @@ func runOwnerlessCleanup(cfg config.Config, action func() error) (bool, error) {
 
 func runStatusCLICommand(args []string, version string, output io.Writer) error {
 	flags := flag.NewFlagSet("status", flag.ContinueOnError)
-	configPath := flags.String("config", "", "path to .spynel/config.yaml")
+	configPath := flags.String("config", "", "path to .werkrby/config.yaml")
 	conversation := flags.String("conversation", "local", "durable CLI conversation name")
 	jsonOutput := flags.Bool("json", false, "emit structured JSON")
 	if err := flags.Parse(args); err != nil {
@@ -458,7 +458,7 @@ func runConversationCommand(args []string, output io.Writer) error {
 
 func listCLIConversations(args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("conversations list", flag.ContinueOnError)
-	configPath := flags.String("config", "", "path to .spynel/config.yaml")
+	configPath := flags.String("config", "", "path to .werkrby/config.yaml")
 	limit := flags.Int("limit", defaultConversationLimit, "maximum conversations")
 	jsonOutput := flags.Bool("json", false, "emit a JSON array")
 	if err := flags.Parse(args); err != nil {
@@ -504,7 +504,7 @@ func listCLIConversations(args []string, output io.Writer) error {
 
 func showCLIConversation(args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("conversations show", flag.ContinueOnError)
-	configPath := flags.String("config", "", "path to .spynel/config.yaml")
+	configPath := flags.String("config", "", "path to .werkrby/config.yaml")
 	tail := flags.Int("tail", 50, "maximum newest entries")
 	characters := flags.Int("chars", 500000, "maximum formatted characters")
 	jsonOutput := flags.Bool("json", false, "emit structured JSON")
@@ -550,7 +550,7 @@ func showCLIConversation(args []string, output io.Writer) error {
 
 func resumeCLIConversation(args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("conversations resume", flag.ContinueOnError)
-	configPath := flags.String("config", "", "path to .spynel/config.yaml")
+	configPath := flags.String("config", "", "path to .werkrby/config.yaml")
 	jsonOutput := flags.Bool("json", false, "emit structured JSON")
 	if err := flags.Parse(args); err != nil {
 		return err

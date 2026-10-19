@@ -534,7 +534,7 @@ func (p *Pi) startProcess(ctx context.Context, key string, session piSession, ep
 	} else {
 		sessionDir := filepath.Join(filepath.Dir(cfg.SessionsFile), "pi-sessions")
 		if cfg.SessionsFile == "" {
-			sessionDir = filepath.Join(cfg.Cwd, ".spynel", "runtime", "pi-sessions")
+			sessionDir = filepath.Join(cfg.Cwd, ".werkrby", "runtime", "pi-sessions")
 		}
 		if err := os.MkdirAll(sessionDir, 0o700); err != nil {
 			cancel()

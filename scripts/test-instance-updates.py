@@ -130,7 +130,7 @@ for line in sys.stdin:
             for workspace in workspaces:
                 workspace.mkdir()
                 subprocess.run([*launcher, "init", "--no-start"], cwd=workspace, env=env, check=True, stdout=subprocess.DEVNULL)
-                (workspace / ".spynel" / "config.yaml").write_text('harness:\n  name: acp\n  acp_command: ' + json.dumps(str(harness)) + '\n  sandbox: danger-full-access\norchestrator:\n  enabled: false\n  semantic_heartbeat_minutes: 0\nspeech:\n  enabled: false\n')
+                (workspace / ".werkrby" / "config.yaml").write_text('harness:\n  name: acp\n  acp_command: ' + json.dumps(str(harness)) + '\n  sandbox: danger-full-access\norchestrator:\n  enabled: false\n  semantic_heartbeat_minutes: 0\nspeech:\n  enabled: false\n')
             for index, (workspace, tui) in enumerate(((workspaces[0], False), (workspaces[0], True), (workspaces[1], True))):
                 if tui:
                     master, slave = pty.openpty()

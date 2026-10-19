@@ -425,7 +425,7 @@ func TestInstructionsCommandReportsValidationWithoutContents(t *testing.T) {
 	if err := runInstructionsCommand([]string{"--config", cfgPath}, &output); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(output.String(), secret) || !strings.Contains(output.String(), "chat: .spynel/instructions/agent-chat.md — valid") {
+	if strings.Contains(output.String(), secret) || !strings.Contains(output.String(), "chat: .werkrby/instructions/agent-chat.md — valid") {
 		t.Fatalf("instruction inspection output = %q", output.String())
 	}
 }
@@ -436,7 +436,7 @@ func TestInstructionsCommandRejectsEscapingInstructionsDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfgPath := config.PathForRoot(root)
-	instructionsPath := filepath.Join(root, ".spynel", "instructions")
+	instructionsPath := filepath.Join(root, ".werkrby", "instructions")
 	outsidePath := filepath.Join(t.TempDir(), "external-instructions")
 	if err := os.Rename(instructionsPath, outsidePath); err != nil {
 		t.Fatal(err)
@@ -449,7 +449,7 @@ func TestInstructionsCommandRejectsEscapingInstructionsDirectory(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unsafe or invalid") {
 		t.Fatalf("symlinked instructions command error = %v", err)
 	}
-	if strings.Count(output.String(), "invalid (.spynel/instructions path must not be a symbolic link)") != 5 {
+	if strings.Count(output.String(), "invalid (.werkrby/instructions path must not be a symbolic link)") != 5 {
 		t.Fatalf("symlinked instructions command output = %q", output.String())
 	}
 }
@@ -977,7 +977,7 @@ func TestStatusCLIEmitsStructuredNonSecretState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	waitingPath := filepath.Join(root, ".spynel", "tasks", "waiting", "waiting.md")
+	waitingPath := filepath.Join(root, ".werkrby", "tasks", "waiting", "waiting.md")
 	if err := os.WriteFile(waitingPath, []byte("---\nid: waiting\nstatus: waiting\n---\n# Waiting\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1227,9 +1227,6 @@ func TestBuildServiceWithWerkrbyStateDirAndCompatSymlink(t *testing.T) {
 	}
 	oldState := filepath.Join(root, ".spynel")
 	newState := filepath.Join(root, ".werkrby")
-	if err := os.Rename(oldState, newState); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.Symlink(".werkrby", oldState); err != nil {
 		t.Fatal(err)
 	}
@@ -1785,7 +1782,7 @@ func TestTaskGoalCreateGuardsHelpFlagsAndReadonlyAliases(t *testing.T) {
 	countDocs := func() int {
 		total := 0
 		for _, route := range []string{"tasks", "goals"} {
-			base := filepath.Join(root, ".spynel", route)
+			base := filepath.Join(root, ".werkrby", route)
 			_ = filepath.WalkDir(base, func(path string, d os.DirEntry, walkErr error) error {
 				if walkErr != nil || d.IsDir() {
 					return walkErr

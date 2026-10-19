@@ -26,9 +26,9 @@ printf '%s\n' "$docs_json" | grep -q '"schema_version": "spynel.docs/v1"'
 
 "$binary" init --no-start --dir "$smoke_dir"
 (cd "$smoke_dir" && "$binary" config)
-instructions_output=$("$binary" instructions --config "$smoke_dir/.spynel/config.yaml")
-printf '%s\n' "$instructions_output" | grep -q 'chat: .spynel/instructions/agent-chat.md — valid'
-printf '%s\n' "$instructions_output" | grep -q 'heartbeat: .spynel/instructions/agent-heartbeat.md — valid'
+instructions_output=$("$binary" instructions --config "$smoke_dir/.werkrby/config.yaml")
+printf '%s\n' "$instructions_output" | grep -q 'chat: .werkrby/instructions/agent-chat.md — valid'
+printf '%s\n' "$instructions_output" | grep -q 'heartbeat: .werkrby/instructions/agent-heartbeat.md — valid'
 reviewed_task=$(cd "$smoke_dir" && "$binary" task "smoke test task creation")
 direct_task=$(cd "$smoke_dir" && "$binary" task --no-review "collect smoke status")
 "$binary" task inspect "$reviewed_task" | grep -q 'Review required: true'
@@ -59,54 +59,54 @@ goals_json=$(cd "$smoke_dir" && "$binary" goals --json review --detail --limit 1
 printf '%s\n' "$goals_json" | grep -q '"kind":"final"'
 printf '%s\n' "$goals_json" | grep -q '# Goals · review'
 
-status_json=$("$binary" status --config "$smoke_dir/.spynel/config.yaml" --conversation smoke --json)
+status_json=$("$binary" status --config "$smoke_dir/.werkrby/config.yaml" --conversation smoke --json)
 printf '%s\n' "$status_json" | grep -q '"harness_state"'
 printf '%s\n' "$status_json" | grep -q '"connections"'
 
-command_output=$("$binary" command --config "$smoke_dir/.spynel/config.yaml" --conversation smoke help commands)
+command_output=$("$binary" command --config "$smoke_dir/.werkrby/config.yaml" --conversation smoke help commands)
 printf '%s\n' "$command_output" | grep -q '/status'
 printf '%s\n' "$command_output" | grep -q '/tasks'
 printf '%s\n' "$command_output" | grep -q '/goals'
-conversation_json=$("$binary" conversations list --config "$smoke_dir/.spynel/config.yaml" --json)
+conversation_json=$("$binary" conversations list --config "$smoke_dir/.werkrby/config.yaml" --json)
 printf '%s\n' "$conversation_json" | grep -q '"conversation":"smoke"'
-"$binary" conversations show --config "$smoke_dir/.spynel/config.yaml" --tail 5 cli smoke >/dev/null
-branch=$("$binary" conversations resume --config "$smoke_dir/.spynel/config.yaml" cli smoke)
+"$binary" conversations show --config "$smoke_dir/.werkrby/config.yaml" --tail 5 cli smoke >/dev/null
+branch=$("$binary" conversations resume --config "$smoke_dir/.werkrby/config.yaml" cli smoke)
 case "$branch" in
   resume-????????) ;;
   *) echo "unexpected resumed CLI conversation: $branch" >&2; exit 1 ;;
 esac
-"$binary" conversations show --config "$smoke_dir/.spynel/config.yaml" --tail 5 cli "$branch" >/dev/null
+"$binary" conversations show --config "$smoke_dir/.werkrby/config.yaml" --tail 5 cli "$branch" >/dev/null
 
-if "$binary" followup --config "$smoke_dir/.spynel/config.yaml" --conversation smoke "too late" >/dev/null 2>&1; then
+if "$binary" followup --config "$smoke_dir/.werkrby/config.yaml" --conversation smoke "too late" >/dev/null 2>&1; then
   echo "inactive plain CLI follow-up unexpectedly succeeded" >&2
   exit 1
 fi
 
-test -f "$smoke_dir/.spynel/config.yaml"
+test -f "$smoke_dir/.werkrby/config.yaml"
 test ! -e "$smoke_dir/spynel.yaml"
-if grep -q 'state_dir:' "$smoke_dir/.spynel/config.yaml"; then
+if grep -q 'state_dir:' "$smoke_dir/.werkrby/config.yaml"; then
   echo "canonical config unexpectedly contains workspace.state_dir" >&2
   exit 1
 fi
 for prefix in chat developer reviewer heartbeat; do
-  if ! grep -q "^[[:space:]]*${prefix}_agent_prefix: \"\"$" "$smoke_dir/.spynel/config.yaml"; then
+  if ! grep -q "^[[:space:]]*${prefix}_agent_prefix: \"\"$" "$smoke_dir/.werkrby/config.yaml"; then
     echo "canonical config does not default ${prefix}_agent_prefix to empty" >&2
     exit 1
   fi
 done
-test -f "$smoke_dir/.spynel/AGENTS.md"
-test -f "$smoke_dir/.spynel/prompts/create-task.md"
-test -f "$smoke_dir/.spynel/prompts/create-goal.md"
-test -f "$smoke_dir/.spynel/prompts/goal-review.md"
-test "$(find "$smoke_dir/.spynel/instructions" -type f -name '*.md' | wc -l)" -eq 5
-test "$(find "$smoke_dir/.spynel/tasks/todo" -type f -name '*.md' | wc -l)" -eq 2
-test "$(find "$smoke_dir/.spynel/goals/proposed" -type f -name '*.md' | wc -l)" -eq 1
+test -f "$smoke_dir/.werkrby/AGENTS.md"
+test -f "$smoke_dir/.werkrby/prompts/create-task.md"
+test -f "$smoke_dir/.werkrby/prompts/create-goal.md"
+test -f "$smoke_dir/.werkrby/prompts/goal-review.md"
+test "$(find "$smoke_dir/.werkrby/instructions" -type f -name '*.md' | wc -l)" -eq 5
+test "$(find "$smoke_dir/.werkrby/tasks/todo" -type f -name '*.md' | wc -l)" -eq 2
+test "$(find "$smoke_dir/.werkrby/goals/proposed" -type f -name '*.md' | wc -l)" -eq 1
 
 for status in todo working review reviewing waiting done failed cancelled; do
-  test -d "$smoke_dir/.spynel/tasks/$status"
+  test -d "$smoke_dir/.werkrby/tasks/$status"
 done
 for status in proposed planning active review reviewing waiting done abandoned; do
-  test -d "$smoke_dir/.spynel/goals/$status"
+  test -d "$smoke_dir/.werkrby/goals/$status"
 done
 
 echo "Werkrby smoke test passed: $smoke_dir"

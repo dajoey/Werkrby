@@ -1,6 +1,7 @@
 # Local configuration, runtime state, and secrets
 .env
 .spynel/
+.werkrby/
 # Repository-local disposable scratch and build outputs
 .tmp*/
 /.reviewer-probe/

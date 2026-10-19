@@ -27,31 +27,31 @@ type fileSpec struct {
 
 var files = []fileSpec{
 	{Path: config.FileName, Template: "templates/config.yaml"},
-	{Path: ".spynel/AGENTS.md", Template: "templates/workspace-AGENTS.md"},
-	{Path: ".spynel/tasks/AGENTS.md", Template: "templates/tasks-AGENTS.md"},
-	{Path: ".spynel/goals/AGENTS.md", Template: "templates/goals-AGENTS.md"},
-	{Path: ".spynel/prompts/chat.md", Template: "templates/chat.md"},
-	{Path: ".spynel/prompts/create-task.md", Template: "templates/create-task.md"},
-	{Path: ".spynel/prompts/create-goal.md", Template: "templates/create-goal.md"},
-	{Path: ".spynel/prompts/task.md", Template: "templates/task.md"},
-	{Path: ".spynel/prompts/goal.md", Template: "templates/goal.md"},
-	{Path: ".spynel/prompts/goal-review.md", Template: "templates/goal-review.md"},
-	{Path: ".spynel/prompts/recovery.md", Template: "templates/recovery.md"},
-	{Path: ".spynel/prompts/review.md", Template: "templates/review.md"},
-	{Path: ".spynel/prompts/heartbeat.md", Template: "templates/heartbeat.md"},
-	{Path: ".spynel/prompts/notification.md", Template: "templates/notification.md"},
-	{Path: ".spynel/instructions/agent-chat.md", Template: "templates/agent-chat.md"},
-	{Path: ".spynel/instructions/agent-developer.md", Template: "templates/agent-developer.md"},
-	{Path: ".spynel/instructions/agent-reviewer.md", Template: "templates/agent-reviewer.md"},
-	{Path: ".spynel/instructions/agent-notification.md", Template: "templates/agent-notification.md"},
-	{Path: ".spynel/instructions/agent-heartbeat.md", Template: "templates/agent-heartbeat.md"},
-	{Path: ".spynel/extensions/README.md", Template: "templates/extensions.md"},
+	{Path: ".werkrby/AGENTS.md", Template: "templates/workspace-AGENTS.md"},
+	{Path: ".werkrby/tasks/AGENTS.md", Template: "templates/tasks-AGENTS.md"},
+	{Path: ".werkrby/goals/AGENTS.md", Template: "templates/goals-AGENTS.md"},
+	{Path: ".werkrby/prompts/chat.md", Template: "templates/chat.md"},
+	{Path: ".werkrby/prompts/create-task.md", Template: "templates/create-task.md"},
+	{Path: ".werkrby/prompts/create-goal.md", Template: "templates/create-goal.md"},
+	{Path: ".werkrby/prompts/task.md", Template: "templates/task.md"},
+	{Path: ".werkrby/prompts/goal.md", Template: "templates/goal.md"},
+	{Path: ".werkrby/prompts/goal-review.md", Template: "templates/goal-review.md"},
+	{Path: ".werkrby/prompts/recovery.md", Template: "templates/recovery.md"},
+	{Path: ".werkrby/prompts/review.md", Template: "templates/review.md"},
+	{Path: ".werkrby/prompts/heartbeat.md", Template: "templates/heartbeat.md"},
+	{Path: ".werkrby/prompts/notification.md", Template: "templates/notification.md"},
+	{Path: ".werkrby/instructions/agent-chat.md", Template: "templates/agent-chat.md"},
+	{Path: ".werkrby/instructions/agent-developer.md", Template: "templates/agent-developer.md"},
+	{Path: ".werkrby/instructions/agent-reviewer.md", Template: "templates/agent-reviewer.md"},
+	{Path: ".werkrby/instructions/agent-notification.md", Template: "templates/agent-notification.md"},
+	{Path: ".werkrby/instructions/agent-heartbeat.md", Template: "templates/agent-heartbeat.md"},
+	{Path: ".werkrby/extensions/README.md", Template: "templates/extensions.md"},
 }
 
 var directories = []string{
-	".spynel/history", ".spynel/jobs", ".spynel/attachments", ".spynel/runtime/leases", ".spynel/extensions", ".spynel/themes", ".spynel/instructions",
-	".spynel/tasks/todo", ".spynel/tasks/working", ".spynel/tasks/review", ".spynel/tasks/reviewing", ".spynel/tasks/waiting", ".spynel/tasks/done", ".spynel/tasks/failed", ".spynel/tasks/cancelled", ".spynel/tasks/archive",
-	".spynel/goals/proposed", ".spynel/goals/planning", ".spynel/goals/active", ".spynel/goals/review", ".spynel/goals/reviewing", ".spynel/goals/waiting", ".spynel/goals/done", ".spynel/goals/abandoned",
+	".werkrby/history", ".werkrby/jobs", ".werkrby/attachments", ".werkrby/runtime/leases", ".werkrby/extensions", ".werkrby/themes", ".werkrby/instructions",
+	".werkrby/tasks/todo", ".werkrby/tasks/working", ".werkrby/tasks/review", ".werkrby/tasks/reviewing", ".werkrby/tasks/waiting", ".werkrby/tasks/done", ".werkrby/tasks/failed", ".werkrby/tasks/cancelled", ".werkrby/tasks/archive",
+	".werkrby/goals/proposed", ".werkrby/goals/planning", ".werkrby/goals/active", ".werkrby/goals/review", ".werkrby/goals/reviewing", ".werkrby/goals/waiting", ".werkrby/goals/done", ".werkrby/goals/abandoned",
 }
 
 func ensureRealDirectory(path, description string) error {
@@ -93,27 +93,27 @@ func Init(root string, force bool) error {
 	if err := os.MkdirAll(abs, 0o700); err != nil {
 		return err
 	}
-	if err := ensureRealDirectory(filepath.Join(abs, ".spynel"), ".spynel state path"); err != nil {
+	if err := ensureRealDirectory(filepath.Join(abs, ".werkrby"), ".werkrby state path"); err != nil {
 		return err
 	}
 	configPath := config.PathForRoot(abs)
 	if !force {
 		if _, err := os.Stat(configPath); err == nil {
-			return errors.New(".spynel/config.yaml already exists (use --force to restore missing templates)")
+			return errors.New(".werkrby/config.yaml already exists (use --force to restore missing templates)")
 		}
 	}
 	if err := ensureInstructionBoundary(abs); err != nil {
 		return err
 	}
 	for _, dir := range directories {
-		if dir == ".spynel/instructions" {
+		if dir == ".werkrby/instructions" {
 			continue
 		}
 		if err := os.MkdirAll(filepath.Join(abs, filepath.FromSlash(dir)), 0o700); err != nil {
 			return err
 		}
 	}
-	if err := theme.InstallBuiltins(filepath.Join(abs, ".spynel", "themes")); err != nil {
+	if err := theme.InstallBuiltins(filepath.Join(abs, ".werkrby", "themes")); err != nil {
 		return err
 	}
 	createdConfig := false
@@ -180,7 +180,7 @@ func Upgrade(root string) error {
 	}
 	stateRoot := config.StateDir(abs)
 	for _, dir := range directories {
-		rel := strings.TrimPrefix(dir, ".spynel/")
+		rel := strings.TrimPrefix(dir, ".werkrby/")
 		if rel == "instructions" {
 			continue
 		}
@@ -192,7 +192,7 @@ func Upgrade(root string) error {
 		if spec.Path == config.FileName {
 			continue
 		}
-		rel := strings.TrimPrefix(spec.Path, ".spynel/")
+		rel := strings.TrimPrefix(spec.Path, ".werkrby/")
 		target := filepath.Join(stateRoot, filepath.FromSlash(rel))
 		if _, err := os.Stat(target); err == nil {
 			continue

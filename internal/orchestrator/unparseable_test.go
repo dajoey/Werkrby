@@ -238,7 +238,7 @@ func TestUnparseableReportsDoNotLoopOrDuplicate(t *testing.T) {
 }
 
 func TestUnparseableRepairIDIsAStableSlug(t *testing.T) {
-	first := unparseableRepairID("/x/.spynel/goals/active/goals-20260919 Gluttony.md")
+	first := unparseableRepairID("/x/.werkrby/goals/active/goals-20260919 Gluttony.md")
 	if first != "tasks-unparseable-goals-20260919-gluttony" {
 		t.Fatalf("repair id = %q", first)
 	}

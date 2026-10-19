@@ -2,7 +2,7 @@
 
 ## Purpose
 
-- Own the optional workspace staffing file `.spynel/roster.yaml` and its private per-day usage count.
+- Own the optional workspace staffing file `.werkrby/roster.yaml` and its private per-day usage count.
 
 ## Local Contracts
 

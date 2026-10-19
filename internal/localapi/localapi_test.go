@@ -168,8 +168,8 @@ func (h *apiHarness) Close() error {
 func TestClientStreamsIndependentTUIConversationsThroughOwner(t *testing.T) {
 	state := t.TempDir()
 	for relative, body := range map[string]string{
-		".spynel/tasks/waiting/open.md":  "not valid front matter",
-		".spynel/goals/proposed/open.md": "---\nid: goal\nstatus: proposed\n---\n# Goal\n",
+		".werkrby/tasks/waiting/open.md":  "not valid front matter",
+		".werkrby/goals/proposed/open.md": "---\nid: goal\nstatus: proposed\n---\n# Goal\n",
 	} {
 		path := filepath.Join(state, filepath.FromSlash(relative))
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

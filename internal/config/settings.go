@@ -69,7 +69,7 @@ func Settings(cfg Config) []Setting {
 		{Key: "workspace.attachment_max_mb", Section: "config", Description: "Maximum downloaded attachment size", Value: strconv.Itoa(cfg.Workspace.AttachmentMaxMB), Advanced: true},
 		{Key: "workspace.cleanup_retention_days", Section: "config", Description: "Age in whole days before automatic conversation/job cleanup and terminal-task archiving", Value: strconv.Itoa(cfg.Workspace.CleanupRetentionDays), Advanced: true},
 		{Key: "channels.tui.title", Section: "config", Description: "Default TUI title", Value: cfg.Channels.TUI.Title, Advanced: true},
-		{Key: "channels.tui.theme", Section: "config", Description: "Active color theme from .spynel/themes", Value: cfg.Channels.TUI.Theme, Advanced: true},
+		{Key: "channels.tui.theme", Section: "config", Description: "Active color theme from .werkrby/themes", Value: cfg.Channels.TUI.Theme, Advanced: true},
 		{Key: "orchestrator.enabled", Section: "config", Description: "Run Markdown tasks and goals", Value: formatBool(cfg.Orchestrator.Enabled), Choices: []string{"on", "off"}, Advanced: true},
 		{Key: "orchestrator.interval_seconds", Section: "config", Description: "Live route scan interval; saving resets the next scan deadline", Value: strconv.Itoa(cfg.Orchestrator.IntervalSec), Advanced: true},
 		{Key: "orchestrator.retrigger_unresponded_messages", Section: "config", Description: "Automatically processes stalled messages after restarts and disconnects.", Value: formatBool(cfg.Orchestrator.RetriggerUnrespondedMessages), Choices: []string{"on", "off"}, Advanced: true},

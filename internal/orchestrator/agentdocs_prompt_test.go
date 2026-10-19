@@ -39,7 +39,7 @@ func TestEveryOrchestrationPhaseGetsOneCallableDocsGuidance(t *testing.T) {
 			paths = append(paths, route.ReviewPrompt)
 		}
 		for _, path := range paths {
-			prompt, err := manager.renderPrompt(route, Lease{File: filepath.Join(root, ".spynel", route.Name, "working", "example.md")}, path)
+			prompt, err := manager.renderPrompt(route, Lease{File: filepath.Join(root, ".werkrby", route.Name, "working", "example.md")}, path)
 			if err != nil {
 				t.Fatalf("render %s: %v", path, err)
 			}
@@ -52,7 +52,7 @@ func TestEveryOrchestrationPhaseGetsOneCallableDocsGuidance(t *testing.T) {
 		}
 	}
 
-	custom := filepath.Join(root, ".spynel", "prompts", "custom.md")
+	custom := filepath.Join(root, ".werkrby", "prompts", "custom.md")
 	if err := os.WriteFile(custom, []byte("custom recovery prompt\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -72,12 +72,12 @@ func TestEveryOrchestrationPhaseGetsOneCallableDocsGuidance(t *testing.T) {
 		prompt       string
 		roleGuidance string
 	}{
-		{name: "task implementation", route: workflowRoutes()[0], file: filepath.Join(root, ".spynel", "tasks", "working", "task.md"), prompt: workflowRoutes()[0].Prompt, roleGuidance: instructions.DeveloperScopeDisciplineGuidance},
-		{name: "task recovery", route: workflowRoutes()[0], file: filepath.Join(root, ".spynel", "tasks", "working", "task.md"), prompt: workflowRoutes()[0].RecoveryPrompt, roleGuidance: instructions.DeveloperScopeDisciplineGuidance},
-		{name: "task review", route: workflowRoutes()[0], file: filepath.Join(root, ".spynel", "tasks", "reviewing", "task.md"), prompt: workflowRoutes()[0].ReviewPrompt, roleGuidance: instructions.ReviewerScopeDisciplineGuidance},
-		{name: "goal planning", route: workflowRoutes()[1], file: filepath.Join(root, ".spynel", "goals", "planning", "goal.md"), prompt: workflowRoutes()[1].Prompt, roleGuidance: instructions.DeveloperScopeDisciplineGuidance},
-		{name: "goal recovery", route: workflowRoutes()[1], file: filepath.Join(root, ".spynel", "goals", "planning", "goal.md"), prompt: workflowRoutes()[1].RecoveryPrompt, roleGuidance: instructions.DeveloperScopeDisciplineGuidance},
-		{name: "goal review", route: workflowRoutes()[1], file: filepath.Join(root, ".spynel", "goals", "reviewing", "goal.md"), prompt: workflowRoutes()[1].ReviewPrompt, roleGuidance: instructions.ReviewerScopeDisciplineGuidance},
+		{name: "task implementation", route: workflowRoutes()[0], file: filepath.Join(root, ".werkrby", "tasks", "working", "task.md"), prompt: workflowRoutes()[0].Prompt, roleGuidance: instructions.DeveloperScopeDisciplineGuidance},
+		{name: "task recovery", route: workflowRoutes()[0], file: filepath.Join(root, ".werkrby", "tasks", "working", "task.md"), prompt: workflowRoutes()[0].RecoveryPrompt, roleGuidance: instructions.DeveloperScopeDisciplineGuidance},
+		{name: "task review", route: workflowRoutes()[0], file: filepath.Join(root, ".werkrby", "tasks", "reviewing", "task.md"), prompt: workflowRoutes()[0].ReviewPrompt, roleGuidance: instructions.ReviewerScopeDisciplineGuidance},
+		{name: "goal planning", route: workflowRoutes()[1], file: filepath.Join(root, ".werkrby", "goals", "planning", "goal.md"), prompt: workflowRoutes()[1].Prompt, roleGuidance: instructions.DeveloperScopeDisciplineGuidance},
+		{name: "goal recovery", route: workflowRoutes()[1], file: filepath.Join(root, ".werkrby", "goals", "planning", "goal.md"), prompt: workflowRoutes()[1].RecoveryPrompt, roleGuidance: instructions.DeveloperScopeDisciplineGuidance},
+		{name: "goal review", route: workflowRoutes()[1], file: filepath.Join(root, ".werkrby", "goals", "reviewing", "goal.md"), prompt: workflowRoutes()[1].ReviewPrompt, roleGuidance: instructions.ReviewerScopeDisciplineGuidance},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			stock, err := manager.renderPrompt(test.route, Lease{File: test.file}, test.prompt)
@@ -106,7 +106,7 @@ func TestRecoveryPromptInjectsWorkerName(t *testing.T) {
 	}
 	manager := New(cfg, nil, extensions.Runner{})
 	route := workflowRoutes()[0]
-	file := filepath.Join(root, ".spynel", "tasks", "working", "tasks-20260926-herdr-idle-must-be-stable-before-tab-close.md")
+	file := filepath.Join(root, ".werkrby", "tasks", "working", "tasks-20260926-herdr-idle-must-be-stable-before-tab-close.md")
 	lease := Lease{
 		File:         file,
 		Route:        "tasks",

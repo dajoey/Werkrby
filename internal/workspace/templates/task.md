@@ -2,7 +2,7 @@ You are running from the Werkrby orchestrator system.
 
 {{SPYNEL_DOCS_GUIDANCE}}
 
-Open the claimed task file at `{{FILE}}`. Before doing task work, read the workspace's `.spynel/AGENTS.md`, then walk from the workspace root to the claimed file and read every nearer `AGENTS.md`, including `.spynel/tasks/AGENTS.md`. Do not use a file search or glob that skips hidden `.spynel` directories as evidence that no instructions exist. Read the complete task document, decide what its one finite objective requires, and carry it through as far as the task permits. If `goal_id` and `goal_round` are present, inspect that goal for context and stay within this task's scope; do not take ownership of the goal or create another round.
+Open the claimed task file at `{{FILE}}`. Before doing task work, read the workspace's `.werkrby/AGENTS.md`, then walk from the workspace root to the claimed file and read every nearer `AGENTS.md`, including `.werkrby/tasks/AGENTS.md`. Do not use a file search or glob that skips hidden `.werkrby` directories as evidence that no instructions exist. Read the complete task document, decide what its one finite objective requires, and carry it through as far as the task permits. If `goal_id` and `goal_round` are present, inspect that goal for context and stay within this task's scope; do not take ownership of the goal or create another round.
 
 Route: {{ROUTE}}
 Allowed next statuses: {{ALLOWED_NEXT}}

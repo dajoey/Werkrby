@@ -4175,7 +4175,7 @@ func TestInitializationOptionBlocksHaveOneSemanticSeparatorRow(t *testing.T) {
 	if initializeRow < 0 || initializeRow+3 >= len(plainRows) {
 		t.Fatalf("initialization option block is incomplete: %q", ansi.Strip(frame))
 	}
-	if !strings.Contains(plainRows[initializeRow+1], "Create the private .spynel workspace and its config.yaml") ||
+	if !strings.Contains(plainRows[initializeRow+1], "Create the private .werkrby workspace and its config.yaml") ||
 		strings.TrimSpace(plainRows[initializeRow+2]) != "" ||
 		!strings.Contains(plainRows[initializeRow+3], "Exit") ||
 		initializeRow+4 >= len(plainRows) ||

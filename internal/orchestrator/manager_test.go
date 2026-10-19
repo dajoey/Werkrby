@@ -709,7 +709,7 @@ func TestControlReservationsPersistAndRefreshRegisteredDurableJob(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(root, ".spynel", "tasks", "working", "control.md")
+	path := filepath.Join(root, ".werkrby", "tasks", "working", "control.md")
 	assigned := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
 	if err := WriteDocument(path, Document{FrontMatter: map[string]any{
 		"id": "control", "status": "working", "first_assigned_at": assigned.Format(time.RFC3339), "provider_iterations": 1,
@@ -1021,7 +1021,7 @@ func TestTransientProviderErrorRetriesInPlace(t *testing.T) {
 				t.Fatalf("lease error = %q, want none", current.LastError)
 			}
 			// recordError fires captureAutopsyAndAlert on a detached goroutine
-			// that writes err-*.json under .spynel/diagnostics; wait for it so it
+			// that writes err-*.json under .werkrby/diagnostics; wait for it so it
 			// cannot race t.TempDir cleanup.
 			if test.wantError != "" {
 				diag := cfg.StatePath("diagnostics")

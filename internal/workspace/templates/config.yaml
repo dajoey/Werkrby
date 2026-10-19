@@ -45,7 +45,7 @@ channels:
   whatsapp:
     enabled: false
     mode: self-chat
-    database: .spynel/whatsapp.db
+    database: .werkrby/whatsapp.db
     allowed_numbers: []
     allow_groups: false
     poll_interval_seconds: 3
@@ -75,5 +75,5 @@ orchestrator:
 
 extensions:
   enabled: true
-  directory: .spynel/extensions
+  directory: .werkrby/extensions
   hook_timeout: 30s

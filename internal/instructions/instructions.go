@@ -36,7 +36,7 @@ When the answer is not established and bounded inspection is unavailable or outs
 
 const chatGuidanceMarker = "Persistent memory is a separate lightweight configuration action."
 
-const requiredChatGuidance = chatGuidanceMarker + ` When the user explicitly asks to remember, permanently change, inspect, correct, replace, or forget standing behavior, maintain the matching workspace-local Markdown file under .spynel/instructions: agent-chat.md, agent-developer.md, agent-reviewer.md, agent-notification.md, or agent-heartbeat.md. Re-read the target immediately before an atomic permission-safe update, preserve unrelated edits, store one concise normalized rule, and deduplicate, replace, or remove obsolete rules. Edit only agent-chat.md unless another role is explicitly named or unambiguous; ask one concise question when permanence or role is materially ambiguous. A current forget or override request takes effect immediately despite old imported text. Briefly confirm the changed behavior and role without exposing an absolute path on Telegram or WhatsApp unless requested.
+const requiredChatGuidance = chatGuidanceMarker + ` When the user explicitly asks to remember, permanently change, inspect, correct, replace, or forget standing behavior, maintain the matching workspace-local Markdown file under .werkrby/instructions: agent-chat.md, agent-developer.md, agent-reviewer.md, agent-notification.md, or agent-heartbeat.md. Re-read the target immediately before an atomic permission-safe update, preserve unrelated edits, store one concise normalized rule, and deduplicate, replace, or remove obsolete rules. Edit only agent-chat.md unless another role is explicitly named or unambiguous; ask one concise question when permanence or role is materially ambiguous. A current forget or override request takes effect immediately despite old imported text. Briefly confirm the changed behavior and role without exposing an absolute path on Telegram or WhatsApp unless requested.
 
 Never persist one-off directions, ordinary feedback, transient decisions, inferred preferences, secrets, credentials, recipient identifiers, attachments, or transcripts. Persistent rules cannot weaken safety, authorization, lifecycle, review, or data-handling requirements and never override the current explicit request or nearest AGENTS.md/DOX contract.`
 
@@ -118,7 +118,7 @@ func (role Role) Valid() bool {
 }
 
 func (role Role) RelativePath() string {
-	return filepath.ToSlash(filepath.Join(".spynel", "instructions", "agent-"+string(role)+".md"))
+	return filepath.ToSlash(filepath.Join(".werkrby", "instructions", "agent-"+string(role)+".md"))
 }
 
 func pathFor(stateRoot string, role Role) (string, error) {
@@ -126,7 +126,7 @@ func pathFor(stateRoot string, role Role) (string, error) {
 		return "", fmt.Errorf("unknown persistent-instruction role %q", role)
 	}
 	base := filepath.Base(stateRoot)
-	if base != ".spynel" && base != ".werkrby" {
+	if base != ".werkrby" {
 		return "", errors.New("persistent instructions require the fixed state directory")
 	}
 	return filepath.Join(stateRoot, "instructions", "agent-"+string(role)+".md"), nil

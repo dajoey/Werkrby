@@ -70,7 +70,7 @@ func TestGlobalJobActivityReachesPrimaryAndAttachedTUI(t *testing.T) {
 	check(0, 0)
 
 	for _, relative := range []string{"tasks/todo/queued.md", "goals/active/passive.md"} {
-		path := filepath.Join(root, ".spynel", relative)
+		path := filepath.Join(root, ".werkrby", relative)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatal(err)
 		}
