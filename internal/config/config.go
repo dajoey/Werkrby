@@ -19,8 +19,8 @@ import (
 
 const (
 	// FileName is the canonical workspace-relative configuration path.
-	FileName           = ".spynel/config.yaml"
-	StateDirectoryName = ".spynel"
+	FileName           = ".werkrby/config.yaml"
+	StateDirectoryName = ".werkrby"
 
 	TaskReviewsSkipTrivial  = "skip-trivial"
 	TaskReviewsAlways       = "always"
@@ -255,14 +255,14 @@ func Default() Config {
 		Channels: Channels{
 			TUI:      TUI{Title: "Werkrby", Theme: "spynel"},
 			Telegram: Telegram{Name: "spynel", TokenEnv: "SPYNEL_TELEGRAM_TOKEN", Mode: "polling", WebhookListen: "127.0.0.1:8787", PollTimeoutSec: 30, GroupMode: "mention", WelcomeMessage: "Welcome, {name}!"},
-			WhatsApp: WhatsApp{Mode: "self-chat", Database: ".spynel/whatsapp.db", PollIntervalSec: 3},
+			WhatsApp: WhatsApp{Mode: "self-chat", Database: ".werkrby/whatsapp.db", PollIntervalSec: 3},
 		},
 		Speech:  Speech{Enabled: true, Language: "en", NumThreads: 2, MaxFileMB: 100, MaxDurationSec: 1800, ChunkSeconds: 600},
 		Startup: Startup{},
 		Orchestrator: Orchestrator{
 			Enabled: true, IntervalSec: 10, RetriggerUnrespondedMessages: true, SemanticHeartbeatMinutes: 15, TaskNotifications: TaskNotificationsDecide, MaxParallel: 4, RepairSlots: 1,
 		},
-		Extensions: Extensions{Enabled: true, Directory: ".spynel/extensions", HookTimeout: "30s"},
+		Extensions: Extensions{Enabled: true, Directory: ".werkrby/extensions", HookTimeout: "30s"},
 	}
 }
 
@@ -371,19 +371,14 @@ func PathForRoot(root string) string {
 	return filepath.Join(root, filepath.FromSlash(FileName))
 }
 
-// StateDir returns the state directory for root, returning <root>/.werkrby
-// when that directory exists, else <root>/.spynel.
+// StateDir returns the state directory for root, unconditionally returning <root>/.werkrby.
 func StateDir(root string) string {
-	werkrby := filepath.Join(root, ".werkrby")
-	if fi, err := os.Stat(werkrby); err == nil && fi.IsDir() {
-		return werkrby
-	}
 	return filepath.Join(root, StateDirectoryName)
 }
 
 func rootForConfigPath(path string) string {
 	directory := filepath.Dir(path)
-	if filepath.Base(path) == filepath.Base(filepath.FromSlash(FileName)) && (filepath.Base(directory) == StateDirectoryName || filepath.Base(directory) == ".werkrby") {
+	if filepath.Base(path) == filepath.Base(filepath.FromSlash(FileName)) && filepath.Base(directory) == StateDirectoryName {
 		return filepath.Dir(directory)
 	}
 	return directory

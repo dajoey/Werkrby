@@ -455,7 +455,7 @@ func TestJobControlDelimitsGuidanceAndAcknowledgesWithoutTakingEmitter(t *testin
 	cfg, _ := config.Load(config.PathForRoot(root))
 	target := &jobControlHarness{heldServiceHarness: newHeldServiceHarness()}
 	service := New(cfg, target)
-	path := filepath.Join(root, ".spynel", "tasks", "working", "control.md")
+	path := filepath.Join(root, ".werkrby", "tasks", "working", "control.md")
 	document := orchestrator.Document{FrontMatter: map[string]any{"id": "control", "title": "Control", "status": "working"}, Body: "# Control\n\n## Progress\n"}
 	if err := orchestrator.WriteDocument(path, document); err != nil {
 		t.Fatal(err)
@@ -568,7 +568,7 @@ func TestAuthenticatedWorkspaceInterfacesControlDurableJobAcrossNotificationOrig
 	cfg.Channels.Telegram.AllowedUsers = []string{"7", "8"}
 	target := &jobControlHarness{heldServiceHarness: newHeldServiceHarness()}
 	service := New(cfg, target)
-	path := filepath.Join(root, ".spynel", "tasks", "working", "remote.md")
+	path := filepath.Join(root, ".werkrby", "tasks", "working", "remote.md")
 	document := orchestrator.Document{FrontMatter: map[string]any{
 		"id": "remote", "status": "working",
 		"notify": map[string]any{"enabled": true, "origin": "telegram/TG-7", "on": []any{"done"}},

@@ -52,7 +52,7 @@ func TestMalformedSummaryDoesNotBlockNotificationAgentScheduling(t *testing.T) {
 	harness := newFakeRecipient()
 	cfg := config.Default()
 	cfg.Root = directory
-	cfg.Path = filepath.Join(directory, ".spynel", "config.yaml")
+	cfg.Path = filepath.Join(directory, ".werkrby", "config.yaml")
 	manager := New(cfg, harness, extensions.Runner{})
 	if err := manager.completeTransition(context.Background(), workflowRoute{Name: "tasks"}, Lease{ID: "lease", Phase: phaseTaskImplementation, ClaimAttempt: 1}, "done", path); err != nil {
 		t.Fatal(err)

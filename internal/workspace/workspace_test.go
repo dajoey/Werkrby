@@ -23,23 +23,23 @@ func TestInitCreatesDocumentedWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, path := range []string{
-		".spynel/config.yaml", ".spynel/AGENTS.md", ".spynel/tasks/AGENTS.md",
-		".spynel/prompts/create-task.md", ".spynel/prompts/create-goal.md", ".spynel/prompts/task.md", ".spynel/prompts/review.md", ".spynel/prompts/goal-review.md", ".spynel/prompts/heartbeat.md", ".spynel/prompts/notification.md",
-		".spynel/instructions/agent-chat.md", ".spynel/instructions/agent-developer.md", ".spynel/instructions/agent-reviewer.md", ".spynel/instructions/agent-notification.md", ".spynel/instructions/agent-heartbeat.md",
-		".spynel/tasks/todo", ".spynel/tasks/working", ".spynel/tasks/review", ".spynel/tasks/reviewing", ".spynel/tasks/cancelled", ".spynel/tasks/archive",
-		".spynel/goals/proposed", ".spynel/goals/planning", ".spynel/goals/active", ".spynel/goals/review", ".spynel/goals/reviewing", ".spynel/goals/abandoned",
-		".spynel/attachments", ".spynel/jobs", ".spynel/runtime/leases",
-		".spynel/themes/spynel.yaml", ".spynel/themes/hack-the-box.yaml", ".spynel/themes/github-colorblind-dark.yaml",
-		".spynel/themes/gruvbox-dark.yaml", ".spynel/themes/nord.yaml", ".spynel/themes/okabe-ito-dark.yaml",
-		".spynel/themes/gruvbox-light.yaml", ".spynel/themes/rose-pine-dawn.yaml", ".spynel/themes/tol-muted-light.yaml",
-		".spynel/themes/catppuccin-latte.yaml",
-		".spynel/themes/okabe-ito-light.yaml", ".spynel/themes/solarized-light.yaml",
+		".werkrby/config.yaml", ".werkrby/AGENTS.md", ".werkrby/tasks/AGENTS.md",
+		".werkrby/prompts/create-task.md", ".werkrby/prompts/create-goal.md", ".werkrby/prompts/task.md", ".werkrby/prompts/review.md", ".werkrby/prompts/goal-review.md", ".werkrby/prompts/heartbeat.md", ".werkrby/prompts/notification.md",
+		".werkrby/instructions/agent-chat.md", ".werkrby/instructions/agent-developer.md", ".werkrby/instructions/agent-reviewer.md", ".werkrby/instructions/agent-notification.md", ".werkrby/instructions/agent-heartbeat.md",
+		".werkrby/tasks/todo", ".werkrby/tasks/working", ".werkrby/tasks/review", ".werkrby/tasks/reviewing", ".werkrby/tasks/cancelled", ".werkrby/tasks/archive",
+		".werkrby/goals/proposed", ".werkrby/goals/planning", ".werkrby/goals/active", ".werkrby/goals/review", ".werkrby/goals/reviewing", ".werkrby/goals/abandoned",
+		".werkrby/attachments", ".werkrby/jobs", ".werkrby/runtime/leases",
+		".werkrby/themes/spynel.yaml", ".werkrby/themes/hack-the-box.yaml", ".werkrby/themes/github-colorblind-dark.yaml",
+		".werkrby/themes/gruvbox-dark.yaml", ".werkrby/themes/nord.yaml", ".werkrby/themes/okabe-ito-dark.yaml",
+		".werkrby/themes/gruvbox-light.yaml", ".werkrby/themes/rose-pine-dawn.yaml", ".werkrby/themes/tol-muted-light.yaml",
+		".werkrby/themes/catppuccin-latte.yaml",
+		".werkrby/themes/okabe-ito-light.yaml", ".werkrby/themes/solarized-light.yaml",
 	} {
 		if _, err := os.Stat(filepath.Join(root, path)); err != nil {
 			t.Fatalf("missing initialized path %s: %v", path, err)
 		}
 	}
-	instructionEntries, err := os.ReadDir(filepath.Join(root, ".spynel", "instructions"))
+	instructionEntries, err := os.ReadDir(filepath.Join(root, ".werkrby", "instructions"))
 	if err != nil || len(instructionEntries) != 5 {
 		t.Fatalf("initialized instruction files = %d, %v", len(instructionEntries), err)
 	}
@@ -105,7 +105,7 @@ func TestInitAndUpgradeRejectSymlinkedInstructionBoundaries(t *testing.T) {
 	} {
 		t.Run(operation.name, func(t *testing.T) {
 			root := t.TempDir()
-			stateRoot := filepath.Join(root, ".spynel")
+			stateRoot := filepath.Join(root, ".werkrby")
 			if err := os.Mkdir(stateRoot, 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -136,7 +136,7 @@ func TestWorkspaceTemplatesExcludeRepositoryDeveloperPolicy(t *testing.T) {
 	}
 
 	for _, spec := range files {
-		if !strings.HasPrefix(spec.Path, ".spynel/prompts/") && !strings.HasSuffix(spec.Path, "AGENTS.md") {
+		if !strings.HasPrefix(spec.Path, ".werkrby/prompts/") && !strings.HasSuffix(spec.Path, "AGENTS.md") {
 			continue
 		}
 		name := strings.TrimPrefix(spec.Template, "templates/")
@@ -201,7 +201,7 @@ func TestInitializedChatPromptContainsEvidenceGroundedHonestyContract(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	initialized, err := os.ReadFile(filepath.Join(root, ".spynel", "prompts", "chat.md"))
+	initialized, err := os.ReadFile(filepath.Join(root, ".werkrby", "prompts", "chat.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,46 +223,46 @@ func TestUpgradeAddsReviewAssetsWithoutOverwritingPrompts(t *testing.T) {
 	if err := Init(root, false); err != nil {
 		t.Fatal(err)
 	}
-	taskPrompt := filepath.Join(root, ".spynel", "prompts", "task.md")
+	taskPrompt := filepath.Join(root, ".werkrby", "prompts", "task.md")
 	custom := []byte("custom task prompt\n")
 	if err := os.WriteFile(taskPrompt, custom, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	heartbeatPrompt := filepath.Join(root, ".spynel", "prompts", "heartbeat.md")
+	heartbeatPrompt := filepath.Join(root, ".werkrby", "prompts", "heartbeat.md")
 	heartbeatCustom := []byte("custom heartbeat prompt\n")
 	if err := os.WriteFile(heartbeatPrompt, heartbeatCustom, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	notificationPrompt := filepath.Join(root, ".spynel", "prompts", "notification.md")
+	notificationPrompt := filepath.Join(root, ".werkrby", "prompts", "notification.md")
 	notificationCustom := []byte("custom notification prompt\n")
 	if err := os.WriteFile(notificationPrompt, notificationCustom, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	instructionPath := filepath.Join(root, ".spynel", "instructions", "agent-developer.md")
+	instructionPath := filepath.Join(root, ".werkrby", "instructions", "agent-developer.md")
 	instructionCustom := []byte("Keep this developer preference.\n")
 	if err := os.WriteFile(instructionPath, instructionCustom, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	missingInstruction := filepath.Join(root, ".spynel", "instructions", "agent-reviewer.md")
+	missingInstruction := filepath.Join(root, ".werkrby", "instructions", "agent-reviewer.md")
 	if err := os.Remove(missingInstruction); err != nil {
 		t.Fatal(err)
 	}
-	reviewPrompt := filepath.Join(root, ".spynel", "prompts", "review.md")
+	reviewPrompt := filepath.Join(root, ".werkrby", "prompts", "review.md")
 	if err := os.Remove(reviewPrompt); err != nil {
 		t.Fatal(err)
 	}
-	createTaskPrompt := filepath.Join(root, ".spynel", "prompts", "create-task.md")
+	createTaskPrompt := filepath.Join(root, ".werkrby", "prompts", "create-task.md")
 	if err := os.Remove(createTaskPrompt); err != nil {
 		t.Fatal(err)
 	}
-	goalReviewPrompt := filepath.Join(root, ".spynel", "prompts", "goal-review.md")
+	goalReviewPrompt := filepath.Join(root, ".werkrby", "prompts", "goal-review.md")
 	if err := os.Remove(goalReviewPrompt); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(filepath.Join(root, ".spynel", "tasks", "review")); err != nil {
+	if err := os.RemoveAll(filepath.Join(root, ".werkrby", "tasks", "review")); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.RemoveAll(filepath.Join(root, ".spynel", "goals", "reviewing")); err != nil {
+	if err := os.RemoveAll(filepath.Join(root, ".werkrby", "goals", "reviewing")); err != nil {
 		t.Fatal(err)
 	}
 	if err := Upgrade(root); err != nil {
@@ -286,10 +286,10 @@ func TestUpgradeAddsReviewAssetsWithoutOverwritingPrompts(t *testing.T) {
 	if _, err := os.Stat(reviewPrompt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(root, ".spynel", "tasks", "review")); err != nil {
+	if _, err := os.Stat(filepath.Join(root, ".werkrby", "tasks", "review")); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{createTaskPrompt, goalReviewPrompt, filepath.Join(root, ".spynel", "goals", "reviewing")} {
+	for _, path := range []string{createTaskPrompt, goalReviewPrompt, filepath.Join(root, ".werkrby", "goals", "reviewing")} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("upgrade did not restore %s: %v", path, err)
 		}
@@ -298,7 +298,7 @@ func TestUpgradeAddsReviewAssetsWithoutOverwritingPrompts(t *testing.T) {
 
 func TestUpgradePreservesCustomThemeCollection(t *testing.T) {
 	root := t.TempDir()
-	themeDir := filepath.Join(root, ".spynel", "themes")
+	themeDir := filepath.Join(root, ".werkrby", "themes")
 	if err := os.MkdirAll(themeDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -332,16 +332,16 @@ func TestForceInitAddsRevisedThemesWithoutReplacingExistingFiles(t *testing.T) {
 	if err := Init(root, false); err != nil {
 		t.Fatal(err)
 	}
-	customPath := filepath.Join(root, ".spynel", "themes", "spynel.yaml")
+	customPath := filepath.Join(root, ".werkrby", "themes", "spynel.yaml")
 	custom := []byte("user-owned theme file\n")
 	if err := os.WriteFile(customPath, custom, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	newPath := filepath.Join(root, ".spynel", "themes", "tol-muted-light.yaml")
+	newPath := filepath.Join(root, ".werkrby", "themes", "tol-muted-light.yaml")
 	if err := os.Remove(newPath); err != nil {
 		t.Fatal(err)
 	}
-	customExtraPath := filepath.Join(root, ".spynel", "themes", "tokyo-night.yaml")
+	customExtraPath := filepath.Join(root, ".werkrby", "themes", "tokyo-night.yaml")
 	if err := os.WriteFile(customExtraPath, []byte("user-owned custom theme\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -404,7 +404,7 @@ func TestOrchestrationPromptsRequireClockDerivedTimestamps(t *testing.T) {
 		if !strings.Contains(prompt, "current UTC time") || !strings.Contains(prompt, "estimate") {
 			t.Fatalf("%s does not require a clock-derived timestamp:\n%s", name, prompt)
 		}
-		if !strings.Contains(prompt, ".spynel/AGENTS.md") || !strings.Contains(prompt, "hidden") {
+		if !strings.Contains(prompt, ".werkrby/AGENTS.md") || !strings.Contains(prompt, "hidden") {
 			t.Fatalf("%s does not require the hidden workspace DOX chain:\n%s", name, prompt)
 		}
 		if strings.Count(prompt, "{{SPYNEL_DOCS_GUIDANCE}}") != 1 {
@@ -490,10 +490,6 @@ func TestUpgradeWithWerkrbyStateDirAndCompatSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	oldState := filepath.Join(root, ".spynel")
-	newState := filepath.Join(root, ".werkrby")
-	if err := os.Rename(oldState, newState); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.Symlink(".werkrby", oldState); err != nil {
 		t.Fatal(err)
 	}

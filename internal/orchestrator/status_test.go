@@ -32,18 +32,18 @@ func TestWorkStatusCountsDurableActiveFoldersConservatively(t *testing.T) {
 		}
 	}
 	valid := func(status string) string { return "---\nid: fixture\nstatus: " + status + "\n---\n# Fixture\n" }
-	write(".spynel/tasks/todo/valid.md", valid("todo"))
-	write(".spynel/tasks/working/corrupt.md", "missing front matter")
-	write(".spynel/tasks/waiting/waiting.md", valid("waiting"))
-	write(".spynel/tasks/waiting/corrupt-waiting.md", "missing front matter")
-	write(".spynel/tasks/triage/custom.md", valid("triage"))
-	write(".spynel/tasks/review/mismatch.md", valid(strings.Repeat("x", 1000)))
-	write(".spynel/tasks/done/terminal.md", valid("done"))
-	write(".spynel/tasks/failed/failed.md", valid("failed"))
-	write(".spynel/tasks/cancelled/cancelled.md", valid("cancelled"))
-	write(".spynel/goals/proposed/active.md", valid("proposed"))
-	write(".spynel/goals/done/done.md", valid("done"))
-	write(".spynel/goals/abandoned/abandoned.md", valid("abandoned"))
+	write(".werkrby/tasks/todo/valid.md", valid("todo"))
+	write(".werkrby/tasks/working/corrupt.md", "missing front matter")
+	write(".werkrby/tasks/waiting/waiting.md", valid("waiting"))
+	write(".werkrby/tasks/waiting/corrupt-waiting.md", "missing front matter")
+	write(".werkrby/tasks/triage/custom.md", valid("triage"))
+	write(".werkrby/tasks/review/mismatch.md", valid(strings.Repeat("x", 1000)))
+	write(".werkrby/tasks/done/terminal.md", valid("done"))
+	write(".werkrby/tasks/failed/failed.md", valid("failed"))
+	write(".werkrby/tasks/cancelled/cancelled.md", valid("cancelled"))
+	write(".werkrby/goals/proposed/active.md", valid("proposed"))
+	write(".werkrby/goals/done/done.md", valid("done"))
+	write(".werkrby/goals/abandoned/abandoned.md", valid("abandoned"))
 
 	manager := New(cfg, &heartbeatHarness{}, extensions.Runner{})
 	status := manager.WorkStatus()
@@ -96,7 +96,7 @@ func TestWorkStatusCountsButDoesNotOpenSymlinkDocuments(t *testing.T) {
 	if err := os.WriteFile(target, []byte("not markdown"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(root, ".spynel", "tasks", "waiting", "linked.md")
+	link := filepath.Join(root, ".werkrby", "tasks", "waiting", "linked.md")
 	if err := os.Symlink(target, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)
 	}

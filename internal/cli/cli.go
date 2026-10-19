@@ -215,7 +215,7 @@ func run(args []string, version string) error {
 		return nil
 	case "serve":
 		flags := flag.NewFlagSet("serve", flag.ContinueOnError)
-		configPath := flags.String("config", "", "path to .spynel/config.yaml")
+		configPath := flags.String("config", "", "path to .werkrby/config.yaml")
 		withTUI := flags.Bool("tui", false, "also launch the terminal UI")
 		socket := flags.String("socket", "", "optional private Unix socket path for integration clients")
 		flags.Bool("automatic-startup", false, "identify a non-interactive operating-system startup")
@@ -225,7 +225,7 @@ func run(args []string, version string) error {
 		return runServerWithSocket(*configPath, *withTUI, version, append([]string(nil), args...), *socket)
 	case "run":
 		flags := flag.NewFlagSet("run", flag.ContinueOnError)
-		configPath := flags.String("config", "", "path to .spynel/config.yaml")
+		configPath := flags.String("config", "", "path to .werkrby/config.yaml")
 		once := flags.Bool("once", false, "run one scan and wait for dispatched turns")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
@@ -508,7 +508,7 @@ func inspectTaskPolicy(path string, output io.Writer) error {
 func runInstructionsCommand(args []string, output io.Writer) error {
 	flags := flag.NewFlagSet("instructions", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	configPath := flags.String("config", "", "path to .spynel/config.yaml")
+	configPath := flags.String("config", "", "path to .werkrby/config.yaml")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}

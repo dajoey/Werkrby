@@ -166,9 +166,9 @@ def main():
             assert (old_executable.parent / "licenses" / "onnxruntime" / "LICENSE").is_file()
             assert fixture["checks"] == 0, "noninteractive bootstrap checked for updates"
             run("init", "--no-start", "--dir", str(workspace))
-            config = workspace / ".spynel" / "config.yaml"
+            config = workspace / ".werkrby" / "config.yaml"
             config.write_text("harness:\n  name: acp\n  acp_command: " + json.dumps(str(temp / "intentionally-missing-harness")) + "\n  sandbox: danger-full-access\norchestrator:\n  enabled: false\n  semantic_heartbeat_minutes: 0\nspeech:\n  enabled: false\n")
-            sentinel = workspace / ".spynel" / "tasks" / "todo" / "preserved.md"
+            sentinel = workspace / ".werkrby" / "tasks" / "todo" / "preserved.md"
             sentinel.write_text("---\nid: preserved\nstatus: todo\nreview_required: true\n---\nSynthetic task preserved across restart.\n")
             original_config, original_task = config.read_bytes(), sentinel.read_bytes()
             assert "GitHub" in run("update")
@@ -198,7 +198,7 @@ def main():
             checks = fixture["checks"]
             with (temp / "server.log").open("w") as log:
                 process = subprocess.Popen([str(install / "spynel"), "serve", "--automatic-startup", "--config", str(config)], cwd=workspace, env=env, stdin=subprocess.DEVNULL, stdout=log, stderr=log)
-                primary = workspace / ".spynel" / "runtime" / "primary.json"
+                primary = workspace / ".werkrby" / "runtime" / "primary.json"
 
                 def wait_for(predicate):
                     deadline = time.monotonic() + 30
@@ -287,10 +287,10 @@ def main():
             processes = []
             try:
                 for binary, project in ((install / "spynel", workspace), (npm_vendor / "spynel", npm_workspace)):
-                    child = subprocess.Popen([str(binary), "serve", "--automatic-startup", "--config", str(project / ".spynel" / "config.yaml")], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    child = subprocess.Popen([str(binary), "serve", "--automatic-startup", "--config", str(project / ".werkrby" / "config.yaml")], cwd=project, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     processes.append(child)
                     deadline = time.monotonic() + 30
-                    while not (project / ".spynel" / "runtime" / "primary.json").exists():
+                    while not (project / ".werkrby" / "runtime" / "primary.json").exists():
                         assert child.poll() is None, "uninstall fixture server exited"
                         assert time.monotonic() < deadline, "uninstall fixture server did not start"
                         time.sleep(.1)

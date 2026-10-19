@@ -521,20 +521,26 @@ func TestStoreUpdateSavesAndReloadsSharedSnapshot(t *testing.T) {
 }
 
 func TestStateDirResolution(t *testing.T) {
-	// (a) only .spynel -> expect .spynel
+	// (a) only .spynel -> expect .werkrby unconditionally
 	rootA := t.TempDir()
 	if err := os.Mkdir(filepath.Join(rootA, ".spynel"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := StateDir(rootA); got != filepath.Join(rootA, ".spynel") {
-		t.Fatalf("StateDir(only .spynel) = %q, want %q", got, filepath.Join(rootA, ".spynel"))
+	if got := StateDir(rootA); got != filepath.Join(rootA, ".werkrby") {
+		t.Fatalf("StateDir(only .spynel) = %q, want %q", got, filepath.Join(rootA, ".werkrby"))
 	}
 	cfgA := Config{Root: rootA}
-	if got := cfgA.StatePath("tasks"); got != filepath.Join(rootA, ".spynel", "tasks") {
-		t.Fatalf("StatePath(only .spynel) = %q, want %q", got, filepath.Join(rootA, ".spynel", "tasks"))
+	if got := cfgA.StatePath("tasks"); got != filepath.Join(rootA, ".werkrby", "tasks") {
+		t.Fatalf("StatePath(only .spynel) = %q, want %q", got, filepath.Join(rootA, ".werkrby", "tasks"))
 	}
 
-	// (b) only .werkrby -> expect .werkrby
+	// (b) empty dir (neither) -> expect .werkrby unconditionally
+	rootEmpty := t.TempDir()
+	if got := StateDir(rootEmpty); got != filepath.Join(rootEmpty, ".werkrby") {
+		t.Fatalf("StateDir(empty) = %q, want %q", got, filepath.Join(rootEmpty, ".werkrby"))
+	}
+
+	// (c) only .werkrby -> expect .werkrby
 	rootB := t.TempDir()
 	if err := os.Mkdir(filepath.Join(rootB, ".werkrby"), 0o700); err != nil {
 		t.Fatal(err)
@@ -547,7 +553,7 @@ func TestStateDirResolution(t *testing.T) {
 		t.Fatalf("StatePath(only .werkrby) = %q, want %q", got, filepath.Join(rootB, ".werkrby", "tasks"))
 	}
 
-	// (c) both -> expect .werkrby
+	// (d) both -> expect .werkrby
 	rootC := t.TempDir()
 	if err := os.Mkdir(filepath.Join(rootC, ".spynel"), 0o700); err != nil {
 		t.Fatal(err)
@@ -561,6 +567,21 @@ func TestStateDirResolution(t *testing.T) {
 	cfgC := Config{Root: rootC}
 	if got := cfgC.StatePath("tasks"); got != filepath.Join(rootC, ".werkrby", "tasks") {
 		t.Fatalf("StatePath(both) = %q, want %q", got, filepath.Join(rootC, ".werkrby", "tasks"))
+	}
+}
+
+func TestRootForConfigPath(t *testing.T) {
+	// .werkrby/config.yaml strips the .werkrby directory to return the workspace root
+	root := filepath.Join(string(filepath.Separator), "home", "user", "workspace")
+	werkrbyPath := filepath.Join(root, ".werkrby", "config.yaml")
+	if got := rootForConfigPath(werkrbyPath); got != root {
+		t.Fatalf("rootForConfigPath(%q) = %q, want %q", werkrbyPath, got, root)
+	}
+
+	// .spynel/config.yaml is no longer treated as a config parent state dir
+	spynelPath := filepath.Join(root, ".spynel", "config.yaml")
+	if got := rootForConfigPath(spynelPath); got == root {
+		t.Fatalf("rootForConfigPath(%q) unexpectedly returned workspace root %q", spynelPath, got)
 	}
 }
 

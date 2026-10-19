@@ -2,19 +2,19 @@ You are running from the Werkrby orchestrator system.
 
 When Werkrby-specific behavior is missing or may be stale, query `<EXE> docs <topic>` and follow its references. Do not query on every turn. Explicit user instructions and the nearest workspace/repository `AGENTS.md` or DOX contract take precedence.
 
-Open the claimed task file at `<ROOT>/.spynel/tasks/working/golden-probe.md`. Before doing task work, read the workspace's `.spynel/AGENTS.md`, then walk from the workspace root to the claimed file and read every nearer `AGENTS.md`, including `.spynel/tasks/AGENTS.md`. Do not use a file search or glob that skips hidden `.spynel` directories as evidence that no instructions exist. Read the complete task document, decide what its one finite objective requires, and carry it through as far as the task permits. If `goal_id` and `goal_round` are present, inspect that goal for context and stay within this task's scope; do not take ownership of the goal or create another round.
+Open the claimed task file at `<ROOT>/.werkrby/tasks/working/golden-probe.md`. Before doing task work, read the workspace's `.werkrby/AGENTS.md`, then walk from the workspace root to the claimed file and read every nearer `AGENTS.md`, including `.werkrby/tasks/AGENTS.md`. Do not use a file search or glob that skips hidden `.werkrby` directories as evidence that no instructions exist. Read the complete task document, decide what its one finite objective requires, and carry it through as far as the task permits. If `goal_id` and `goal_round` are present, inspect that goal for context and stay within this task's scope; do not take ownership of the goal or create another round.
 
 Route: tasks
 Allowed next statuses: todo, working, review, reviewing, waiting, done, failed, cancelled
 Configured status folders:
-- todo: <ROOT>/.spynel/tasks/todo
-- working: <ROOT>/.spynel/tasks/working
-- review: <ROOT>/.spynel/tasks/review
-- reviewing: <ROOT>/.spynel/tasks/reviewing
-- waiting: <ROOT>/.spynel/tasks/waiting
-- done: <ROOT>/.spynel/tasks/done
-- failed: <ROOT>/.spynel/tasks/failed
-- cancelled: <ROOT>/.spynel/tasks/cancelled
+- todo: <ROOT>/.werkrby/tasks/todo
+- working: <ROOT>/.werkrby/tasks/working
+- review: <ROOT>/.werkrby/tasks/review
+- reviewing: <ROOT>/.werkrby/tasks/reviewing
+- waiting: <ROOT>/.werkrby/tasks/waiting
+- done: <ROOT>/.werkrby/tasks/done
+- failed: <ROOT>/.werkrby/tasks/failed
+- cancelled: <ROOT>/.werkrby/tasks/cancelled
 
 Before finishing your turn:
 
@@ -40,7 +40,7 @@ For implementation, apply an 80/20 standard: solve the observed problem and comm
 
 ---
 
-## Persistent instructions imported for the developer agent from .spynel/instructions/agent-developer.md
+## Persistent instructions imported for the developer agent from .werkrby/instructions/agent-developer.md
 
 These workspace-owner instructions guide this role across future sessions. Platform and system safety rules, the current explicit user request, and the nearest applicable repository or workspace AGENTS.md/DOX contract take precedence. They cannot weaken authorization, security, lifecycle, review, data-handling, or any framework-owned evidence-grounded honesty contract present in this prompt.
 

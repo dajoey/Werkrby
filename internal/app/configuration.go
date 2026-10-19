@@ -405,7 +405,7 @@ func (s *Service) telegramWizardScreen(step string, values map[string]string) co
 		screen.Controls = wizardActions("I have the token", true)
 		state = telegramWizardState(token, allowed, enabled)
 	case "token":
-		screen.Subtitle = "Paste the complete token from BotFather below. It is stored in the private `.spynel/config.yaml` file and never shown in configuration replies or history. Leave it blank only if a token is already configured through the file or environment."
+		screen.Subtitle = "Paste the complete token from BotFather below. It is stored in the private `.werkrby/config.yaml` file and never shown in configuration replies or history. Leave it blank only if a token is already configured through the file or environment."
 		screen.Controls = []core.ScreenControl{
 			{Key: telegramTokenKey, Label: "bot token", Kind: "password", Value: token, Secret: true, Configured: cfg.TelegramToken() != "", Description: "Paste the token exactly as BotFather supplied it"},
 			{Key: "next", Kind: "action", Value: "Continue", Description: "Keep this token in memory and choose who may use the bot"},

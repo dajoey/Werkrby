@@ -54,7 +54,7 @@ type Colors struct {
 	Code            string `yaml:"code"`
 }
 
-// Theme is one named palette loaded from .spynel/themes.
+// Theme is one named palette loaded from .werkrby/themes.
 type Theme struct {
 	Name               string `yaml:"name"`
 	Description        string `yaml:"description"`

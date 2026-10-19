@@ -2263,7 +2263,7 @@ func (m *Manager) resolveTargetModel(route workflowRoute, lease Lease) string {
 	return m.resolveLegacyTargetModel(route, lease)
 }
 
-// resolveRosterModel routes through the optional .spynel/roster.yaml. The file
+// resolveRosterModel routes through the optional .werkrby/roster.yaml. The file
 // is read fresh per dispatch so staffing edits apply at the next dispatch
 // boundary. Any roster problem is logged and legacy routing is used instead.
 func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, bool) {

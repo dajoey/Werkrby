@@ -11,7 +11,7 @@ import (
 )
 
 func stateRoot(t *testing.T) string {
-	root := filepath.Join(t.TempDir(), ".spynel")
+	root := filepath.Join(t.TempDir(), ".werkrby")
 	if err := os.MkdirAll(filepath.Join(root, "instructions"), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestLoadRejectsSymlinkedStateAndInstructionsDirectories(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			root := filepath.Join(workspaceRoot, ".spynel")
+			root := filepath.Join(workspaceRoot, ".werkrby")
 			var linkTarget, linkPath string
 			if test.linkState {
 				linkTarget, linkPath = outside, root

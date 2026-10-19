@@ -1,4 +1,4 @@
-// Package roster owns the optional workspace staffing file .spynel/roster.yaml:
+// Package roster owns the optional workspace staffing file .werkrby/roster.yaml:
 // named staff (runner kind, launch arguments, daily cap, fallback) and the
 // workflow-role to staff mapping. A missing file means legacy routing; a
 // malformed file is an error the caller logs before falling back to legacy.
@@ -24,7 +24,7 @@ import (
 const (
 	FileName = "roster.yaml"
 	// StateDirName mirrors config.StateDirectoryName for harnesses that only know the workspace root.
-	StateDirName  = ".spynel"
+	StateDirName  = ".werkrby"
 	usageFileName = "roster-usage.json"
 	// StaffPrefix marks a harness model string that names roster staff.
 	StaffPrefix = "@"
@@ -701,7 +701,7 @@ Record Joey's answer so the roster applies it. Filed automatically by Werkrby wh
 ## Scope
 
 - Joey's answer is in the newest JOEY ANSWERED entry under Progress: the tapped value is continue or stop.
-- If today's local date is still %[4]s: write the file runtime/roster-decisions.json inside this workspace's .spynel directory with exactly {"date": "%[4]s", "staff": {"%[2]s": "<continue or stop>"}}. If that file already holds date %[4]s, keep its other staff entries and set only %[2]s.
+- If today's local date is still %[4]s: write the file runtime/roster-decisions.json inside this workspace's .werkrby directory with exactly {"date": "%[4]s", "staff": {"%[2]s": "<continue or stop>"}}. If that file already holds date %[4]s, keep its other staff entries and set only %[2]s.
 - If the date has passed, change nothing; the count already reset.
 - Do nothing else. Do not edit roster.yaml.
 
