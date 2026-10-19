@@ -1037,3 +1037,169 @@ func TestTransientProviderErrorRetriesInPlace(t *testing.T) {
 		})
 	}
 }
+
+// waitDispatchDiagnostics polls for the err-*.json autopsy that the detached
+// captureAutopsyAndAlert goroutine writes, so a dispatch-error test neither
+// races t.TempDir cleanup nor asserts before the goroutine reached the alerter
+// step.
+func waitDispatchDiagnostics(t *testing.T, diagDir string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		matches, _ := filepath.Glob(filepath.Join(diagDir, "err-*.json"))
+		if len(matches) > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no dispatch-error diagnostics file appeared under %s", diagDir)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// installFakePython3 puts a recording python3 first on PATH and returns the
+// marker file every invocation appends its argv to.
+func installFakePython3(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "python3-invocations.log")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '" + marker + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "python3"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return marker
+}
+
+// TestDispatchErrorUnderGoTestNeverExecsLiveAlerter guards the production
+// alert lane: a Go test that provokes a dispatch error must write its
+// diagnostics autopsy but must never exec the live telemetry alerter, so
+// fixture tasks stay out of the review log, the dedup file and the ntfy topic.
+func TestDispatchErrorUnderGoTestNeverExecsLiveAlerter(t *testing.T) {
+	marker := installFakePython3(t)
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(config.PathForRoot(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(cfg, "tasks", "alerter guard fixture", ""); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeRecipient()
+	fake.sendErrs = []error{errors.New("boom: fixture dispatch error")}
+	manager := New(cfg, fake, extensions.Runner{})
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+	if fake.calls != 1 {
+		t.Fatalf("harness calls = %d, want 1", fake.calls)
+	}
+	waitDispatchDiagnostics(t, cfg.StatePath("diagnostics"))
+	// captureAutopsyAndAlert execs the alerter immediately after writing the
+	// autopsy, so if it were going to run it has run by now. Give the goroutine
+	// a bounded grace window and fail if the fake python3 was ever invoked.
+	deadline := time.Now().Add(750 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(marker); err == nil {
+			t.Fatalf("live alerter was exec'd under go test; fake python3 argv: %s", data)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestDispatchErrorStillAlertsServiceAlerterWithLeaseArgs pins the service
+// alert path: a test that opts back in by pointing telemetryAlerterPath at its
+// own recording script must see the exact production argv built from the
+// lease, so the running binary keeps alerting with the fixture's task and
+// runner exactly as before.
+func TestDispatchErrorStillAlertsServiceAlerterWithLeaseArgs(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "alerter-argv.log")
+	scriptPath := filepath.Join(dir, "fake-recording-alerter.py")
+	// The service execs `python3 <alerterPath> ...`, so the recording fixture
+	// must be valid Python, and it records one argv element per line.
+	script := "import sys\nwith open('" + marker + "', 'a') as f:\n    f.write('\\n'.join(sys.argv[1:]) + '\\n')\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	previous := telemetryAlerterPath
+	telemetryAlerterPath = scriptPath
+	defer func() { telemetryAlerterPath = previous }()
+
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(config.PathForRoot(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(cfg, "tasks", "alerter service path fixture", ""); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeRecipient()
+	fake.sendErrs = []error{errors.New("boom: fixture dispatch error")}
+	manager := New(cfg, fake, extensions.Runner{})
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+
+	leases, err := manager.loadLeases()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leases) != 1 {
+		t.Fatalf("leases = %#v, want 1", leases)
+	}
+	lease := leases[0]
+
+	// The recording script runs on the same detached goroutine; its argv file
+	// appearing is the completion signal.
+	deadline := time.Now().Add(2 * time.Second)
+	var lines []string
+	for {
+		data, readErr := os.ReadFile(marker)
+		if readErr == nil {
+			lines = strings.Split(strings.TrimSpace(string(data)), "\n")
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("service-path alerter script was never invoked")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	type pair struct{ flag, value string }
+	for _, want := range []pair{
+		{"--title", "Runner Dispatch Error"},
+		{"--component", "werkrby-orchestrator"},
+		{"--severity", "P1"},
+		{"--task-id", filepath.Base(lease.File)},
+		{"--runner", lease.SessionKey},
+	} {
+		found := false
+		for i := 0; i+1 < len(lines); i++ {
+			if lines[i] == want.flag {
+				if lines[i+1] != want.value {
+					t.Fatalf("alerter %s = %q, want %q (argv: %v)", want.flag, lines[i+1], want.value, lines)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("alerter argv missing %s (argv: %v)", want.flag, lines)
+		}
+	}
+	for i := 0; i+1 < len(lines); i++ {
+		if lines[i] == "--error" && strings.Contains(lines[i+1], "boom: fixture dispatch error") {
+			return
+		}
+	}
+	t.Fatalf("alerter argv missing the dispatch error text (argv: %v)", lines)
+}

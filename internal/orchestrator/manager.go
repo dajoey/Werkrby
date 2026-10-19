@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"testing"
 	"time"
 
 	"github.com/agent0ai/spynel/internal/agentdocs"
@@ -3026,6 +3027,29 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 	go m.captureAutopsyAndAlert(lease, err)
 }
 
+// defaultTelemetryAlerterPath is the live telemetry alerter the running
+// service execs on a dispatch error. Test binaries must never reach it:
+// fixture dispatch errors stay out of the production alert lane.
+const defaultTelemetryAlerterPath = "/home/dajoey/ops/telemetry_alerter.py"
+
+// telemetryAlerterPath defaults to the live alerter for the running service.
+// A test that wants to observe the alert sets it to its own recording script,
+// which bypasses the test-binary guard.
+var telemetryAlerterPath = defaultTelemetryAlerterPath
+
+// telemetryAlerterPathForProcess returns the alerter path to exec for a
+// dispatch error, or "" when the call must be skipped. A Go test binary never
+// runs the live alerter: testing.Testing() is true while the variable still
+// holds the service default, so fixture errors cannot write the review log,
+// the dedup file or the ntfy topic. Overriding telemetryAlerterPath opts a
+// test back in deliberately.
+func telemetryAlerterPathForProcess() string {
+	if testing.Testing() && telemetryAlerterPath == defaultTelemetryAlerterPath {
+		return ""
+	}
+	return telemetryAlerterPath
+}
+
 func (m *Manager) captureAutopsyAndAlert(lease Lease, err error) {
 	if err == nil {
 		return
@@ -3054,18 +3078,19 @@ func (m *Manager) captureAutopsyAndAlert(lease Lease, err error) {
 		_ = os.WriteFile(diagPath, data, 0o600)
 	}
 
-	alerterPath := "/home/dajoey/ops/telemetry_alerter.py"
-	if _, statErr := os.Stat(alerterPath); statErr == nil {
-		taskName := filepath.Base(lease.File)
-		cmd := exec.Command("python3", alerterPath,
-			"--title", "Runner Dispatch Error",
-			"--component", "werkrby-orchestrator",
-			"--error", err.Error(),
-			"--severity", "P1",
-			"--task-id", taskName,
-			"--runner", lease.SessionKey,
-		)
-		_ = cmd.Run()
+	if alerterPath := telemetryAlerterPathForProcess(); alerterPath != "" {
+		if _, statErr := os.Stat(alerterPath); statErr == nil {
+			taskName := filepath.Base(lease.File)
+			cmd := exec.Command("python3", alerterPath,
+				"--title", "Runner Dispatch Error",
+				"--component", "werkrby-orchestrator",
+				"--error", err.Error(),
+				"--severity", "P1",
+				"--task-id", taskName,
+				"--runner", lease.SessionKey,
+			)
+			_ = cmd.Run()
+		}
 	}
 }
 
