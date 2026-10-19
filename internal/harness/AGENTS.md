@@ -24,4 +24,8 @@
 
 ## Child DOX Index
 
-No child DOX files.
+Direct child DOX files:
+
+| Child | Scope |
+| --- | --- |
+| [testdata/AGENTS.md](testdata/AGENTS.md) | Golden files the harness tests compare against. |

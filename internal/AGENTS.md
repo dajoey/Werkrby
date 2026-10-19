@@ -130,6 +130,7 @@ Direct child DOX files:
 
 | Child | Scope |
 | --- | --- |
+| [admission/AGENTS.md](admission/AGENTS.md) | Quota admission: may a dispatch start now, and on which seat. |
 | [agentdocs/AGENTS.md](agentdocs/AGENTS.md) | Curated offline agent-readable documentation. |
 | [app/AGENTS.md](app/AGENTS.md) | Shared application service composition and runtime state. |
 | [channel/AGENTS.md](channel/AGENTS.md) | Common channel contracts and transport adapters. |

@@ -18,5 +18,6 @@ Direct child DOX files:
 
 | Child | Scope |
 | --- | --- |
+| [assets/AGENTS.md](assets/AGENTS.md) | Generated fork artwork: icon set, social preview, and the generator source. |
 | [tracking/AGENTS.md](tracking/AGENTS.md) | Fork-drift alarm pin tracking state for external branches. |
 
