@@ -129,7 +129,7 @@ func (m *Manager) shadowQueued(site string, route workflowRoute, phase, name str
 	if field := phaseAttemptField(phase); field != "" {
 		frontMatter[field], _ = claimAttempt(scratch, field)
 	}
-	asked, ok := rosterSeat(staffing, stateDir, phase, frontMatter, name, nil)
+	asked, ok, _ := rosterSeat(staffing, stateDir, phase, frontMatter, name, nil)
 	if !ok {
 		return
 	}

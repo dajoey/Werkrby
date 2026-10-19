@@ -2289,9 +2289,15 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 	if doc, err := ReadDocument(lease.File); err == nil {
 		frontMatter = doc.FrontMatter
 	}
-	name, ok := rosterSeat(staffing, stateDir, phase, frontMatter, filepath.Base(lease.File), m.log)
+	name, ok, hold := rosterSeat(staffing, stateDir, phase, frontMatter, filepath.Base(lease.File), m.log)
 	if !ok {
 		return "", false
+	}
+	if hold != "" {
+		// A claimed document reached dispatch anyway (a recovery, or a roster edit after the
+		// claim gate): it runs on the asked seat. The hold gates claiming, not dispatch,
+		// exactly like a quota-wall hold.
+		m.log("roster: " + filepath.Base(lease.File) + " (" + phase + ") dispatches on " + name + " despite " + hold)
 	}
 	shadowDone := m.shadowDispatchPending(lease, phase, name, frontMatter)
 	assigned, err := staffing.Assign(stateDir, name, lease.SessionKey, time.Now())
@@ -2320,8 +2326,10 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 // rosterSeat is the staff a document's dispatch asks the roster for, before daily caps and
 // stops: the role's staff, a review's cross-family alternate, a task's staff pin, the attempt
 // ladder and a seat's own escalation. ok is false when the roster does not route this document
-// (an explicit legacy runner pin, or no staff for the role). logf may be nil.
-func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map[string]any, fileName string, logf func(string)) (string, bool) {
+// (an explicit legacy runner pin, or no staff for the role). For a review, hold is non-empty
+// when the review must wait unclaimed instead of starting (a same-family reviewer with no
+// different-family seat reachable); name is then still the asked seat. logf may be nil.
+func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map[string]any, fileName string, logf func(string)) (string, bool, string) {
 	if logf == nil {
 		logf = func(string) {}
 	}
@@ -2331,6 +2339,7 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 	}
 
 	name := ""
+	hold := ""
 	switch phase {
 	case phaseTaskReview:
 		role := phaseTaskReview
@@ -2358,6 +2367,24 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 				}
 			}
 		}
+		// A routine review never starts on a seat sharing the implementer's model family (the
+		// same-family bounce: a full review session spent for no verdict): walk the fallback
+		// chain past same-family seats, and when every reachable seat shares the family, hold
+		// the review unclaimed - no attempt - mirroring the quota-wall hold. The risk-high tier
+		// keeps its own ladder and is never held here.
+		if role != phaseTaskReview+"_high_risk" && name != "" {
+			if implementer, ok := roster.ImplementedBy(stateDir, fileName); ok {
+				if implFamily := staffing.FamilyOf(implementer); implFamily != "" {
+					picked, familyOK := staffing.ReviewSeat(stateDir, name, implFamily, time.Now())
+					if !familyOK {
+						hold = "every reachable reviewer seat shares the implementer's " + implFamily + " family (the work was written on " + implementer + ")"
+					} else if picked != name {
+						logf("roster: " + role + " review of " + fileName + " moves from " + name + " to " + picked + " (the work was written on " + implementer + ", the same model family)")
+						name = picked
+					}
+				}
+			}
+		}
 	case phaseTaskImplementation:
 		pinnedStaff := honoredStaffPin(staffing, frontMatter, fileName, logf)
 		if pinnedStaff != "" {
@@ -2379,7 +2406,7 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 			}
 		}
 		if name == "" && (text("agent") != "" || text("model") != "") {
-			return "", false // explicit legacy runner pin
+			return "", false, "" // explicit legacy runner pin
 		}
 		if name == "" {
 			name = staffing.ForRole(phase)
@@ -2397,15 +2424,16 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 		name = staffing.ForRole(phase)
 	}
 	if name == "" {
-		return "", false
+		return "", false, ""
 	}
-	return name, true
+	return name, true, hold
 }
 
-// rosterHeld reports whether a queued document's session would start on a seat the quota gate
-// is holding (runtime/roster-holds.json, roster.HeldUntil). The seat is found the way dispatch
-// finds it (rosterSeat, then Assign's fallback walk past caps and stops) without counting a
-// session. A held document is logged at most once an hour.
+// rosterHeld reports whether a queued document's session must wait unclaimed: its seat is on a
+// quota-gate hold (paceHeld), or a routine review would start on the implementer's model family
+// (reviewFamilyHeld). The seat is found the way dispatch finds it (rosterSeat, then Assign's
+// fallback walk past caps and stops) without counting a session. A held document is logged at
+// most once an hour.
 func (m *Manager) rosterHeld(site string, route workflowRoute, phase, name string, document Document) bool {
 	held := m.rosterHeldNow(route, phase, name, document)
 	m.shadowQueued(site, route, phase, name, document, held)
@@ -2415,9 +2443,17 @@ func (m *Manager) rosterHeld(site string, route workflowRoute, phase, name strin
 func (m *Manager) rosterHeldNow(route workflowRoute, phase, name string, document Document) bool {
 	stateDir := m.Config.StatePath()
 	now := time.Now()
-	if !roster.AnyHeld(stateDir, now) {
-		return false
+	if roster.AnyHeld(stateDir, now) && m.paceHeld(route, phase, name, document, stateDir, now) {
+		return true
 	}
+	return m.reviewFamilyHeld(route, phase, name, document, stateDir, now)
+}
+
+// paceHeld reports whether the document's session would start on a seat the quota gate is
+// holding (runtime/roster-holds.json, roster.HeldUntil). The seat is found the way dispatch
+// finds it (rosterSeat, then Assign's fallback walk past caps and stops) without counting a
+// session. A held document is logged at most once an hour.
+func (m *Manager) paceHeld(route workflowRoute, phase, name string, document Document, stateDir string, now time.Time) bool {
 	staffing, err := roster.Load(stateDir)
 	if err != nil || staffing == nil {
 		return false
@@ -2434,9 +2470,12 @@ func (m *Manager) rosterHeldNow(route workflowRoute, phase, name string, documen
 	if field := phaseAttemptField(phase); field != "" {
 		frontMatter[field], _ = claimAttempt(scratch, field)
 	}
-	asked, ok := rosterSeat(staffing, stateDir, phase, frontMatter, name, nil)
+	asked, ok, hold := rosterSeat(staffing, stateDir, phase, frontMatter, name, nil)
 	if !ok {
 		return false
+	}
+	if hold != "" {
+		return true // the family hold below owns the logging
 	}
 	seat := staffing.Landing(stateDir, asked, now)
 	until, reason, held := roster.HeldUntil(stateDir, seat, now)
@@ -2456,6 +2495,55 @@ func (m *Manager) rosterHeldNow(route workflowRoute, phase, name string, documen
 	m.holdLogMu.Unlock()
 	if due {
 		m.log("roster: " + seat + " is held (" + reason + ") until " + until.UTC().Format(time.RFC3339) + "; " + name + " (" + phase + ") waits unclaimed")
+	}
+	return true
+}
+
+// reviewFamilyHeld reports whether a queued review would start on a seat whose known model
+// family equals the implementer's: the same-family bounce (a full review session spent for no
+// verdict) must never start, so the review waits unclaimed - no attempt spent - for a
+// different-family reviewer or a roster change. The risk-high tier keeps its own ladder.
+func (m *Manager) reviewFamilyHeld(route workflowRoute, phase, name string, document Document, stateDir string, now time.Time) bool {
+	if normalizeLeasePhase(route.Name, phase) != phaseTaskReview {
+		return false
+	}
+	if risk, _ := document.FrontMatter["risk"].(string); strings.EqualFold(strings.TrimSpace(risk), "high") {
+		return false
+	}
+	staffing, err := roster.Load(stateDir)
+	if err != nil || staffing == nil {
+		return false
+	}
+	// Route on the attempt the claim would record (claimAttempt), as dispatch does after the
+	// claim, on copies so the caller's document is untouched (claimAttempt deletes a key from
+	// the map it is given).
+	frontMatter := make(map[string]any, len(document.FrontMatter)+1)
+	scratch := make(map[string]any, len(document.FrontMatter))
+	for key, value := range document.FrontMatter {
+		frontMatter[key] = value
+		scratch[key] = value
+	}
+	phase = normalizeLeasePhase(route.Name, phase)
+	if field := phaseAttemptField(phase); field != "" {
+		frontMatter[field], _ = claimAttempt(scratch, field)
+	}
+	_, ok, hold := rosterSeat(staffing, stateDir, phase, frontMatter, name, nil)
+	if !ok || hold == "" {
+		return false
+	}
+	// The hold has no deadline, so log a family-held document at most once an hour.
+	key := name + "\x00" + phase + "\x00family"
+	m.holdLogMu.Lock()
+	if m.holdLogged == nil {
+		m.holdLogged = map[string]time.Time{}
+	}
+	due := now.Sub(m.holdLogged[key]) >= time.Hour
+	if due {
+		m.holdLogged[key] = now
+	}
+	m.holdLogMu.Unlock()
+	if due {
+		m.log("roster: " + name + " (" + phase + ") waits unclaimed for a different-family reviewer: " + hold)
 	}
 	return true
 }
