@@ -9,7 +9,7 @@ import (
 
 const displayLength = 8
 
-// New creates a compact random identifier suitable for Spynel-owned files and
+// New creates a compact random identifier suitable for Werkrby-owned files and
 // job-like handles. Provider-owned opaque IDs must never be replaced by it.
 func New() (string, error) {
 	data := make([]byte, 5)

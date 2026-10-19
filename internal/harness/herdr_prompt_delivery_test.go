@@ -16,7 +16,7 @@ import (
 // TestHerdrUndeliveredPromptMustNotCountAsFinishedTurn verifies that when
 // prompt --wait returns ok on a newly spawned pane, but there is no agent
 // session, no new transcript, and the screen contains only the prompt echo
-// plus startup banner (as in job 2760), Spynel treats the prompt as not
+// plus startup banner (as in job 2760), Werkrby treats the prompt as not
 // delivered: it must not emit EventFinal and must not close the tab as a
 // finished turn, but return a prompt_not_delivered error.
 func TestHerdrUndeliveredPromptMustNotCountAsFinishedTurn(t *testing.T) {
@@ -55,8 +55,8 @@ agent)
 		# Reference job 2760 screen: echoed prompt above startup banner, no tool call or answer
 		cat << 'EOF'
 agy --model gemini-3.8-flash-high
-dajoey@jobunthree:~/aibs/spyjo$ agy --model gemini-3.8-flash-high
-You are running from the Spynel orchestrator system.
+dajoey@jobunthree:~/aibs/werkrby$ agy --model gemini-3.8-flash-high
+You are running from the Werkrby orchestrator system.
 
 Route: tasks
 Allowed next statuses: todo, working, review, reviewing, waiting, done, failed, cancelled
@@ -64,7 +64,7 @@ Allowed next statuses: todo, working, review, reviewing, waiting, done, failed, 
       ▄▀▀▄        Antigravity CLI 1.2.12
      ▀▀▀▀▀▀       dajoey@gmail.com (Google AI Ultra)
     ▀▀▀▀▀▀▀▀      Gemini 3.8 Flash (High)
-   ▄▀▀    ▀▀▄     ~/aibs/spyjo
+   ▄▀▀    ▀▀▄     ~/aibs/werkrby
   ▄▀▀      ▀▀▄
 EOF
 		;;
@@ -165,7 +165,7 @@ esac
 
 // TestHerdrUndeliveredPromptResendsWhenComposerAppears verifies that when
 // the first prompt was undelivered (no session/transcript), but the composer
-// appears and the re-send succeeds, Spynel emits EventFinal and completes.
+// appears and the re-send succeeds, Werkrby emits EventFinal and completes.
 func TestHerdrUndeliveredPromptResendsWhenComposerAppears(t *testing.T) {
 	dir := t.TempDir()
 	eventsFile := filepath.Join(dir, "events.txt")
@@ -215,7 +215,7 @@ agent)
       ▄▀▀▄        Antigravity CLI 1.2.12
      ▀▀▀▀▀▀       user@example.com
     ▀▀▀▀▀▀▀▀      Gemini 3.8 Flash (High)
-   ▄▀▀    ▀▀▄     ~/aibs/spyjo
+   ▄▀▀    ▀▀▄     ~/aibs/werkrby
   ▄▀▀      ▀▀▄
 
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -228,7 +228,7 @@ EOF
       ▄▀▀▄        Antigravity CLI 1.2.12
      ▀▀▀▀▀▀       dajoey@gmail.com (Google AI Ultra)
     ▀▀▀▀▀▀▀▀      Gemini 3.8 Flash (High)
-   ▄▀▀    ▀▀▄     ~/aibs/spyjo
+   ▄▀▀    ▀▀▄     ~/aibs/werkrby
   ▄▀▀      ▀▀▄
 EOF
 		fi

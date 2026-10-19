@@ -25,7 +25,7 @@ const (
 
 // ACP adapts the stable v1 Agent Client Protocol over its standard JSON-RPC
 // stdio transport. One agent process owns independent ACP sessions for every
-// Spynel conversation.
+// Werkrby conversation.
 type ACP struct {
 	config HarnessConfig
 

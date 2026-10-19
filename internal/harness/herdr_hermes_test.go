@@ -80,8 +80,8 @@ func TestHermesComposerWorkingVsIdle(t *testing.T) {
 	scrolledInput := `
  ☤ glm-5.3-flash │ ctx -- │ [░░░░░░░░░░] -- │ 56s │ ⏲ 0s
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-- filler line 395: this line only makes the prompt long, like a Spynel task prompt; ignore it.
-- filler line 396: this line only makes the prompt long, like a Spynel task prompt; ignore it.
+- filler line 395: this line only makes the prompt long, like a Werkrby task prompt; ignore it.
+- filler line 396: this line only makes the prompt long, like a Werkrby task prompt; ignore it.
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────`
 	if !isRunnerComposerVisible("hermes", scrolledInput) {
 		t.Errorf("isRunnerComposerVisible returned false for scrolled input composer, want true")

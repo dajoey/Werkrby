@@ -31,7 +31,7 @@ func (m *Manager) notificationTimeout() time.Duration {
 
 // startTaskNotificationAgent admits one ordinary asynchronous harness job for
 // the task transition currently being reconciled. Notification decisions and
-// task-log writes belong entirely to that agent; Spynel does not persist or
+// task-log writes belong entirely to that agent; Werkrby does not persist or
 // interpret a notification-specific result.
 var errTaskNotificationsDisabled = errors.New("task notification metadata is not enabled")
 

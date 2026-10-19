@@ -2481,14 +2481,14 @@ func TestLogCommandShowsCapturedRuntimeOutput(t *testing.T) {
 	}
 	cfg, _ := config.Load(config.PathForRoot(root))
 	service := New(cfg, newServiceHarness())
-	service.Runtime.Log("Spynel started")
+	service.Runtime.Log("Werkrby started")
 	service.Runtime.Log("orchestrator scan complete")
 	var response core.Event
 
 	if err := service.Handle(context.Background(), core.Message{Channel: "whatsapp", Conversation: "1555", Text: "/log"}, func(event core.Event) { response = event }); err != nil {
 		t.Fatal(err)
 	}
-	if response.Kind != core.EventFinal || !response.Local || !strings.Contains(response.Text, "2 entries") || !strings.Contains(response.Text, "Spynel started") {
+	if response.Kind != core.EventFinal || !response.Local || !strings.Contains(response.Text, "2 entries") || !strings.Contains(response.Text, "Werkrby started") {
 		t.Fatalf("log response = %#v", response)
 	}
 }

@@ -89,7 +89,7 @@ func TestOperatorStopParksTheTaskInsteadOfReadoptingIt(t *testing.T) {
 		t.Fatalf("progress note wrong: %s", parked.Body)
 	}
 	if leases, _ := manager.loadLeases(); len(leases) != 0 {
-		t.Fatalf("lease still exists, so Spynel would adopt it again: %#v", leases)
+		t.Fatalf("lease still exists, so Werkrby would adopt it again: %#v", leases)
 	}
 	if manager.isControlCancelled(lease.ID) || manager.operatorStopPending(lease.ID) {
 		t.Fatalf("the cancellation record was not cleared")

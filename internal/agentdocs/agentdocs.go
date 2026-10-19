@@ -1,4 +1,4 @@
-// Package agentdocs owns Spynel's curated, offline documentation catalog.
+// Package agentdocs owns Werkrby's curated, offline documentation catalog.
 // It deliberately contains no workspace or runtime readers: live state belongs to
 // status, jobs, and logs rather than static documentation.
 package agentdocs

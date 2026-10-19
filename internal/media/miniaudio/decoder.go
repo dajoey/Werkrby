@@ -1,4 +1,4 @@
-// Package miniaudio provides the narrow decoding surface Spynel needs from
+// Package miniaudio provides the narrow decoding surface Werkrby needs from
 // miniaudio 0.11.25. Playback, capture, encoding, and engine APIs are disabled
 // at compile time.
 package miniaudio

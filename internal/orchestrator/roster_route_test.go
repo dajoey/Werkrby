@@ -194,7 +194,7 @@ roles:
 }
 
 // A review picks a reviewer from a different model family than the seat that wrote the work, when
-// the review role lists alternates (role_alternates). Spynel remembers the implementing seat.
+// the review role lists alternates (role_alternates). Werkrby remembers the implementing seat.
 func TestResolveTargetModelCrossFamilyReview(t *testing.T) {
 	root := t.TempDir()
 	state := filepath.Join(root, config.StateDirectoryName)

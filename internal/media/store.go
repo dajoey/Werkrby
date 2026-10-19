@@ -60,7 +60,7 @@ type Store struct {
 }
 
 // Save streams an attachment into a private, collision-safe file. The limit is
-// enforced while copying, so an untrusted transport cannot make Spynel retain
+// enforced while copying, so an untrusted transport cannot make Werkrby retain
 // an unbounded body in memory or on disk.
 func (s Store) Save(ctx context.Context, name string, source io.Reader) (Attachment, error) {
 	return s.Create(ctx, name, func(destination *os.File) error {

@@ -53,7 +53,7 @@ type Workspace struct {
 }
 
 // Harness contains the user-facing coding-harness choices. Built-in
-// executables and the workspace directory remain derived by Spynel; only the
+// executables and the workspace directory remain derived by Werkrby; only the
 // explicit custom ACP profile accepts a command and shell-free argument list.
 type Harness struct {
 	Name                   string   `yaml:"name"`

@@ -1,4 +1,4 @@
-// Package theme owns Spynel's file-backed semantic color palettes.
+// Package theme owns Werkrby's file-backed semantic color palettes.
 package theme
 
 import (

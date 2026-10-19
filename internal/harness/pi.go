@@ -22,7 +22,7 @@ import (
 const piRPCMaxRecord = 16 * 1024 * 1024
 
 // Pi is a native adapter for Pi's documented JSONL RPC mode. Pi owns one
-// current session per process, so Spynel keeps one idle-capable process per
+// current session per process, so Werkrby keeps one idle-capable process per
 // active conversation and persists its session file for restart/resume.
 type Pi struct {
 	config HarnessConfig

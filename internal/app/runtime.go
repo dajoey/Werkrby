@@ -154,7 +154,7 @@ func NewRuntime() *Runtime {
 
 // NewRuntimeAt restores the retained runtime-log view and appends this
 // process's entries to a new session file below directory. Persistence is
-// best-effort: an unavailable or damaged log directory never prevents Spynel
+// best-effort: an unavailable or damaged log directory never prevents Werkrby
 // from starting or using its in-memory log.
 func NewRuntimeAt(directory, instance string) *Runtime {
 	r := NewRuntime()
@@ -168,7 +168,7 @@ func NewRuntimeAt(directory, instance string) *Runtime {
 	if restoreErr != nil {
 		r.appendPersistenceFailureLocked("restore_failed", restoreErr)
 	}
-	r.LogEvent("info", "runtime", "session_start", "Spynel runtime session started")
+	r.LogEvent("info", "runtime", "session_start", "Werkrby runtime session started")
 	return r
 }
 
@@ -925,7 +925,7 @@ func (r *Runtime) Close() {
 				r.logEvent("info", component, "output_partial", string(data), true)
 			}
 		}
-		r.logEvent("info", "runtime", "session_end", "Spynel runtime session stopped", true)
+		r.logEvent("info", "runtime", "session_end", "Werkrby runtime session stopped", true)
 		if r.persist != nil {
 			if err := r.persist.close(); err != nil {
 				r.mu.Lock()

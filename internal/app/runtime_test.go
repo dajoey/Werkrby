@@ -14,7 +14,7 @@ import (
 
 func TestRuntimeWriterCapturesLinesAndPublishesLatestCounts(t *testing.T) {
 	runtime := NewRuntime()
-	if _, err := runtime.Write([]byte("Spynel sta")); err != nil {
+	if _, err := runtime.Write([]byte("Werkrby sta")); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.Logs()) != 0 {
@@ -26,10 +26,10 @@ func TestRuntimeWriterCapturesLinesAndPublishesLatestCounts(t *testing.T) {
 	runtime.Log("third entry")
 
 	logs := runtime.Logs()
-	if len(logs) != 3 || logs[0].Text != "Spynel started" || logs[2].Text != "third entry" {
+	if len(logs) != 3 || logs[0].Text != "Werkrby started" || logs[2].Text != "third entry" {
 		t.Fatalf("logs = %#v", logs)
 	}
-	if output := formatLogs(logs); !strings.Contains(output, "3 entries") || !strings.Contains(output, "Spynel started") {
+	if output := formatLogs(logs); !strings.Contains(output, "3 entries") || !strings.Contains(output, "Werkrby started") {
 		t.Fatalf("formatted logs = %s", output)
 	}
 	select {

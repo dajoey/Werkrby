@@ -246,7 +246,7 @@ func reserveProviderTurn(path string, now time.Time, afterRead func()) (time.Tim
 		return time.Time{}, 0, err
 	}
 	// A provider agent moves its own claimed Markdown file directly and cannot
-	// participate in Spynel's advisory lock. If that move landed after our read
+	// participate in Werkrby's advisory lock. If that move landed after our read
 	// but before the atomic replacement, the replacement recreated the old path.
 	// Merge only the durable timing fields into the moved copy and remove the
 	// stale source before admitting provider delivery.

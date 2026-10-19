@@ -26,7 +26,7 @@ import (
 // streaming JSON input when the selected permission mode supports it, and
 // bounded text input when Claude requires its ordinary permission pipeline for
 // autonomous tools. Claude Code owns the agent loop and durable transcript;
-// Spynel stores only conversation-to-session mappings.
+// Werkrby stores only conversation-to-session mappings.
 type Claude struct {
 	config HarnessConfig
 	ctx    context.Context
@@ -677,7 +677,7 @@ func (c *Claude) runTurn(turn *claudeTurn, reader io.Reader) {
 			terminal = core.Event{Kind: kind, Text: text, FinalText: &finalText, ThreadID: turn.sessionID, Done: true, Execution: execution}
 			completed = true
 			// Streaming input keeps print mode alive for more user messages.
-			// Close it after the provider result so this finite Spynel turn can
+			// Close it after the provider result so this finite Werkrby turn can
 			// exit; a follow-up written before this lock is included first.
 			turn.closeInput()
 		}
@@ -689,7 +689,7 @@ func (c *Claude) runTurn(turn *claudeTurn, reader io.Reader) {
 			_, _ = fmt.Fprintf(c.config.Stderr, "Claude Code returned a result but its process failed: %v\n", waitErr)
 		}
 		// Wait for print mode to exit before releasing the session. Closing its
-		// streaming input after the result keeps each Spynel execution bounded.
+		// streaming input after the result keeps each Werkrby execution bounded.
 		c.finishClaudeTurn(turn, terminal)
 		return
 	}

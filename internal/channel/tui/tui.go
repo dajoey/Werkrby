@@ -432,7 +432,7 @@ var semanticBuildVersion = regexp.MustCompile(`^(?:v)?(0|[1-9]\d*)\.(0|[1-9]\d*)
 
 func Run(ctx context.Context, title string, handler channel.Handler, commands []core.SlashCommand, initialHistory []history.Entry, options Options) error {
 	// Capability probing is unreliable across docker exec and nested PTYs.
-	// Spynel's supported terminals understand 24-bit SGR; selecting it
+	// Werkrby's supported terminals understand 24-bit SGR; selecting it
 	// explicitly keeps semantic theme colors from degrading into gray blocks.
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	resolvedTitle, err := loadTitle(title, options.TitlePath)
@@ -595,7 +595,7 @@ func styleComposer(input *textarea.Model, styles uiStyles) {
 	input.BlurredStyle.Placeholder = placeholder
 	// textarea caches a pointer to the active style. Models are copied by the
 	// Bubble Tea update loop, so rebind it after every palette change instead
-	// of leaving a pointer to a stale pre-copy Spynel style.
+	// of leaving a pointer to a stale pre-copy Werkrby style.
 	if focused {
 		input.Focus()
 	} else {

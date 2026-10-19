@@ -68,7 +68,7 @@ func TestConfigPathArgument(t *testing.T) {
 		want string
 	}{
 		{args: []string{"status"}, want: ""},
-		{args: []string{"status", "--config", "/tmp/project/.spynel/config.yaml"}, want: "/tmp/project/.spynel/config.yaml"},
+		{args: []string{"status", "--config", "/tmp/project/.werkrby/config.yaml"}, want: "/tmp/project/.werkrby/config.yaml"},
 		{args: []string{"send", "--config=/tmp/other.yaml", "hello"}, want: "/tmp/other.yaml"},
 	} {
 		if got := configPathArgument(test.args); got != test.want {
@@ -127,8 +127,8 @@ func TestBareInteractiveStartupOrdersChoiceDirectoryAndServerConstruction(t *tes
 	const (
 		launchRoot   = "/canonical/parent/child"
 		parentRoot   = "/canonical/parent"
-		localConfig  = "/canonical/parent/child/.spynel/config.yaml"
-		parentConfig = "/canonical/parent/.spynel/config.yaml"
+		localConfig  = "/canonical/parent/child/.werkrby/config.yaml"
+		parentConfig = "/canonical/parent/.werkrby/config.yaml"
 	)
 	tests := []struct {
 		name       string
@@ -201,7 +201,7 @@ func TestBareInteractiveStartupOrdersChoiceDirectoryAndServerConstruction(t *tes
 
 func TestBareInteractiveStartupHandlesLocalUninitializedAndInitializationFailure(t *testing.T) {
 	const launchRoot = "/canonical/new"
-	const localConfig = "/canonical/new/.spynel/config.yaml"
+	const localConfig = "/canonical/new/.werkrby/config.yaml"
 	initFailure := errors.New("cannot initialize")
 	for _, test := range []struct {
 		name        string
@@ -314,7 +314,7 @@ func TestBareInteractiveChoiceAlignsRealProcessDirectoryBeforeServer(t *testing.
 
 func TestBareInteractiveInitializedRootStartsWithoutChoice(t *testing.T) {
 	const root = "/canonical/local"
-	const configPath = "/canonical/local/.spynel/config.yaml"
+	const configPath = "/canonical/local/.werkrby/config.yaml"
 	choiceCalled := false
 	serverCalled := false
 	runtime := bareInteractiveRuntime{
@@ -344,8 +344,8 @@ func TestOnlyBareCommandRequestsInteractiveWorkspaceChoice(t *testing.T) {
 		t.Fatal("bare command did not request interactive startup")
 	}
 	for _, args := range [][]string{
-		{"serve"}, {"serve", "--tui"}, {"serve", "--config", "/explicit/.spynel/config.yaml"},
-		{"init", "--dir", "/explicit"}, {"status", "--config", "/explicit/.spynel/config.yaml"},
+		{"serve"}, {"serve", "--tui"}, {"serve", "--config", "/explicit/.werkrby/config.yaml"},
+		{"init", "--dir", "/explicit"}, {"status", "--config", "/explicit/.werkrby/config.yaml"},
 	} {
 		if bareInteractiveRequested(args) {
 			t.Fatalf("explicit or noninteractive command unexpectedly requested workspace choice: %#v", args)
@@ -601,7 +601,7 @@ func TestNotifyMessageRejectsEmptyStdinAndAmbiguousInputs(t *testing.T) {
 }
 
 func TestNotifyCommandRejectsWorkdirConfigCombination(t *testing.T) {
-	err := runNotifyCommand([]string{"--workdir", "/workspace", "--config", "/workspace/.spynel/config.yaml", "--origin", "tui/local", "--message", "no"}, "test")
+	err := runNotifyCommand([]string{"--workdir", "/workspace", "--config", "/workspace/.werkrby/config.yaml", "--origin", "tui/local", "--message", "no"}, "test")
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("workdir/config conflict = %v", err)
 	}
@@ -676,7 +676,7 @@ func (h *heldCLIHarness) finish(key, text string) {
 }
 
 func TestCompleteRunReplacesProcessForRestartRequest(t *testing.T) {
-	want := []string{"serve", "--tui", "--config", "/tmp/project/.spynel/config.yaml"}
+	want := []string{"serve", "--tui", "--config", "/tmp/project/.werkrby/config.yaml"}
 	request := &restartRequest{args: append([]string(nil), want...)}
 	called := false
 	err := completeRun(fmt.Errorf("server stopped: %w", request), func(args []string) error {
@@ -736,7 +736,7 @@ func TestNPMUpdateRequestPublishesInitContinuationArguments(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Remove(statePath) })
 	t.Setenv("SPYNEL_NPM_UPDATE_STATE", statePath)
-	want := []string{"serve", "--tui", "--config", "/tmp/project/.spynel/config.yaml"}
+	want := []string{"serve", "--tui", "--config", "/tmp/project/.werkrby/config.yaml"}
 	request := &updateRequest{args: want}
 	if code := request.ExitCode(); code != npmUpdateExitCode {
 		t.Fatalf("update exit code = %d", code)
@@ -1741,7 +1741,7 @@ func TestPromotionRecordsConfigurationReloadFailure(t *testing.T) {
 }
 
 func TestStandaloneUpdateRestartAndProactiveEligibility(t *testing.T) {
-	for _, args := range [][]string{nil, {"version"}, {"version", "--quiet"}, {"serve", "--tui", "--config", "/project/.spynel/config.yaml"}} {
+	for _, args := range [][]string{nil, {"version"}, {"version", "--quiet"}, {"serve", "--tui", "--config", "/project/.werkrby/config.yaml"}} {
 		called := false
 		err := completeRun(&updateRequest{args: args, standalone: true, manager: &updater.Manager{InstallRoot: t.TempDir()}}, func(got []string) error {
 			called = true

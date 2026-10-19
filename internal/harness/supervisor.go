@@ -21,7 +21,7 @@ const (
 	interruptRegistrationWait = 15 * time.Second
 )
 
-// Supervisor keeps the rest of Spynel provider-neutral while allowing the
+// Supervisor keeps the rest of Werkrby provider-neutral while allowing the
 // selected harness to be replaced at runtime. It only swaps an idle harness;
 // active turns retain their original process and session semantics.
 type Supervisor struct {
@@ -214,7 +214,7 @@ func (s *Supervisor) Reconfigure(cfg HarnessConfig) error {
 	return nil
 }
 
-// ConfigureUnavailable records a user's selection when Spynel has no running
+// ConfigureUnavailable records a user's selection when Werkrby has no running
 // harness yet and the executable is not installed. This lets onboarding save
 // intent and remain usable; it never replaces a working harness with a broken
 // selection.

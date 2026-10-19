@@ -1,4 +1,4 @@
-// Package textarea provides Spynel's grapheme-safe multi-line Bubble Tea input.
+// Package textarea provides Werkrby's grapheme-safe multi-line Bubble Tea input.
 // It is derived from charmbracelet/bubbles v0.21.0 under the adjacent MIT
 // license while the upstream textarea's private wrapper remains rune-based.
 package textarea

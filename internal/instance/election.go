@@ -1,5 +1,5 @@
 // Package instance coordinates the single workspace server owner shared by
-// every Spynel process using the same state directory.
+// every Werkrby process using the same state directory.
 package instance
 
 import (

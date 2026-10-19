@@ -51,7 +51,7 @@ func TestHerdrModels(t *testing.T) {
 }
 
 func TestHerdrModelsOfferEveryRosterStaffRunner(t *testing.T) {
-	// Minimal roster shape matching .spynel/roster.yaml staff.runner pins.
+	// Minimal roster shape matching .werkrby/roster.yaml staff.runner pins.
 	const rosterYAML = `
 staff:
   implementer:

@@ -1068,7 +1068,7 @@ func TestTaskControlSnoozeAndWakeNowRejectNonWaitingTask(t *testing.T) {
 
 // Rework finding 1 (2026-09-25 review): the mainline mixed-review flow — a
 // task whose reviewer rejected it (rejected completion_summary persisted by
-// Spynel in todo/), reworked, back in review/ — must web-Approve into a
+// Werkrby in todo/), reworked, back in review/ — must web-Approve into a
 // readable done/ document with a single, valid operator summary.
 func TestTaskControlApproveReplacesPriorRejectedReviewSummary(t *testing.T) {
 	service, _ := newTaskControlService(t)

@@ -233,7 +233,7 @@ func TestAPausedStandaloneTaskReturnsToTodoWithItsAttemptUnspent(t *testing.T) {
 		t.Fatalf("progress note wrong: %s", paused.Body)
 	}
 	if leases, _ := manager.loadLeases(); len(leases) != 0 {
-		t.Fatalf("lease still exists, so Spynel would adopt the claim again: %#v", leases)
+		t.Fatalf("lease still exists, so Werkrby would adopt the claim again: %#v", leases)
 	}
 	if manager.preemptionPending() || manager.operatorStopPending(lease.ID) || manager.isControlCancelled(lease.ID) {
 		t.Fatal("the pause record was not cleared")

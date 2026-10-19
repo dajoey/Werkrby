@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Definition is one built-in coding harness that Spynel can discover and
+// Definition is one built-in coding harness that Werkrby can discover and
 // launch without exposing executable paths or provider-specific flags.
 type Definition struct {
 	Name           string

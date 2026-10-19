@@ -1448,7 +1448,7 @@ func (s *Service) themeCommand(message core.Message, name string, emit core.Emit
 		return s.localReply(message, "Cannot apply theme: "+err.Error(), emit)
 	}
 	// Re-publish even when the configured name is unchanged so editing the
-	// corresponding YAML file can be applied without restarting Spynel.
+	// corresponding YAML file can be applied without restarting Werkrby.
 	if unchanged {
 		s.publishTheme(selected)
 	}

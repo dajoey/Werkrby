@@ -80,7 +80,7 @@ func parkDuringTurn(t *testing.T, fake *fakeHarness, base, name string, edit fun
 	}
 }
 
-// resumeLikeParksPump reproduces ~/ops/spyjo_parks.py move_item on a Joey
+// resumeLikeParksPump reproduces ~/ops/werkrby_parks.py move_item on a Joey
 // answer: it rewrites the front matter it read (dropping the park keys and
 // keeping every other field verbatim), then renames waiting/ -> todo/.
 func resumeLikeParksPump(t *testing.T, base, name string) {
@@ -138,7 +138,7 @@ func TestWakeResumedParkDoesNotSpendAnAttempt(t *testing.T) {
 }
 
 func TestExternallyResumedParkDoesNotSpendAnAttempt(t *testing.T) {
-	// Joey answers the Helm question; spyjo_parks.py moves the document back
+	// Joey answers the Helm question; werkrby_parks.py moves the document back
 	// to todo/. It only has to keep the front matter it did not name.
 	cfg, fake, manager := workflowTestManager(t)
 	route := workflowRoutes()[0]

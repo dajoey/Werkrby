@@ -257,7 +257,7 @@ func (t *explicitTurn) contract(file string) string {
 	}
 	var b strings.Builder
 	b.WriteString("## Turn end on this seat: return your outcome as data\n\n")
-	b.WriteString("On this seat Werkrby writes the task document. This section replaces every instruction above, and in any workspace instruction or playbook, that tells you to set front matter, run `spyjo_frontmatter.py set` or `check`, append to `## Progress` in the task file, or move the task file.\n\n")
+	b.WriteString("On this seat Werkrby writes the task document. This section replaces every instruction above, and in any workspace instruction or playbook, that tells you to set front matter, run `werkrby_frontmatter.py set` or `check`, append to `## Progress` in the task file, or move the task file.\n\n")
 	fmt.Fprintf(&b, "- Read `%s` as often as you need. Do not edit, move, rename or delete it; Werkrby undoes edits to it.\n", file)
 	fmt.Fprintf(&b, "- As the last action of your turn, write one JSON object to `%s` (the folder exists; replace the file if it is there). Werkrby reads it after your process exits, validates it, adds your progress entry with the exact UTC time, sets `status` and `updated_at`, applies your front matter and moves the file.\n", t.ResultPath)
 	fmt.Fprintf(&b, "- If you cannot write that file, end your final reply with the same JSON object in a fenced code block whose info string is exactly `%s`, with nothing after the closing fence. The file wins when both exist.\n", outcomeFenceInfo)
