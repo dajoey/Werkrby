@@ -3316,7 +3316,7 @@ var (
 	relativeDurRegex = regexp.MustCompile(`resets? in ((?:\d+(?:\.\d+)?[hms][\s]*)+)`)
 	relativeDurToken = regexp.MustCompile(`(\d+(?:\.\d+)?)([hms])`)
 	runnerPlanMap    = map[string]string{
-		"opencode": "opencode_go",
+		"opencode": "zai",
 		"kimi":     "kimi_coding",
 		"agy":      "antigravity",
 		"pi":       "zai",
@@ -3326,7 +3326,6 @@ var (
 	// orchestrator and the gate can never disagree about which plan a
 	// provider/model pin spends.
 	providerPlanMap = map[string]string{
-		"opencode-go":     "opencode_go",
 		"zai":             "zai",
 		"zai-coding-plan": "zai",
 		"kimi":            "kimi_coding",

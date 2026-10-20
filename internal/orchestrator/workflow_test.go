@@ -1702,7 +1702,7 @@ func TestQuotaErrorParksAtRealPlanResetForRosterRoutedTasks(t *testing.T) {
 		t.Helper()
 		rosterBody := `
 staff:
-  implementer: {runner: opencode, args: ["--model", "opencode-go/glm-5.3"]}
+  implementer: {runner: opencode, args: ["--model", "kimi-for-coding/kimi-k3"]}
   zai-code: {runner: pi, args: ["--model", "zai/glm-5.3"]}
 roles:
   task_implementation: implementer
@@ -1743,7 +1743,7 @@ roles:
 
 		rollingReset := resetStamp(3 * time.Hour)
 		weeklyReset := resetStamp(4 * 24 * time.Hour)
-		writeSnapshot(t, fmt.Sprintf(`{"plans":{"opencode_go":{"rolling":{"pct":100,"resets_at":"%s"},"weekly":{"pct":100,"resets_at":"%s"}}}}`, rollingReset, weeklyReset))
+		writeSnapshot(t, fmt.Sprintf(`{"plans":{"kimi_coding":{"rolling":{"pct":100,"resets_at":"%s"},"weekly":{"pct":100,"resets_at":"%s"}}}}`, rollingReset, weeklyReset))
 
 		fake.sendErrs = []error{errors.New("429 Too Many Requests")}
 		scanAndWait(t, manager)

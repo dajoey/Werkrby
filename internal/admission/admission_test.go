@@ -17,7 +17,7 @@ var testNow = time.Date(2026, 10, 14, 15, 0, 0, 0, time.UTC)
 const testRoster = `
 staff:
   impl: {runner: pi, args: ["--model", "zai-coding-plan/glm-5.3"], fallback: backup}
-  backup: {runner: opencode, args: ["--model", "opencode-go/glm-5.3"]}
+  backup: {runner: opencode, args: ["--model", "kimi-for-coding/kimi-k3"]}
   lone: {runner: pi, args: ["--model", "zai-coding-plan/glm-5.3"]}
   venice: {runner: hermes}
   veniced: {runner: pi, args: ["--model", "zai-coding-plan/glm-5.3"], fallback: venice}
@@ -120,7 +120,7 @@ func TestDecideWaitsForResetWhenPlanFullWithoutFallback(t *testing.T) {
 func TestDecideFallsBackFromAFullPlanToASeatWithRoom(t *testing.T) {
 	f := newFixture(t, testRoster, map[string]any{
 		"zai":         plan(testNow, map[string]any{"weekly": 100}),
-		"opencode_go": plan(testNow, map[string]any{"rolling": 10}),
+		"kimi_coding": plan(testNow, map[string]any{"rolling": 10}),
 	}, nil)
 	d := f.decide("impl")
 	wantRun(t, d, "backup")
@@ -136,8 +136,8 @@ func TestDecideNeverFallsBackToAnUnmeteredSeat(t *testing.T) {
 
 func TestDecideWaitsWhenTheFallbackPlanIsFullToo(t *testing.T) {
 	f := newFixture(t, testRoster, map[string]any{
-		"zai": map[string]any{"ok": true, "as_of": ts(0), "weekly": map[string]any{"pct": 100, "resets_at": ts(3 * time.Hour)}},
-		"opencode_go": map[string]any{"ok": true, "as_of": ts(0), "monthly": map[string]any{"pct": 100, "resets_at": ts(time.Hour)}},
+		"zai":         map[string]any{"ok": true, "as_of": ts(0), "weekly": map[string]any{"pct": 100, "resets_at": ts(3 * time.Hour)}},
+		"kimi_coding": map[string]any{"ok": true, "as_of": ts(0), "monthly": map[string]any{"pct": 100, "resets_at": ts(time.Hour)}},
 	}, nil)
 	d := f.decide("impl")
 	wantWait(t, d, "full")
@@ -149,7 +149,7 @@ func TestDecideWaitsWhenTheFallbackPlanIsFullToo(t *testing.T) {
 func TestDecideHoldWaitsAndDoesNotFallBack(t *testing.T) {
 	f := newFixture(t, testRoster, map[string]any{
 		"zai":         plan(testNow, map[string]any{"weekly": 10}),
-		"opencode_go": plan(testNow, map[string]any{"rolling": 10}),
+		"kimi_coding": plan(testNow, map[string]any{"rolling": 10}),
 	}, nil)
 	f.writeRuntime("roster-holds.json", map[string]any{
 		"updated_at": ts(-time.Minute),
@@ -165,7 +165,7 @@ func TestDecideHoldWaitsAndDoesNotFallBack(t *testing.T) {
 func TestDecideFollowsAStopDecisionToTheFallback(t *testing.T) {
 	f := newFixture(t, testRoster, map[string]any{
 		"zai":         plan(testNow, map[string]any{"weekly": 10}),
-		"opencode_go": plan(testNow, map[string]any{"rolling": 10}),
+		"kimi_coding": plan(testNow, map[string]any{"rolling": 10}),
 	}, nil)
 	f.writeRuntime("roster-decisions.json", map[string]any{
 		"date":  testNow.Local().Format("2006-01-02"),
@@ -278,7 +278,7 @@ func TestPlanOfMatchesTheQuotaGate(t *testing.T) {
 	}{
 		{"zai pin", roster.Staff{Runner: "pi", Args: []string{"--model", "zai-coding-plan/glm-5.3"}}, "zai"},
 		{"zai balance pin", roster.Staff{Runner: "pi", Args: []string{"--model", "zai-balance/glm-5.3"}}, "zai_balance"},
-		{"opencode go pin", roster.Staff{Runner: "opencode", Args: []string{"--model", "opencode-go/glm-5.3"}}, "opencode_go"},
+		{"retired opencode-go pin is unmetered", roster.Staff{Runner: "opencode", Args: []string{"--model", "opencode-go/glm-5.3"}}, ""},
 		{"unpinned opencode is unmetered", roster.Staff{Runner: "opencode"}, ""},
 		{"kimi code pin", roster.Staff{Runner: "kimi", Args: []string{"--model", "kimi-code/k3"}}, "kimi_coding"},
 		{"agy", roster.Staff{Runner: "agy", Args: []string{"--model", "gemini-3.8-flash-high"}}, "antigravity"},
@@ -298,11 +298,11 @@ func TestPlanOfMatchesTheQuotaGate(t *testing.T) {
 func TestExplainShowsVerdictAndTrail(t *testing.T) {
 	f := newFixture(t, testRoster, map[string]any{
 		"zai":         plan(testNow, map[string]any{"weekly": 100}),
-		"opencode_go": plan(testNow, map[string]any{"rolling": 10}),
+		"kimi_coding": plan(testNow, map[string]any{"rolling": 10}),
 	}, nil)
 	d := f.decide("impl")
 	text := d.Explain("impl")
-	for _, part := range []string{"impl", "RUN", "backup", "opencode_go", "zai", "full"} {
+	for _, part := range []string{"impl", "RUN", "backup", "kimi_coding", "zai", "full"} {
 		if !strings.Contains(text, part) {
 			t.Fatalf("explain output lacks %q:\n%s", part, text)
 		}

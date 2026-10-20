@@ -16,7 +16,7 @@ func admissionWorkspace(t *testing.T, zaiPct int) (stateDir, snapshot string) {
 	roster := `
 staff:
   impl: {runner: pi, args: ["--model", "zai-coding-plan/glm-5.3"], fallback: backup}
-  backup: {runner: opencode, args: ["--model", "opencode-go/glm-5.3"]}
+  backup: {runner: opencode, args: ["--model", "kimi-for-coding/kimi-k3"]}
 roles:
   task_implementation: impl
 `
@@ -29,7 +29,7 @@ roles:
 		"generated_at": now.Format(time.RFC3339),
 		"plans": map[string]any{
 			"zai":         map[string]any{"ok": true, "as_of": now.Format(time.RFC3339), "weekly": map[string]any{"pct": zaiPct, "resets_at": reset}},
-			"opencode_go": map[string]any{"ok": true, "as_of": now.Format(time.RFC3339), "rolling": map[string]any{"pct": 5, "resets_at": reset}},
+			"kimi_coding": map[string]any{"ok": true, "as_of": now.Format(time.RFC3339), "rolling": map[string]any{"pct": 5, "resets_at": reset}},
 		},
 	}
 	data, _ := json.Marshal(snap)
@@ -46,7 +46,7 @@ func TestAdmissionExplainOneSeat(t *testing.T) {
 	if err := runAdmissionCommand([]string{"explain", "--state", stateDir, "--snapshot", snapshot, "--seat", "impl"}, &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, part := range []string{"impl: RUN on backup", "opencode_go", "passed over", "zai"} {
+	for _, part := range []string{"impl: RUN on backup", "kimi_coding", "passed over", "zai"} {
 		if !strings.Contains(out.String(), part) {
 			t.Fatalf("output lacks %q:\n%s", part, out.String())
 		}

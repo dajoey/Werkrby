@@ -23,7 +23,6 @@ func DefaultSnapshotPath() string {
 var providerPlans = map[string]string{
 	"zai-coding-plan":       "zai",
 	"zai":                   "zai",
-	"opencode-go":           "opencode_go",
 	"kimi-for-coding":       "kimi_coding",
 	"kimi":                  "kimi_coding",
 	"kimi-code":             "kimi_coding",
