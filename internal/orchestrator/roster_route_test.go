@@ -3,9 +3,7 @@ package orchestrator
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/agent0ai/spynel/internal/config"
 	"github.com/agent0ai/spynel/internal/extensions"
@@ -193,9 +191,9 @@ roles:
 	}
 }
 
-// A review picks a reviewer from a different model family than the seat that wrote the work, when
-// the review role lists alternates (role_alternates). Werkrby remembers the implementing seat.
-func TestResolveTargetModelCrossFamilyReview(t *testing.T) {
+// A review runs on the seat its role names whatever model wrote the work; a leftover
+// role_alternates key in the roster is ignored.
+func TestResolveTargetModelReviewUsesRoleSeat(t *testing.T) {
 	root := t.TempDir()
 	state := filepath.Join(root, config.StateDirectoryName)
 	if err := os.MkdirAll(state, 0o700); err != nil {
@@ -210,16 +208,11 @@ func TestResolveTargetModelCrossFamilyReview(t *testing.T) {
 		}
 		return Lease{File: path, SessionKey: "orchestrator:tasks:task_review:" + name + ":1"}
 	}
-	review := func(lease Lease) string {
-		lease.Phase = phaseTaskReview
-		return manager.resolveTargetModel(workflowRoute{Name: "tasks"}, lease)
-	}
 	body := `
 staff:
   ops: {runner: agy, args: ["--model", "gemini-3.8-flash-high"]}
   analyst: {runner: agy, args: ["--model", "gemini-3.8-flash-high"]}
   glmflash: {runner: pi, args: ["--model", "zai/glm-5.3-flash"]}
-  glmmax: {runner: pi, args: ["--model", "zai/glm-5.3"]}
   thinker: {runner: pi, args: ["--model", "zai/glm-5.3"]}
 roles:
   task_implementation: ops
@@ -232,32 +225,24 @@ role_alternates:
 	if err := os.WriteFile(roster.Path(state), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	record := func(file, seat string) {
-		if err := roster.RecordImplementer(state, file, seat, time.Now()); err != nil {
-			t.Fatal(err)
+	cases := []struct{ name, frontMatter, want string }{
+		{"medium", "risk: medium\n", "@analyst"},
+		{"routine", "", "@analyst"},
+		{"high", "risk: high\n", "@thinker"},
+	}
+	// Each task was implemented on the Gemini seat (ops), the same model as the reviewer.
+	for _, c := range cases {
+		impl := task("review-"+c.name, c.frontMatter)
+		impl.Phase = phaseTaskImplementation
+		if got := manager.resolveTargetModel(workflowRoute{Name: "tasks"}, impl); got != "@ops" {
+			t.Fatalf("%s implementation: got %q, want @ops", c.name, got)
 		}
 	}
-	for _, c := range []struct{ name, frontMatter, implementer, want string }{
-		{"medium risk, Gemini wrote it: GLM reviews", "risk: medium\n", "ops", "@glmflash"},
-		{"medium risk, GLM wrote it: Gemini reviews", "risk: medium\n", "glmmax", "@analyst"},
-		{"medium risk, writer unknown: the main reviewer", "risk: medium\n", "", "@analyst"},
-		{"ordinary review has no alternates and is untouched", "", "ops", "@analyst"},
-		{"high risk is untouched", "risk: high\n", "ops", "@thinker"},
-	} {
-		lease := task(strings.ReplaceAll(c.name[:8]+c.implementer+c.want, " ", "-"), c.frontMatter)
-		if c.implementer != "" {
-			record(filepath.Base(lease.File), c.implementer)
+	for _, c := range cases {
+		lease := task("review-"+c.name, c.frontMatter)
+		lease.Phase = phaseTaskReview
+		if got := manager.resolveTargetModel(workflowRoute{Name: "tasks"}, lease); got != c.want {
+			t.Errorf("%s review: got %q, want %q", c.name, got, c.want)
 		}
-		if got := review(lease); got != c.want {
-			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
-		}
-	}
-
-	// The implementation dispatch is what records the seat, so a review that follows it finds it.
-	impl := task("recorded", "")
-	impl.Phase = phaseTaskImplementation
-	manager.resolveTargetModel(workflowRoute{Name: "tasks"}, impl)
-	if seat, ok := roster.ImplementedBy(state, filepath.Base(impl.File)); !ok || seat != "ops" {
-		t.Errorf("implementation dispatch recorded %q %v, want ops", seat, ok)
 	}
 }

@@ -64,42 +64,6 @@ func (r *Roster) Landing(stateDir, name string, now time.Time) string {
 	return landing
 }
 
-// ReviewSeat is the seat a routine review dispatch starts on when its reviewer must come from a
-// different model family than the implementer (implFamily, "" disables the check): it walks
-// name's fallback chain exactly as Assign does - past staff at their daily cap or stopped - and
-// additionally skips seats whose known family equals implFamily; an unknown family is never
-// second-guessed. ok is false when the walk runs out - every reachable seat shares the family
-// or is unavailable - and the caller leaves the review unclaimed rather than start a
-// same-family session.
-func (r *Roster) ReviewSeat(stateDir, name, implFamily string, now time.Time) (string, bool) {
-	if r == nil || name == "" || !r.Has(name) || implFamily == "" {
-		return name, true
-	}
-	today := now.Local().Format("2006-01-02")
-	u := usage{}
-	if data, err := os.ReadFile(filepath.Join(stateDir, "runtime", usageFileName)); err == nil {
-		_ = json.Unmarshal(data, &u)
-	}
-	if u.Date != today || u.Counts == nil {
-		u = usage{Date: today, Counts: map[string]int{}}
-	}
-	decided := loadDecisions(stateDir, today)
-	chosen := name
-	for hop := 0; hop <= maxFallback; hop++ {
-		s, ok := r.Staff[chosen]
-		halted := ok && s.DailyCap > 0 && u.Counts[chosen] >= s.DailyCap && decided[chosen] != DecisionContinue
-		stopped := ok && decided[chosen] == DecisionStop
-		if f := r.FamilyOf(chosen); !halted && !stopped && (f == "" || f != implFamily) {
-			return chosen, true
-		}
-		if !ok || s.Fallback == "" {
-			return "", false
-		}
-		chosen = s.Fallback
-	}
-	return "", false
-}
-
 // Passed is one staff the fallback walk went past, and why.
 type Passed struct {
 	Seat   string

@@ -41,7 +41,7 @@ It isn't a competing product. It's one homelab's tuned build: a particular harne
 | Area | Change |
 | --- | --- |
 | Routing | Per-task agent routing, a per-seat roster, and escalation to a stronger seat after N failed attempts |
-| Review | Multi-agent review pipeline; the reviewer comes from a different model family than the implementer |
+| Review | Multi-agent review pipeline; the reviewer is the seat the review role names |
 | Queue | Goal work claims first; queued documents are claimed oldest-first; goal work pauses standalone work for a slot instead of holding it off the board |
 | Hand-off | Opt-in acceptance gate: a registered check must pass before a task can leave implementation |
 | Control | An operator Stop parks the task (it's not mistaken for a service restart); job kill and interrupt never queue behind the turn they stop |

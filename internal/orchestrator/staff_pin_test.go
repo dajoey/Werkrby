@@ -55,11 +55,11 @@ func TestStaffPinsFromFilersStandOnlyForRoutableSeats(t *testing.T) {
 // The decision reaches the seat the task runs on: an ignored pin routes the task by the role default.
 func TestAnIgnoredStaffPinRoutesByTheRoleDefault(t *testing.T) {
 	staffing := pinTestRoster()
-	seat, ok, _ := rosterSeat(staffing, t.TempDir(), phaseTaskImplementation, map[string]any{"staff": "second", "attempt": 0}, "tasks-x.md", nil)
+	seat, ok := rosterSeat(staffing, t.TempDir(), phaseTaskImplementation, map[string]any{"staff": "second", "attempt": 0}, "tasks-x.md", nil)
 	if !ok || seat != "implementer" {
 		t.Fatalf("seat = %q (%v), want the role default implementer", seat, ok)
 	}
-	seat, ok, _ = rosterSeat(staffing, t.TempDir(), phaseTaskImplementation, map[string]any{"staff": "second", "pinned_by": "joey", "attempt": 0}, "tasks-x.md", nil)
+	seat, ok = rosterSeat(staffing, t.TempDir(), phaseTaskImplementation, map[string]any{"staff": "second", "pinned_by": "joey", "attempt": 0}, "tasks-x.md", nil)
 	if !ok || seat != "second" {
 		t.Fatalf("seat = %q (%v), want the pinned second", seat, ok)
 	}
