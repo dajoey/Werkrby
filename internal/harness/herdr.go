@@ -19,6 +19,7 @@ import (
 
 	"github.com/agent0ai/spynel/internal/core"
 	"github.com/agent0ai/spynel/internal/fsx"
+	"github.com/agent0ai/spynel/internal/history"
 	"github.com/agent0ai/spynel/internal/roster"
 )
 
@@ -46,6 +47,8 @@ type Herdr struct {
 	headlessKimiCommand string
 	// headlessAgyCommand is the agy executable for `headless: true` agy staff (default: agyExecutable).
 	headlessAgyCommand string
+
+	cliChatIdleThreshold time.Duration
 }
 
 type herdrTurn struct {
@@ -124,6 +127,12 @@ func NewHerdr(cfg HarnessConfig) (*Herdr, error) {
 	if cfg.Cwd == "" {
 		cfg.Cwd = "."
 	}
+	idleThreshold := 6 * time.Hour
+	if cfg.CLIChatIdleThresholdSet {
+		idleThreshold = cfg.CLIChatIdleThreshold
+	} else if cfg.CLIChatIdleThreshold != 0 {
+		idleThreshold = cfg.CLIChatIdleThreshold
+	}
 	h := &Herdr{
 		config:                cfg,
 		keyLocks:              map[string]*sync.Mutex{},
@@ -131,6 +140,7 @@ func NewHerdr(cfg HarnessConfig) (*Herdr, error) {
 		active:                map[string]*herdrTurn{},
 		idleStabilityCount:    3,
 		idleStabilityInterval: 2 * time.Second,
+		cliChatIdleThreshold:  idleThreshold,
 	}
 	_ = h.loadSessions()
 	return h, nil
@@ -167,6 +177,9 @@ func (h *Herdr) Start(ctx context.Context) error {
 		return fmt.Errorf("herdr server is not running (output: %s)", strings.TrimSpace(string(out)))
 	}
 	go h.sweepOrphanedWorkers(ctx)
+	if h.cliChatIdleThreshold > 0 {
+		go h.runCLIChatIdleSweepLoop(ctx)
+	}
 	return nil
 }
 
@@ -2014,5 +2027,171 @@ func (h *Herdr) sweepOrphanedWorkers(ctx context.Context) {
 			_ = exec.Command(h.config.Command, "pane", "close", a.PaneID).Run()
 		}
 		_ = exec.Command(h.config.Command, "agent", "rename", a.Name, "--clear").Run()
+	}
+}
+
+func isCLIChatWorkerName(name string) bool {
+	return strings.HasPrefix(name, "wk-c-cli-") || strings.HasPrefix(name, "sj-c-cli-")
+}
+
+func (h *Herdr) isAgentTurnInFlight(a herdrAgentItem) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for key, turn := range h.active {
+		if turn == nil {
+			continue
+		}
+		if turn.target == a.Name || (a.PaneID != "" && turn.paneID == a.PaneID) || (a.TabID != "" && turn.tabID == a.TabID) {
+			return true
+		}
+		expectedName, _ := workerNameAndLabel(key, "")
+		if expectedName == a.Name {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *Herdr) resolveCLIChatActivity(agentName string) (time.Time, string, bool) {
+	roots := []string{
+		filepath.Join(h.config.Cwd, roster.StateDirName, "history"),
+		filepath.Join(h.config.Cwd, ".spynel", "history"),
+		filepath.Join(h.config.Cwd, "history"),
+	}
+
+	for _, root := range roots {
+		cliDir := filepath.Join(root, "cli")
+		entries, err := os.ReadDir(cliDir)
+		if err != nil {
+			continue
+		}
+		store := history.New(root)
+		for _, e := range entries {
+			if e.IsDir() || filepath.Ext(e.Name()) != ".jsonl" {
+				continue
+			}
+			conv := strings.TrimSuffix(e.Name(), ".jsonl")
+			shortConv := conv
+			shortConv = strings.TrimPrefix(shortConv, "local-")
+			shortConv = sanitizeTag(shortConv)
+			if shortConv == "" {
+				shortConv = "main"
+			}
+			expectedWk := fitHerdrWorkerName("wk-c-cli-", shortConv, shortConv)
+			expectedSj := fitHerdrWorkerName("sj-c-cli-", shortConv, shortConv)
+			if expectedWk == agentName || expectedSj == agentName {
+				key := "chat:cli:" + conv
+				if act, found := store.LastActivity("cli", conv); found {
+					return act, key, true
+				}
+				if info, err := e.Info(); err == nil {
+					return info.ModTime(), key, true
+				}
+			}
+		}
+	}
+	return time.Time{}, "", false
+}
+
+func (h *Herdr) sweepIdleCLIChatPanes(ctx context.Context) {
+	h.mu.Lock()
+	threshold := h.cliChatIdleThreshold
+	closed := h.closed
+	h.mu.Unlock()
+	if closed || threshold <= 0 {
+		return
+	}
+
+	out, err := exec.CommandContext(ctx, h.config.Command, "agent", "list").Output()
+	if err != nil {
+		return
+	}
+	var listResp herdrAgentListResponse
+	if err := json.Unmarshal(out, &listResp); err != nil {
+		return
+	}
+
+	ownRoot := canonicalDir(h.config.Cwd)
+	now := time.Now()
+
+	for _, a := range listResp.Result.Agents {
+		// Only sweep CLI chat agent panes (not telegram, not tui, not worker agents)
+		if !isCLIChatWorkerName(a.Name) {
+			continue
+		}
+
+		// Must belong to this workspace
+		if ownRoot == "" || canonicalDir(a.Cwd) != ownRoot {
+			continue
+		}
+
+		// Only close when idle (working panes are never closed)
+		if !strings.EqualFold(a.AgentStatus, "idle") {
+			continue
+		}
+
+		// Only close when no turn is in flight
+		if h.isAgentTurnInFlight(a) {
+			continue
+		}
+
+		lastActivity, convKey, ok := h.resolveCLIChatActivity(a.Name)
+		if !ok {
+			continue
+		}
+
+		if now.Sub(lastActivity) <= threshold {
+			continue
+		}
+
+		// Idle past threshold: close using the same tab close / pane close path as orphan sweep
+		if a.TabID != "" {
+			_ = exec.CommandContext(ctx, h.config.Command, "tab", "close", a.TabID).Run()
+		} else if a.PaneID != "" {
+			_ = exec.CommandContext(ctx, h.config.Command, "pane", "close", a.PaneID).Run()
+		}
+		_ = exec.CommandContext(ctx, h.config.Command, "agent", "rename", a.Name, "--clear").Run()
+
+		if convKey != "" {
+			h.mu.Lock()
+			delete(h.sessions, convKey)
+			_ = h.saveSessionsLocked()
+			h.mu.Unlock()
+		}
+	}
+}
+
+func (h *Herdr) runCLIChatIdleSweepLoop(ctx context.Context) {
+	h.sweepIdleCLIChatPanes(ctx)
+
+	threshold := h.cliChatIdleThreshold
+	if threshold <= 0 {
+		return
+	}
+	cadence := threshold / 4
+	if cadence > time.Minute {
+		cadence = time.Minute
+	}
+	if cadence < 5*time.Second {
+		cadence = 5 * time.Second
+	}
+
+	ticker := time.NewTicker(cadence)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			h.mu.Lock()
+			closed := h.closed
+			curThreshold := h.cliChatIdleThreshold
+			h.mu.Unlock()
+			if closed || curThreshold <= 0 {
+				return
+			}
+			h.sweepIdleCLIChatPanes(ctx)
+		}
 	}
 }

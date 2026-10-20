@@ -46,10 +46,11 @@ type Config struct {
 }
 
 type Workspace struct {
-	HistoryMaxMessages   int `yaml:"history_max_messages"`
-	HistoryCharLimit     int `yaml:"history_char_limit"`
-	AttachmentMaxMB      int `yaml:"attachment_max_mb"`
-	CleanupRetentionDays int `yaml:"cleanup_retention_days"`
+	HistoryMaxMessages   int    `yaml:"history_max_messages"`
+	HistoryCharLimit     int    `yaml:"history_char_limit"`
+	AttachmentMaxMB      int    `yaml:"attachment_max_mb"`
+	CleanupRetentionDays int    `yaml:"cleanup_retention_days"`
+	CLIChatIdleThreshold string `yaml:"cli_chat_idle_threshold,omitempty"`
 }
 
 // Harness contains the user-facing coding-harness choices. Built-in
@@ -68,6 +69,7 @@ type Harness struct {
 	ReviewerAgentPrefix    string   `yaml:"reviewer_agent_prefix"`
 	HeartbeatAgentPrefix   string   `yaml:"heartbeat_agent_prefix"`
 	Reviews                string   `yaml:"reviews"`
+	CLIChatIdleThreshold   string   `yaml:"cli_chat_idle_threshold,omitempty"`
 	ACPCommand             string   `yaml:"acp_command,omitempty"`
 	ACPArgs                []string `yaml:"acp_args,omitempty"`
 	reasoningEffortOmitted bool
@@ -698,6 +700,36 @@ func (c Config) HarnessArgs() []string {
 func (c Config) ACPArgsText() string {
 	text, _ := FormatCommandLineArguments(c.Harness.ACPArgs)
 	return text
+}
+
+// CLIChatIdleThreshold returns the parsed duration threshold after which idle CLI
+// chat panes should be closed, and whether the threshold was explicitly set.
+// A return value of 0 indicates the close is disabled.
+func (c Config) CLIChatIdleThreshold() (time.Duration, bool) {
+	raw := strings.TrimSpace(c.Harness.CLIChatIdleThreshold)
+	if raw == "" {
+		raw = strings.TrimSpace(c.Workspace.CLIChatIdleThreshold)
+	}
+	if raw == "" {
+		return 6 * time.Hour, false
+	}
+	switch strings.ToLower(raw) {
+	case "0", "0s", "0h", "0m", "off", "never", "disabled":
+		return 0, true
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		if d < 0 {
+			return 0, true
+		}
+		return d, true
+	}
+	if hours, err := strconv.Atoi(raw); err == nil {
+		if hours <= 0 {
+			return 0, true
+		}
+		return time.Duration(hours) * time.Hour, true
+	}
+	return 6 * time.Hour, false
 }
 
 func (c Config) TelegramToken() string {

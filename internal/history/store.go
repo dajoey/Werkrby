@@ -959,6 +959,35 @@ func (s *Store) Latest(channel string) (Conversation, bool, error) {
 	return latest, found, nil
 }
 
+// LastActivity returns the newest timestamp recorded for a given conversation,
+// checking user-activity metadata, recent transcript entries, and the history file's
+// modification time.
+func (s *Store) LastActivity(channel, conversation string) (time.Time, bool) {
+	path := s.Path(channel, conversation)
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}, false
+	}
+	latest := info.ModTime()
+
+	var activity struct {
+		At time.Time `json:"at"`
+	}
+	if data, readErr := os.ReadFile(s.userActivityPath(channel, conversation)); readErr == nil && json.Unmarshal(data, &activity) == nil && !activity.At.IsZero() {
+		if activity.At.After(latest) {
+			latest = activity.At
+		}
+	}
+
+	entries, err := readRecentEntries(path, 1, 4096)
+	if err == nil && len(entries) > 0 && !entries[0].At.IsZero() {
+		if entries[0].At.After(latest) {
+			latest = entries[0].At
+		}
+	}
+	return latest, true
+}
+
 func newestConversations(conversations []Conversation, limit int) []Conversation {
 	sort.Slice(conversations, func(i, j int) bool { return conversations[i].UpdatedAt.After(conversations[j].UpdatedAt) })
 	if limit <= 0 || len(conversations) <= limit {

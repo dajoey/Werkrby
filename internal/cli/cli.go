@@ -1194,12 +1194,15 @@ func buildService(cfg config.Config, version string) (*app.Service, error) {
 			command = definition.Command
 		}
 	}
+	idleThreshold, idleSet := cfg.CLIChatIdleThreshold()
 	target := harness.NewSupervisor(registry, harness.HarnessConfig{
 		Name: cfg.Harness.Name, Command: command, Args: cfg.HarnessArgs(), Cwd: cfg.Root,
 		Model: cfg.Harness.Model, Effort: cfg.Harness.ReasoningEffort, LegacyEffort: cfg.Harness.UsesLegacyReasoningEffort(), ServiceMode: cfg.Harness.ServiceMode,
 		ApprovalPolicy: "never", Sandbox: cfg.Harness.Sandbox,
 		Network: false, SessionsFile: cfg.HarnessSessionsPath(cfg.Harness.Name),
 		Version: version, Stderr: runtimeState.Writer("harness"),
+		CLIChatIdleThreshold:    idleThreshold,
+		CLIChatIdleThresholdSet: idleSet,
 	})
 	service := app.NewWithRuntime(cfg, target, runtimeState)
 	service.Updates = updater.Detect(version)

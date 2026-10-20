@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -32,6 +33,9 @@ type HarnessConfig struct {
 	SessionsFile   string
 	Version        string
 	Stderr         io.Writer
+
+	CLIChatIdleThreshold    time.Duration
+	CLIChatIdleThresholdSet bool
 }
 
 // Model describes one model choice exposed by a harness. IDs are the exact
