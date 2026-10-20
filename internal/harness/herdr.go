@@ -2125,8 +2125,8 @@ func (h *Herdr) sweepIdleCLIChatPanes(ctx context.Context) {
 			continue
 		}
 
-		// Only close when idle (working panes are never closed)
-		if !strings.EqualFold(a.AgentStatus, "idle") {
+		// Only close when idle or done (working panes are never closed)
+		if a.AgentStatus == "working" || (a.AgentStatus != "idle" && a.AgentStatus != "done") {
 			continue
 		}
 

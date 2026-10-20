@@ -29,7 +29,7 @@ agent)
 	list)
 		cat << JSON
 {"result":{"agents":[
-{"name":"wk-c-cli-old","workspace_id":"w1","tab_id":"w1:told","pane_id":"w1:pold","cwd":%q,"agent_status":"idle"},
+{"name":"wk-c-cli-old","workspace_id":"w1","tab_id":"w1:told","pane_id":"w1:pold","cwd":%q,"agent_status":"done"},
 {"name":"wk-c-cli-fresh","workspace_id":"w1","tab_id":"w1:tfresh","pane_id":"w1:pfresh","cwd":%q,"agent_status":"idle"},
 {"name":"wk-c-telegram-tg-1701167661","workspace_id":"w1","tab_id":"w1:ttele","pane_id":"w1:ptele","cwd":%q,"agent_status":"idle"},
 {"name":"wk-c-tui-main","workspace_id":"w1","tab_id":"w1:ttui","pane_id":"w1:ptui","cwd":%q,"agent_status":"idle"},
