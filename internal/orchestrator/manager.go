@@ -306,6 +306,9 @@ func (m *Manager) SetNotificationDelivery(deliver func(context.Context, Origin, 
 
 func (m *Manager) Run(ctx context.Context) error {
 	defer harness.SetRosterObserver(m.shadowRoster)()
+	if removed := SweepStaleProviderTurnLocks(m.runtimeSnapshot().StatePath("tasks")); removed > 0 {
+		m.log(fmt.Sprintf("provider-turn lock sweep: removed %d stale empty lock files", removed))
+	}
 	if err := m.ScanOnce(ctx); err != nil {
 		m.log("orchestrator scan: " + err.Error())
 	}
