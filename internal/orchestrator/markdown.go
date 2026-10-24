@@ -212,10 +212,47 @@ func claimDocumentWithWriter(source, target, status, attemptField string, now ti
 	case claimCreditExhausted:
 		appendProgress(&document, now, resumeCreditExhaustedNote(attempt))
 	}
+	if title, source := backfillClaimTitle(&document, strings.TrimSuffix(filepath.Base(target), filepath.Ext(target))); source != "" {
+		appendProgress(&document, now, "title backfilled by Werkrby from the document "+source+" (\""+title+"\") because the front matter lacked a title")
+	}
 	if err := write(target, document); err != nil {
 		return Document{}, err
 	}
 	return document, nil
+}
+
+// backfillClaimTitle gives a claimed document a non-empty `title` when its author
+// filed it without one: a document that parses but lacks the required title drew as an
+// unlabelled row on the board (2026-10-24) and every dispatch-side consumer has to guess
+// a label. The body's level-1 heading names the work; the filename stem is the last
+// resort. It reports the title written and the source it came from ("heading" or
+// "filename"), or "" when the document already carried a title.
+func backfillClaimTitle(document *Document, fallback string) (string, string) {
+	if stringField(*document, "title") != "" {
+		return "", ""
+	}
+	title, source := documentHeadingTitle(document.Body), "heading"
+	if title == "" {
+		title, source = fallback, "filename"
+	}
+	title = boundedWorkflowText(title, 240)
+	if title == "" {
+		return "", ""
+	}
+	document.FrontMatter["title"] = title
+	return title, source
+}
+
+// documentHeadingTitle returns the whitespace-collapsed text of the body's first
+// level-1 markdown heading, or "" when the body has none.
+func documentHeadingTitle(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "# ") {
+			return strings.TrimSpace(strings.TrimPrefix(trimmed, "#"))
+		}
+	}
+	return ""
 }
 
 // ReserveProviderTurn defines the durable iteration boundary. The increment
