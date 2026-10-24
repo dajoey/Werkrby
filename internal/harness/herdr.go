@@ -211,11 +211,11 @@ func (h *Herdr) ReadyEvents() <-chan struct{} {
 func (h *Herdr) Models(_ context.Context) ([]Model, error) {
 	allEfforts := []string{"low", "medium", "high"}
 	return []Model{
-		{ID: "opencode", DisplayName: "OpenCode", Description: "Dedicated OpenCode worker in Herdr pane (default)", Default: true, Efforts: allEfforts},
+		{ID: "hermes", DisplayName: "Hermes", Description: "Dedicated Hermes worker in Herdr pane (default)", Default: true, Efforts: allEfforts},
+		{ID: "opencode", DisplayName: "OpenCode", Description: "Dedicated OpenCode worker in Herdr pane", Efforts: allEfforts},
 		{ID: "claude", DisplayName: "Claude Code", Description: "Dedicated Claude Code worker in Herdr pane", Efforts: allEfforts},
 		{ID: "codex", DisplayName: "Codex", Description: "Dedicated Codex worker in Herdr pane", Efforts: allEfforts},
 		{ID: "kimi", DisplayName: "Kimi", Description: "Dedicated Kimi CLI worker in Herdr pane", Efforts: allEfforts},
-		{ID: "hermes", DisplayName: "Hermes", Description: "Dedicated Hermes worker in Herdr pane", Efforts: allEfforts},
 		{ID: "agy", DisplayName: "Antigravity", Description: "Dedicated Antigravity CLI worker in Herdr pane", Efforts: allEfforts},
 		{ID: "pi", DisplayName: "Pi", Description: "Dedicated Pi worker in Herdr pane", Efforts: allEfforts},
 		{ID: "cursor", DisplayName: "Cursor", Description: "Dedicated Cursor worker in Herdr pane", Efforts: allEfforts},
@@ -530,10 +530,7 @@ func WorkerNameForKey(key string) string {
 }
 
 func workerNameAndLabel(key, model string) (workerName string, tabLabel string) {
-	model = strings.TrimSpace(model)
-	if model == "" || model == "default" {
-		model = "opencode"
-	}
+	model = herdrRunnerModel(model)
 
 	cleanKey := strings.TrimSpace(key)
 
@@ -542,7 +539,7 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 		if cleanKey == "orchestrator:semantic-heartbeat" || cleanKey == "heartbeat" {
 			modelTag := sanitizeTag(model)
 			if modelTag == "" {
-				modelTag = "opencode"
+				modelTag = defaultHerdrRunner
 			}
 			workerName = fitHerdrWorkerName("wk-hb-", modelTag, modelTag)
 			tabLabel = fmt.Sprintf("Heartbeat (%s)", model)
@@ -648,19 +645,10 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 }
 
 func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd string) (target string, paneID string, tabID string, isDynamic bool, threadID string, err error) {
-	model = strings.TrimSpace(model)
-	if model == "" || model == "default" {
-		model = "opencode"
-	}
-
 	// Roster staff ("@name") expand to a runner kind plus launch arguments.
-	var agentArgs []string
-	if strings.HasPrefix(model, roster.StaffPrefix) {
-		kind, args, expandErr := roster.Expand(filepath.Join(cwd, roster.StateDirName), model)
-		if expandErr != nil {
-			return "", "", "", false, "", expandErr
-		}
-		model, agentArgs = kind, args
+	model, agentArgs, expandErr := herdrLaunch(cwd, model)
+	if expandErr != nil {
+		return "", "", "", false, "", expandErr
 	}
 
 	// 1. Direct explicit pane target (e.g. "w8:p2")
@@ -1885,14 +1873,46 @@ func (h *Herdr) rosterModelForKey(key string, cfg HarnessConfig) string {
 	return staffing.Model(assigned)
 }
 
-// runnerLaunch is the runner kind and launch arguments cfg.Model starts, expanding roster
-// staff ("@name") as resolveTarget does; a staff entry that no longer expands reports neither.
-func (h *Herdr) runnerLaunch(cfg HarnessConfig) (string, []string) {
-	model := strings.TrimSpace(cfg.Model)
-	if !strings.HasPrefix(model, roster.StaffPrefix) {
-		return model, nil
+const (
+	// defaultHerdrRunner is the runner an empty or "default" model starts. Every Werkrby seat
+	// runs Hermes.
+	defaultHerdrRunner = "hermes"
+	// defaultHermesProfile is the profile a hermes launch that names none runs: the Werkrby code
+	// worker. Without it Hermes runs the root profile, which is the front-of-house persona.
+	defaultHermesProfile = "wk-code"
+)
+
+// herdrRunnerModel is model with an empty or "default" value replaced by the default runner.
+func herdrRunnerModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || model == "default" {
+		return defaultHerdrRunner
 	}
-	kind, args, err := roster.Expand(filepath.Join(cfg.Cwd, roster.StateDirName), model)
+	return model
+}
+
+// herdrLaunch is the runner kind and launch arguments a harness model starts in a worker pane
+// under the workspace cwd: an empty or "default" model is the default runner, roster staff
+// ("@name") expand to their runner and args, and a hermes launch whose args carry no -p,
+// --profile or --profile= gets "-p wk-code" in front. resolveTarget launches what this returns
+// and runnerLaunch reads the turn's ledger from it, so the two cannot name different profiles.
+func herdrLaunch(cwd, model string) (string, []string, error) {
+	kind, args, err := roster.Expand(filepath.Join(cwd, roster.StateDirName), herdrRunnerModel(model))
+	if err != nil {
+		return "", nil, err
+	}
+	if kind == "hermes" {
+		if _, explicit, _ := hermesLaunchProfile(args); !explicit {
+			args = append([]string{"-p", defaultHermesProfile}, args...)
+		}
+	}
+	return kind, args, nil
+}
+
+// runnerLaunch is the runner kind and launch arguments cfg.Model starts, as resolveTarget
+// launches them; a staff entry that no longer expands reports neither.
+func (h *Herdr) runnerLaunch(cfg HarnessConfig) (string, []string) {
+	kind, args, err := herdrLaunch(cfg.Cwd, cfg.Model)
 	if err != nil {
 		return "", nil
 	}

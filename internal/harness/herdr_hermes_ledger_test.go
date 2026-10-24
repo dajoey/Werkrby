@@ -131,7 +131,8 @@ func (l *hermesTestLedger) add(session string, rows ...hermesTestRow) {
 
 // hermesFakeHerdr writes a herdr stand-in for a Hermes worker: `agent get` reports a hermes
 // agent with no agent_session (herdr never learns one for a gateway-run Hermes turn), `agent
-// read` serves dir/screen.txt, `agent list` serves dir/agents.json, and `agent prompt` records
+// read` serves dir/screen.txt, `agent list` serves dir/agents.json, `agent start` appends its
+// arguments as one line to dir/starts.txt, and `agent prompt` records
 // the prompt as dir/prompts/<n> and returns only after the simulator acks it in dir/acks/<n>, so
 // the simulator's ledger rows are written while the turn is in flight, as Hermes writes them.
 func hermesFakeHerdr(t *testing.T, dir string) string {
@@ -158,6 +159,10 @@ agent)
 		;;
 	get)
 		echo '{"result":{"agent":{"agent":"hermes","agent_status":"idle","agent_session":{"value":""}}}}'
+		;;
+	start)
+		printf '%%s\n' "$*" >> "$dir/starts.txt"
+		echo '{"result":{}}'
 		;;
 	prompt)
 		n=$(( $(ls "$dir/prompts" | wc -l) + 1 ))
@@ -288,11 +293,18 @@ func (r hermesTurnResult) mentions(text string) bool {
 
 func runHermesTurn(t *testing.T, dir, script, key, model, prompt string) hermesTurnResult {
 	t.Helper()
+	return runHermesTurnConfigured(t, dir, script, "hermes", key, model, prompt)
+}
+
+// runHermesTurnConfigured is runHermesTurn with the harness's configured model (harness.model)
+// set to configModel instead of "hermes".
+func runHermesTurnConfigured(t *testing.T, dir, script, configModel, key, model, prompt string) hermesTurnResult {
+	t.Helper()
 	h, err := NewHerdr(HarnessConfig{
 		Name:         "herdr",
 		Command:      script,
 		Cwd:          dir,
-		Model:        "hermes",
+		Model:        configModel,
 		SessionsFile: filepath.Join(dir, "sessions.json"),
 	})
 	if err != nil {
@@ -337,7 +349,7 @@ func TestHerdrHermesNewPaneLedgerProvesDeliverySendsPromptOnce(t *testing.T) {
 	dir := t.TempDir()
 	hermesHome := filepath.Join(dir, "hermes-home")
 	t.Setenv("HERMES_HOME", hermesHome)
-	ledger := newHermesTestLedger(t, filepath.Join(hermesHome, "state.db"))
+	ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
 	ledger.session("local-a", "", "", time.Now())
 	script := hermesFakeHerdr(t, dir)
 	writeHermesScreen(t, dir, hermesTestTurn("You are running from the Werkrby orchestrator system.", hermesTestBox("Task moved to review.\nEvidence in the task file."))+hermesTestChrome)
@@ -371,7 +383,7 @@ func TestHerdrHermesNewChatPaneFirstMessageGetsTheReply(t *testing.T) {
 	dir := t.TempDir()
 	hermesHome := filepath.Join(dir, "hermes-home")
 	t.Setenv("HERMES_HOME", hermesHome)
-	ledger := newHermesTestLedger(t, filepath.Join(hermesHome, "state.db"))
+	ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
 	ledger.session("local-chat", "", "", time.Now())
 	script := hermesFakeHerdr(t, dir)
 	writeHermesScreen(t, dir, hermesTestTurn("Werkrby chat", hermesTestBox("The dentist card wakes on January 14."))+hermesTestChrome)
@@ -403,7 +415,7 @@ func TestHerdrHermesChatGateRewriteIsTheReplyNotTheScreenBox(t *testing.T) {
 	dir := t.TempDir()
 	hermesHome := filepath.Join(dir, "hermes-home")
 	t.Setenv("HERMES_HOME", hermesHome)
-	ledger := newHermesTestLedger(t, filepath.Join(hermesHome, "state.db"))
+	ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
 	ledger.session("local-chat", "", "", time.Now().Add(-time.Hour))
 	// An earlier turn of the same warm conversation.
 	ledger.add("local-chat",
@@ -457,7 +469,7 @@ func TestHerdrHermesFailedTurnIsAnErrorNotAReply(t *testing.T) {
 			dir := t.TempDir()
 			hermesHome := filepath.Join(dir, "hermes-home")
 			t.Setenv("HERMES_HOME", hermesHome)
-			ledger := newHermesTestLedger(t, filepath.Join(hermesHome, "state.db"))
+			ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
 			ledger.session("local-q", "", "", time.Now().Add(-time.Hour))
 			screen := hermesTestTurn("Do the work.", errorPanel) + hermesTestChrome
 			if tc.warm {
@@ -586,6 +598,14 @@ func TestHerdrHermesRosterProfileSelectsItsLedger(t *testing.T) {
 	if sent := hermesPromptsSent(t, dir); sent != 1 {
 		t.Fatalf("prompt sent %d times, want 1", sent)
 	}
+	// A seat that names its profile launches with exactly its own args: no default profile added.
+	starts := hermesStarts(t, dir)
+	if len(starts) != 1 {
+		t.Fatalf("agent start ran %d times, want 1: %q", len(starts), starts)
+	}
+	if kind, args := starts[0].kind, strings.Join(starts[0].args, " "); kind != "hermes" || args != "-p wk-chat --model zai/glm-5.3 --reasoning high" {
+		t.Fatalf("agent start --kind %q -- %q, want --kind hermes -- %q", kind, args, "-p wk-chat --model zai/glm-5.3 --reasoning high")
+	}
 }
 
 // The gateway can flush the answer row a moment after the pane returns to its composer; the
@@ -594,7 +614,7 @@ func TestHerdrHermesAnswerRowLandingAfterIdleIsStillTheReply(t *testing.T) {
 	dir := t.TempDir()
 	hermesHome := filepath.Join(dir, "hermes-home")
 	t.Setenv("HERMES_HOME", hermesHome)
-	ledger := newHermesTestLedger(t, filepath.Join(hermesHome, "state.db"))
+	ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
 	ledger.session("local-a", "", "", time.Now())
 	script := hermesFakeHerdr(t, dir)
 	// The screen still shows the turn's interim box: only the ledger's late row is the answer.
@@ -627,7 +647,7 @@ func TestHerdrHermesTurnWithoutAnswerRowIsAnError(t *testing.T) {
 	dir := t.TempDir()
 	hermesHome := filepath.Join(dir, "hermes-home")
 	t.Setenv("HERMES_HOME", hermesHome)
-	ledger := newHermesTestLedger(t, filepath.Join(hermesHome, "state.db"))
+	ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
 	ledger.session("local-a", "", "", time.Now())
 	script := hermesFakeHerdr(t, dir)
 	writeHermesScreen(t, dir, hermesTestTurn("You are running from the Werkrby orchestrator system.", hermesTestBox("Let me read the task first."), "  ┊ 📖 read_file  0.1s\n")+hermesTestChrome)

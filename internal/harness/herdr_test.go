@@ -459,6 +459,9 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The default runner is hermes, whose new pane waits for its composer instead of
+	// returning on the session id this fake reports; keep that wait short.
+	h.SetComposerWaitTimeout(20 * time.Millisecond)
 
 	key := "orchestrator:tasks:task_implementation:test-task:1"
 	sendDone := make(chan error, 1)
