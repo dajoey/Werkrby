@@ -480,3 +480,23 @@ func TestResumeRegistersBranchBeforeConcurrentCleanupCanDeleteIt(t *testing.T) {
 		t.Fatalf("unprotected old source was not removed: %v", err)
 	}
 }
+
+func TestCleanupResultStringNamesTheFailingStage(t *testing.T) {
+	// 2026-10-24: the automatic cleanup has reported exactly "1 failures" every cycle since the
+	// 2026-10-21 restart and nothing on disk or in the logs names the stage. The counter used to
+	// be anonymous; the summary must say which stage failed so the poison item can be fixed.
+	r := cleanupResult{Failed: 1, TaskArchiveFailed: 1}
+	got := r.String()
+	for _, want := range []string{"1 failures", "task archive"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("String() = %q, want it to contain %q", got, want)
+		}
+	}
+	all := cleanupResult{Failed: 4, HistoryFailed: 1, JobFailed: 1, TaskArchiveFailed: 1, ObsoleteFailed: 1}
+	got = all.String()
+	for _, want := range []string{"history", "job archives", "task archive", "obsolete"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("String() = %q, want it to contain %q", got, want)
+		}
+	}
+}
