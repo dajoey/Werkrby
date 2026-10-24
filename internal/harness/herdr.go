@@ -49,6 +49,13 @@ type Herdr struct {
 	headlessAgyCommand string
 
 	cliChatIdleThreshold time.Duration
+
+	// hermesHome overrides the Hermes home whose profile ledgers judge hermes turns (tests);
+	// empty means HERMES_HOME, else ~/.hermes.
+	hermesHome string
+	// hermesLedgerSettle bounds the re-reads of a delivered Hermes turn whose answer row has not
+	// landed yet; zero means defaultHermesLedgerSettle, negative means no re-read.
+	hermesLedgerSettle time.Duration
 }
 
 type herdrTurn struct {
@@ -975,11 +982,28 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 		}
 	}
 
+	// A Hermes turn runs in the root gateway, so herdr never reports a session for it and there
+	// is no transcript: the launch profile's ledger proves delivery and holds the answer.
+	runnerKind, launchArgs := h.runnerLaunch(cfg)
+	isHermes := agentKind == "hermes" || runnerKind == "hermes"
+	var hermes hermesVerdict
+	if isHermes && promptErr == nil && finalText == "" {
+		hermes = h.judgeHermesTurn(turnContext, target, launchArgs, prompt, promptStart)
+		if turnContext.Err() != nil {
+			return threadID, false, turnContext.Err()
+		}
+		if hermes.err != nil {
+			return threadID, false, hermes.err
+		}
+		finalText = hermes.final
+	}
+
 	// Guard against undelivered prompt on newly spawned pane:
 	// If prompt --wait returned ok on a pane spawned for this turn, but there is
 	// still no agent session and no new transcript, the prompt was typed into a
-	// terminal that the worker was not yet reading.
-	if promptErr == nil && turn.isDynamic && !hasRealSession && finalText == "" {
+	// terminal that the worker was not yet reading. A Hermes turn the ledger or
+	// screen shows was delivered is never re-sent.
+	if promptErr == nil && turn.isDynamic && !hasRealSession && finalText == "" && !hermes.delivered {
 		if emit != nil {
 			emit(core.Event{
 				Kind:      core.EventStatus,
@@ -1043,9 +1067,19 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 				}
 			}
 		}
+		if isHermes && promptErr == nil && finalText == "" {
+			hermes = h.judgeHermesTurn(turnContext, target, launchArgs, prompt, rePromptStart)
+			if turnContext.Err() != nil {
+				return threadID, false, turnContext.Err()
+			}
+			if hermes.err != nil {
+				return threadID, false, hermes.err
+			}
+			finalText = hermes.final
+		}
 
 		// If that also yields nothing, return an error that Werkrby retries in place, never EventFinal.
-		if promptErr != nil || (!hasRealSession && finalText == "") {
+		if promptErr != nil || (!hasRealSession && finalText == "" && !hermes.delivered) {
 			notDeliveredErr := fmt.Errorf("prompt_not_delivered: worker %s never received prompt, please retry", target)
 			if emit != nil {
 				emit(core.Event{
@@ -1165,7 +1199,7 @@ func cleanHerdrTerminalOutput(text string) string {
 	if boxes := hermesBoxPattern.FindAllStringSubmatchIndex(text, -1); len(boxes) > 0 {
 		last := boxes[len(boxes)-1]
 		if rules := hermesTurnRule.FindAllStringIndex(text[last[1]:], -1); len(rules) > 0 {
-			text = text[last[1]+rules[len(rules)-1][1]:]
+			text = hermesDropPromptPreview(text[last[1]+rules[len(rules)-1][1]:])
 		} else if body := strings.TrimSpace(text[last[2]:last[3]]); body != "" {
 			return body
 		}
@@ -1849,6 +1883,20 @@ func (h *Herdr) rosterModelForKey(key string, cfg HarnessConfig) string {
 	}
 	recordRoster(record, assigned)
 	return staffing.Model(assigned)
+}
+
+// runnerLaunch is the runner kind and launch arguments cfg.Model starts, expanding roster
+// staff ("@name") as resolveTarget does; a staff entry that no longer expands reports neither.
+func (h *Herdr) runnerLaunch(cfg HarnessConfig) (string, []string) {
+	model := strings.TrimSpace(cfg.Model)
+	if !strings.HasPrefix(model, roster.StaffPrefix) {
+		return model, nil
+	}
+	kind, args, err := roster.Expand(filepath.Join(cfg.Cwd, roster.StateDirName), model)
+	if err != nil {
+		return "", nil
+	}
+	return kind, args
 }
 
 func isOrchestratorKey(key string) bool {
