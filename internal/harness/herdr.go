@@ -1148,6 +1148,7 @@ var (
 	}
 	herdrThoughtPattern   = regexp.MustCompile(`(?s)(?:^|\n)\s*Thought:\s*[^\n]+\n+(.*?)(?:\n\s*\n\s*([^\s].*)|$)`)
 	hermesBoxPattern      = regexp.MustCompile(`(?s)╭─\s*[⚕☤]\s*Hermes[^\n]*\n(.*?)\n╰[─]+╯`)
+	hermesTurnRule        = regexp.MustCompile(`(?m)^─{40}[ \t\r]*$`)
 	hermesReasoningBox    = regexp.MustCompile(`(?s)┌─\s*Reasoning[^\n]*\n.*?└[─]+┘\n*`)
 	kimiInputBoxPattern   = regexp.MustCompile(`(?s)╭[─]+╮\s*\n\s*│\s*>\s*\n\s*╰[─]+╯`)
 	agyInputBoxPattern    = regexp.MustCompile(`(?s)(?:╭─+╮\s*\n\s*│\s*Message (?:Antigravity|agy|SpyJo|Werkrby)[^\n]*\n\s*╰─+╯|─{5,}\s*\n[ \t]*>[^\n]*\n[ \t]*─{5,}(?:\s*\n[^\n]*\? for shortcuts[^\n]*)?)`)
@@ -1157,9 +1158,17 @@ var (
 // cleanHerdrTerminalOutput strips prompt echoes, terminal footers, and internal thought blocks
 // from raw terminal screen dumps across OpenCode, Kimi, and Hermes agents.
 func cleanHerdrTerminalOutput(text string) string {
-	// 0. If Hermes formatted response box is present, extract directly
-	if m := hermesBoxPattern.FindStringSubmatch(text); len(m) >= 2 && strings.TrimSpace(m[1]) != "" {
-		return strings.TrimSpace(m[1])
+	// 0. Hermes: the reply is the LAST response box. A warm pane keeps earlier turns' boxes on
+	// screen, and one turn can draw a box before a tool call and another for the answer.
+	// Hermes rules off every submitted message with a 40-wide rule; one after the last box
+	// means the newest turn drew no box, so clean only that turn and never serve an older reply.
+	if boxes := hermesBoxPattern.FindAllStringSubmatchIndex(text, -1); len(boxes) > 0 {
+		last := boxes[len(boxes)-1]
+		if rules := hermesTurnRule.FindAllStringIndex(text[last[1]:], -1); len(rules) > 0 {
+			text = text[last[1]+rules[len(rules)-1][1]:]
+		} else if body := strings.TrimSpace(text[last[2]:last[3]]); body != "" {
+			return body
+		}
 	}
 
 	// Strip Hermes reasoning boxes if present
