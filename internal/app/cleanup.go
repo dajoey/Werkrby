@@ -31,10 +31,22 @@ type cleanupResult struct {
 	RemovedObsoleteState int
 	Protected            int
 	Failed               int
+	// Per-stage split of Failed, kept so the summary can name the stage (2026-10-24: the automatic
+	// cleanup had reported an anonymous "1 failures" every cycle since the 2026-10-21 restart and
+	// nothing on disk or in the logs said which stage failed).
+	HistoryFailed     int
+	JobFailed         int
+	TaskArchiveFailed int
+	ObsoleteFailed    int
 }
 
 func (r cleanupResult) String() string {
-	return fmt.Sprintf("Cleanup complete: %d conversations removed, %d job archives removed (%d bytes), %d terminal tasks archived, %d obsolete runtime items removed, %d live/protected items skipped, %d failures.", r.RemovedConversations, r.RemovedJobArchives, r.RemovedJobBytes, r.ArchivedTasks, r.RemovedObsoleteState, r.Protected, r.Failed)
+	summary := fmt.Sprintf("Cleanup complete: %d conversations removed, %d job archives removed (%d bytes), %d terminal tasks archived, %d obsolete runtime items removed, %d live/protected items skipped, %d failures.", r.RemovedConversations, r.RemovedJobArchives, r.RemovedJobBytes, r.ArchivedTasks, r.RemovedObsoleteState, r.Protected, r.Failed)
+	if r.HistoryFailed == 0 && r.JobFailed == 0 && r.TaskArchiveFailed == 0 && r.ObsoleteFailed == 0 {
+		return summary
+	}
+	return summary[:len(summary)-1] + fmt.Sprintf(" (history %d, job archives %d, task archive %d, obsolete state %d).",
+		r.HistoryFailed, r.JobFailed, r.TaskArchiveFailed, r.ObsoleteFailed)
 }
 
 func (s *Service) cleanupCommand(message core.Message, remainder string, emit core.Emit) error {
@@ -119,19 +131,23 @@ func (s *Service) runCleanup(days int, liveChannel, liveConversation string, now
 		s.cleanupHistoryStep("removed")
 	}
 	s.liveTUIMu.Unlock()
-	result := cleanupResult{RemovedConversations: historyResult.Removed, Protected: historyResult.Protected, Failed: historyResult.Failed}
+	result := cleanupResult{RemovedConversations: historyResult.Removed, Protected: historyResult.Protected, Failed: historyResult.Failed,
+		HistoryFailed: historyResult.Failed}
 	removedJobs, removedJobBytes, jobProtected, jobFailed := s.Runtime.CleanupArchivedJobs(cutoff)
 	result.RemovedJobArchives = removedJobs
 	result.RemovedJobBytes = removedJobBytes
 	result.Protected += jobProtected
 	result.Failed += jobFailed
+	result.JobFailed = jobFailed
 	archived, taskProtected, failed := s.Orchestrator.ArchiveTerminalTasks(cutoff)
 	result.ArchivedTasks = archived
 	result.Protected += taskProtected
 	result.Failed += failed
+	result.TaskArchiveFailed = failed
 	removedObsolete, obsoleteFailed := removeObsoleteNotificationState(s.Config.StatePath())
 	result.RemovedObsoleteState = removedObsolete
 	result.Failed += obsoleteFailed
+	result.ObsoleteFailed = obsoleteFailed
 	return result, nil
 }
 
