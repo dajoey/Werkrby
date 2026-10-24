@@ -2998,7 +2998,7 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 			_ = os.Remove(m.leasePath(lease.ID))
 			m.finishRuntimeJob(lease.ID)
 			m.log(fmt.Sprintf("abandoned repeatedly failing task %s into failed/: %v", lease.File, err))
-			go m.captureAutopsyAndAlert(lease, fmt.Errorf("task failed after %d attempts: %w", lease.RecoveryCount, err))
+			m.captureAutopsyAndAlert(lease, fmt.Errorf("task failed after %d attempts: %w", lease.RecoveryCount, err))
 			return
 		}
 	}
@@ -3012,7 +3012,7 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 	} else {
 		m.log(msg)
 	}
-	go m.captureAutopsyAndAlert(lease, err)
+	m.captureAutopsyAndAlert(lease, err)
 }
 
 // defaultTelemetryAlerterPath is the live telemetry alerter the running
@@ -3038,10 +3038,23 @@ func telemetryAlerterPathForProcess() string {
 	return telemetryAlerterPath
 }
 
+// captureAutopsyAndAlert writes the dispatch-error diagnostics autopsy on the
+// CALLING goroutine and execs the telemetry alerter detached. The write used
+// to run on a fire-and-forget goroutine no Wait tracked, so it could land
+// after manager.Wait returned - racing a test's t.TempDir RemoveAll into
+// "directory not empty" failures and writing to the workspace tree after a
+// drain had started. The JSON write is one small local file, cheap enough to
+// join; only the alerter exec (a python subprocess) stays off the critical
+// path, and test binaries never reach it.
 func (m *Manager) captureAutopsyAndAlert(lease Lease, err error) {
 	if err == nil {
 		return
 	}
+	m.captureAutopsy(lease, err)
+	go m.alertDispatchError(lease, err)
+}
+
+func (m *Manager) captureAutopsy(lease Lease, err error) {
 	diagDir := m.Config.StatePath("diagnostics")
 	if mkErr := os.MkdirAll(diagDir, 0o700); mkErr != nil {
 		return
@@ -3065,7 +3078,9 @@ func (m *Manager) captureAutopsyAndAlert(lease Lease, err error) {
 	if data, mErr := json.MarshalIndent(autopsy, "", "  "); mErr == nil {
 		_ = os.WriteFile(diagPath, data, 0o600)
 	}
+}
 
+func (m *Manager) alertDispatchError(lease Lease, err error) {
 	if alerterPath := telemetryAlerterPathForProcess(); alerterPath != "" {
 		if _, statErr := os.Stat(alerterPath); statErr == nil {
 			taskName := filepath.Base(lease.File)

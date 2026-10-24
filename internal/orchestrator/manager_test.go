@@ -1057,6 +1057,37 @@ func waitDispatchDiagnostics(t *testing.T, diagDir string) {
 	}
 }
 
+// TestDispatchErrorAutopsyWriteIsJoinedByWait pins the dispatch-error autopsy
+// write to the tracked dispatch goroutine: after manager.Wait() the err-*.json
+// file exists with no polling. The former detached-goroutine form failed this
+// (the write landed whenever the scheduler got to it) and, worse, could land
+// after a test's t.TempDir RemoveAll had started and fail the run with
+// "TempDir RemoveAll cleanup: ... directory not empty".
+func TestDispatchErrorAutopsyWriteIsJoinedByWait(t *testing.T) {
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(config.PathForRoot(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(cfg, "tasks", "autopsy join fixture", ""); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeRecipient()
+	fake.sendErrs = []error{errors.New("boom: fixture dispatch error")}
+	manager := New(cfg, fake, extensions.Runner{})
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+	matches, _ := filepath.Glob(filepath.Join(cfg.StatePath("diagnostics"), "err-*.json"))
+	if len(matches) != 1 {
+		t.Fatalf("diagnostics autopsy files after Wait = %d, want exactly 1 written before Wait returned", len(matches))
+	}
+}
+
 // installFakePython3 puts a recording python3 first on PATH and returns the
 // marker file every invocation appends its argv to.
 func installFakePython3(t *testing.T) string {
