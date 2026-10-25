@@ -16,6 +16,12 @@ func hermesWorkerLedger(home string) string {
 	return filepath.Join(home, "profiles", "wk-code", "state.db")
 }
 
+// hermesChatLedger is the ledger a bare chat-turn hermes launch records in: the chat worker
+// profile.
+func hermesChatLedger(home string) string {
+	return filepath.Join(home, "profiles", "wk-chat", "state.db")
+}
+
 type hermesStart struct {
 	kind string
 	args []string // the runner's launch arguments, after herdr's "--"
@@ -68,6 +74,8 @@ const hermesDefaultsRoster = `staff:
   piseat:
     runner: pi
     args: ["--model", "zai/glm-5.3"]
+  agyseat:
+    runner: agy
 `
 
 func writeHermesDefaultsRoster(t *testing.T, dir string) {
@@ -106,11 +114,10 @@ func TestHerdrRunnerLaunchDefaultsToHermesCodeProfile(t *testing.T) {
 		{model: "@longflag", wantKind: "hermes", wantArgs: []string{"--model", "zai/glm-5.3", "--profile", "wk-notify"}, wantLedger: filepath.Join(home, "profiles", "wk-notify", "state.db")},
 		{model: "@eqflag", wantKind: "hermes", wantArgs: []string{"--profile=wk-media"}, wantLedger: filepath.Join(home, "profiles", "wk-media", "state.db")},
 		{model: "@piseat", wantKind: "pi", wantArgs: []string{"--model", "zai/glm-5.3"}},
-		{model: "claude", wantKind: "claude"},
 		{model: "w8:p2", wantKind: "w8:p2"},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
-			kind, args := h.runnerLaunch(HarnessConfig{Cwd: dir, Model: tc.model})
+			kind, args := h.runnerLaunch(HarnessConfig{Cwd: dir, Model: tc.model}, "orchestrator:tasks:task_implementation:tasks-x:1")
 			if kind != tc.wantKind || !reflect.DeepEqual(args, tc.wantArgs) {
 				t.Fatalf("runnerLaunch(%q) = %q %q, want %q %q", tc.model, kind, args, tc.wantKind, tc.wantArgs)
 			}

@@ -2360,8 +2360,20 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 				}
 			}
 		}
-		if name == "" && (text("agent") != "" || text("model") != "") {
-			return "", false // explicit legacy runner pin
+		if name == "" {
+			pin := text("agent")
+			if pin == "" {
+				pin = text("model")
+			}
+			if pin != "" {
+				if roster.RetiredRunner(pin) {
+					// A retired runner pin can never launch; route the document by its role
+					// instead of handing the retired name to the harness.
+					logf("roster: legacy runner pin " + strconv.Quote(pin) + " in " + fileName + " names a retired runner; routing by role")
+				} else {
+					return "", false // explicit legacy runner pin
+				}
+			}
 		}
 		if name == "" {
 			name = staffing.ForRole(phase)
@@ -2456,16 +2468,25 @@ func (m *Manager) resolveLegacyTargetModel(route workflowRoute, lease Lease) str
 		if harnessSettings.ReviewerModel != "" {
 			return harnessSettings.ReviewerModel
 		}
-		return "kimi"
+		// Hermes is the only runner Werkrby launches; a retired runner name must never be
+		// the fallback.
+		return "hermes"
 	}
 
-	// 2. Check frontmatter of the claimed task / goal file
+	// 2. Check frontmatter of the claimed task / goal file. A pin naming a retired runner can
+	// never launch, so it is logged and skipped as if absent.
 	if doc, err := ReadDocument(lease.File); err == nil {
-		if agent, ok := doc.FrontMatter["agent"].(string); ok && strings.TrimSpace(agent) != "" {
-			return strings.TrimSpace(agent)
-		}
-		if model, ok := doc.FrontMatter["model"].(string); ok && strings.TrimSpace(model) != "" {
-			return strings.TrimSpace(model)
+		for _, field := range []string{"agent", "model"} {
+			pin, _ := doc.FrontMatter[field].(string)
+			pin = strings.TrimSpace(pin)
+			if pin == "" {
+				continue
+			}
+			if roster.RetiredRunner(pin) {
+				m.log("legacy runner pin " + strconv.Quote(pin) + " in " + filepath.Base(lease.File) + " names a retired runner; using the configured model")
+				continue
+			}
+			return pin
 		}
 	}
 
@@ -3234,6 +3255,9 @@ var (
 		"kimi":     "kimi_coding",
 		"agy":      "antigravity",
 		"pi":       "zai",
+		// A bare hermes launch runs the wk-code profile, whose models spend the Z.ai plan:
+		// the turn is metered, never unmetered.
+		"hermes": "zai",
 	}
 	// providerPlanMap is the provider-prefix half of the plan lookup, the
 	// same table ~/ops/werkrby-quota-gate.py's PLAN_BY_PROVIDER uses, so the

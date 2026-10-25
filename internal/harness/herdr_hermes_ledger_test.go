@@ -383,7 +383,7 @@ func TestHerdrHermesNewChatPaneFirstMessageGetsTheReply(t *testing.T) {
 	dir := t.TempDir()
 	hermesHome := filepath.Join(dir, "hermes-home")
 	t.Setenv("HERMES_HOME", hermesHome)
-	ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
+	ledger := newHermesTestLedger(t, hermesChatLedger(hermesHome))
 	ledger.session("local-chat", "", "", time.Now())
 	script := hermesFakeHerdr(t, dir)
 	writeHermesScreen(t, dir, hermesTestTurn("Werkrby chat", hermesTestBox("The dentist card wakes on January 14."))+hermesTestChrome)
@@ -415,7 +415,7 @@ func TestHerdrHermesChatGateRewriteIsTheReplyNotTheScreenBox(t *testing.T) {
 	dir := t.TempDir()
 	hermesHome := filepath.Join(dir, "hermes-home")
 	t.Setenv("HERMES_HOME", hermesHome)
-	ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
+	ledger := newHermesTestLedger(t, hermesChatLedger(hermesHome))
 	ledger.session("local-chat", "", "", time.Now().Add(-time.Hour))
 	// An earlier turn of the same warm conversation.
 	ledger.add("local-chat",
@@ -469,7 +469,12 @@ func TestHerdrHermesFailedTurnIsAnErrorNotAReply(t *testing.T) {
 			dir := t.TempDir()
 			hermesHome := filepath.Join(dir, "hermes-home")
 			t.Setenv("HERMES_HOME", hermesHome)
-			ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
+			ledgerPath := hermesWorkerLedger(hermesHome)
+			if strings.HasPrefix(tc.key, "chat:") {
+				// A bare chat-turn hermes launch records in the chat worker profile.
+				ledgerPath = hermesChatLedger(hermesHome)
+			}
+			ledger := newHermesTestLedger(t, ledgerPath)
 			ledger.session("local-q", "", "", time.Now().Add(-time.Hour))
 			screen := hermesTestTurn("Do the work.", errorPanel) + hermesTestChrome
 			if tc.warm {

@@ -646,7 +646,7 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 
 func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd string) (target string, paneID string, tabID string, isDynamic bool, threadID string, err error) {
 	// Roster staff ("@name") expand to a runner kind plus launch arguments.
-	model, agentArgs, expandErr := herdrLaunch(cwd, model)
+	model, agentArgs, expandErr := herdrLaunch(cwd, key, model)
 	if expandErr != nil {
 		return "", "", "", false, "", expandErr
 	}
@@ -972,7 +972,7 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 
 	// A Hermes turn runs in the root gateway, so herdr never reports a session for it and there
 	// is no transcript: the launch profile's ledger proves delivery and holds the answer.
-	runnerKind, launchArgs := h.runnerLaunch(cfg)
+	runnerKind, launchArgs := h.runnerLaunch(cfg, key)
 	isHermes := agentKind == "hermes" || runnerKind == "hermes"
 	var hermes hermesVerdict
 	if isHermes && promptErr == nil && finalText == "" {
@@ -1894,25 +1894,46 @@ func herdrRunnerModel(model string) string {
 // herdrLaunch is the runner kind and launch arguments a harness model starts in a worker pane
 // under the workspace cwd: an empty or "default" model is the default runner, roster staff
 // ("@name") expand to their runner and args, and a hermes launch whose args carry no -p,
-// --profile or --profile= gets "-p wk-code" in front. resolveTarget launches what this returns
-// and runnerLaunch reads the turn's ledger from it, so the two cannot name different profiles.
-func herdrLaunch(cwd, model string) (string, []string, error) {
-	kind, args, err := roster.Expand(filepath.Join(cwd, roster.StateDirName), herdrRunnerModel(model))
+// --profile or --profile= gets the session key's worker profile in front (wk-chat for chat
+// turns, wk-notify for notification and heartbeat turns, wk-code otherwise). A bare retired
+// runner name is refused: only roster staff may name one of those runners. resolveTarget
+// launches what this returns and runnerLaunch reads the turn's ledger from it, so the two
+// cannot name different profiles.
+func herdrLaunch(cwd, key, model string) (string, []string, error) {
+	requested := herdrRunnerModel(model)
+	if roster.RetiredRunner(requested) {
+		return "", nil, fmt.Errorf("runner %q is retired; Werkrby launches Hermes workers only (roster staff or a hermes model)", requested)
+	}
+	kind, args, err := roster.Expand(filepath.Join(cwd, roster.StateDirName), requested)
 	if err != nil {
 		return "", nil, err
 	}
 	if kind == "hermes" {
 		if _, explicit, _ := hermesLaunchProfile(args); !explicit {
-			args = append([]string{"-p", defaultHermesProfile}, args...)
+			args = append([]string{"-p", defaultHermesProfileForKey(key)}, args...)
 		}
 	}
 	return kind, args, nil
 }
 
+// defaultHermesProfileForKey is the profile a hermes launch that names none runs for a
+// session key: the role's own worker profile for chat, notification and heartbeat turns,
+// the code worker for everything else.
+func defaultHermesProfileForKey(key string) string {
+	switch rosterRoleForKey(key) {
+	case "chat":
+		return "wk-chat"
+	case "notification", "heartbeat":
+		return "wk-notify"
+	default:
+		return defaultHermesProfile
+	}
+}
+
 // runnerLaunch is the runner kind and launch arguments cfg.Model starts, as resolveTarget
 // launches them; a staff entry that no longer expands reports neither.
-func (h *Herdr) runnerLaunch(cfg HarnessConfig) (string, []string) {
-	kind, args, err := herdrLaunch(cfg.Cwd, cfg.Model)
+func (h *Herdr) runnerLaunch(cfg HarnessConfig, key string) (string, []string) {
+	kind, args, err := herdrLaunch(cfg.Cwd, key, cfg.Model)
 	if err != nil {
 		return "", nil
 	}

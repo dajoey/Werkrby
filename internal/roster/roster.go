@@ -33,6 +33,24 @@ const (
 
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 
+// retiredRunners are runner kinds no Werkrby code path may launch as a bare model string:
+// the fleet's workers all run Hermes. A roster staff entry is an explicit staffing edit and
+// remains the one way to name one of these runners.
+var retiredRunners = map[string]bool{
+	"agy":      true,
+	"kimi":     true,
+	"opencode": true,
+	"pi":       true,
+	"claude":   true,
+}
+
+// RetiredRunner reports whether model names a retired runner kind (trimmed, casefolded).
+// Such a string must never reach a launch: callers route the document to roster staff or
+// refuse the launch.
+func RetiredRunner(model string) bool {
+	return retiredRunners[strings.ToLower(strings.TrimSpace(model))]
+}
+
 type Staff struct {
 	Runner string   `yaml:"runner"`
 	Args   []string `yaml:"args,omitempty"`
