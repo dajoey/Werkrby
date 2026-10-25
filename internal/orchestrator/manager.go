@@ -3006,6 +3006,9 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 	if m.recordOperatorStop(lease) {
 		return
 	}
+	if m.leaseRemovedByReconcile(lease, err) {
+		return
+	}
 	if m.restartInterrupted(ctx, err) {
 		m.recordRestartInterrupt(lease, err)
 		return
@@ -3048,6 +3051,20 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 	m.captureAutopsyAndAlert(lease, err)
 }
 
+// leaseRemovedByReconcile reports whether lease's file is gone: reconcile removed it after the
+// worker moved the document out of its claimed folder and ran that transition's terminal steps
+// (hooks, the notification agent). An error the send returns afterwards is handled by doing
+// nothing; writing the lease back would make the next scan run the transition a second time.
+// Every recordError caller saved the lease before dispatching, so a missing file is never a
+// lease that was simply not written yet.
+func (m *Manager) leaseRemovedByReconcile(lease Lease, err error) bool {
+	if _, loadErr := m.loadLease(lease.ID); !os.IsNotExist(loadErr) {
+		return false
+	}
+	m.log(fmt.Sprintf("dispatch %s ended with an error after its transition was reconciled; lease not re-created: %v", lease.File, err))
+	return true
+}
+
 // hermesBlockedBudget is how many hermes_blocked errors one lease absorbs without spending
 // RecoveryCount. Past it the error counts like any other, so a Hermes pane nobody can clear cannot
 // re-dispatch the document for ever.
@@ -3062,7 +3079,13 @@ func (m *Manager) recordHermesBlocked(lease Lease, err error) bool {
 	if err == nil || !strings.Contains(err.Error(), harness.HermesBlockedCode) {
 		return false
 	}
-	if current, loadErr := m.loadLease(lease.ID); loadErr == nil {
+	current, loadErr := m.loadLease(lease.ID)
+	if os.IsNotExist(loadErr) {
+		// Reconcile removed the lease after the worker moved the document: handled, and never
+		// saved back (that would run the transition again).
+		return true
+	}
+	if loadErr == nil {
 		lease = current
 	}
 	if lease.HermesBlockedCount >= hermesBlockedBudget {
