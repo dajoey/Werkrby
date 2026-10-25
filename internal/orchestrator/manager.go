@@ -64,6 +64,9 @@ type Lease struct {
 	// agent/runner pin, so without it every such park named "default" and
 	// woke a blind hour later (found live 2026-09-28).
 	TargetModel string `json:"target_model,omitempty"`
+	// HermesBlockedCount is how many hermes_blocked errors this lease absorbed without spending
+	// RecoveryCount (recordHermesBlocked, at most hermesBlockedBudget).
+	HermesBlockedCount int `json:"hermes_blocked_count,omitempty"`
 	// ReviewRisk is the task's risk when Werkrby claimed it for review:
 	// reviewRiskHigh or reviewRiskRoutine. Empty means unknown (an older
 	// lease, or a review adopted without a claim) and never earns a credit.
@@ -3008,6 +3011,9 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 		m.recordQuotaError(lease, err)
 		return
 	}
+	if m.recordHermesBlocked(lease, err) {
+		return
+	}
 	lease.LastError = err.Error()
 	lease.RecoveryCount++
 	lease.State = "error"
@@ -3037,6 +3043,47 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 		m.log(msg)
 	}
 	m.captureAutopsyAndAlert(lease, err)
+}
+
+// hermesBlockedBudget is how many hermes_blocked errors one lease absorbs without spending
+// RecoveryCount. Past it the error counts like any other, so a Hermes pane nobody can clear cannot
+// re-dispatch the document for ever.
+const hermesBlockedBudget = 6
+
+// recordHermesBlocked handles a Hermes worker pane that stayed blocked on a prompt past the
+// harness's wait (harness.HermesBlockedCode). That is a harness condition the prompt watcher
+// clears, not a defect of the task: the lease is parked in error for another dispatch, the error
+// is logged as hermes_blocked, and neither RecoveryCount nor the consecutive-error fail-out is
+// spent, up to hermesBlockedBudget per lease. It reports whether it handled the error.
+func (m *Manager) recordHermesBlocked(lease Lease, err error) bool {
+	if err == nil || !strings.Contains(err.Error(), harness.HermesBlockedCode) {
+		return false
+	}
+	if current, loadErr := m.loadLease(lease.ID); loadErr == nil {
+		lease = current
+	}
+	if lease.HermesBlockedCount >= hermesBlockedBudget {
+		return false
+	}
+	now := time.Now().UTC()
+	lease.HermesBlockedCount++
+	lease.LastError = err.Error()
+	lease.State = "error"
+	lease.HeartbeatAt = now
+	if saveErr := m.saveLease(lease); saveErr != nil {
+		m.log("save hermes-blocked lease: " + saveErr.Error())
+	}
+	note := fmt.Sprintf("the Hermes worker pane stayed blocked on a prompt past the harness wait (%d of %d allowed); Werkrby dispatches it again; attempt not spent", lease.HermesBlockedCount, hermesBlockedBudget)
+	if progressErr := updateDocumentProgress(lease.File, now, note); progressErr != nil {
+		m.log("record hermes-blocked progress: " + progressErr.Error())
+	}
+	msg := fmt.Sprintf("hermes blocked %s (%d of %d, not counted toward recovery): %v", lease.File, lease.HermesBlockedCount, hermesBlockedBudget, err)
+	if m.LogError != nil {
+		m.LogError("orchestrator", harness.HermesBlockedCode, msg)
+	} else {
+		m.log(msg)
+	}
+	return true
 }
 
 // defaultTelemetryAlerterPath is the live telemetry alerter the running
