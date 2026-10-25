@@ -257,16 +257,14 @@ func (h *Herdr) ReadyEvents() <-chan struct{} {
 }
 
 func (h *Herdr) Models(_ context.Context) ([]Model, error) {
+	// The picker offers only hermes. Every other runner herdr can start is retired on this
+	// fleet and a bare non-hermes launch is refused (TestHerdrLaunchRefusesEveryBareKindButHermes),
+	// so listing them only offered picker choices that failed at launch. Roster staff pins
+	// ("@name") remain the one way to run another runner; they are edited in roster.yaml and
+	// never chosen here.
 	allEfforts := []string{"low", "medium", "high"}
 	return []Model{
 		{ID: "hermes", DisplayName: "Hermes", Description: "Dedicated Hermes worker in Herdr pane (default)", Default: true, Efforts: allEfforts},
-		{ID: "opencode", DisplayName: "OpenCode", Description: "Dedicated OpenCode worker in Herdr pane", Efforts: allEfforts},
-		{ID: "claude", DisplayName: "Claude Code", Description: "Dedicated Claude Code worker in Herdr pane", Efforts: allEfforts},
-		{ID: "codex", DisplayName: "Codex", Description: "Dedicated Codex worker in Herdr pane", Efforts: allEfforts},
-		{ID: "kimi", DisplayName: "Kimi", Description: "Dedicated Kimi CLI worker in Herdr pane", Efforts: allEfforts},
-		{ID: "agy", DisplayName: "Antigravity", Description: "Dedicated Antigravity CLI worker in Herdr pane", Efforts: allEfforts},
-		{ID: "pi", DisplayName: "Pi", Description: "Dedicated Pi worker in Herdr pane", Efforts: allEfforts},
-		{ID: "cursor", DisplayName: "Cursor", Description: "Dedicated Cursor worker in Herdr pane", Efforts: allEfforts},
 	}, nil
 }
 
