@@ -2406,13 +2406,13 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 				pin = text("model")
 			}
 			if pin != "" {
-				if roster.RetiredRunner(pin) {
-					// A retired runner pin can never launch; route the document by its role
-					// instead of handing the retired name to the harness.
-					logf("roster: legacy runner pin " + strconv.Quote(pin) + " in " + fileName + " names a retired runner; routing by role")
-				} else {
-					return "", false // explicit legacy runner pin
+				if launchablePin(staffing, pin) {
+					return "", false // explicit pin: hermes or roster staff, launched as written
 				}
+				// Werkrby launches Hermes workers only: any other runner pin (a retired one, or one
+				// herdr supports such as codex or cursor) is routed by role instead of being handed
+				// to the harness.
+				logf("roster: runner pin " + strconv.Quote(pin) + " in " + fileName + " is neither hermes nor roster staff; routing by role")
 			}
 		}
 		if name == "" {
@@ -2518,18 +2518,25 @@ func (m *Manager) resolveLegacyTargetModel(route workflowRoute, lease Lease) str
 		return "hermes"
 	}
 
-	// 2. Check frontmatter of the claimed task / goal file. A pin naming a retired runner can
-	// never launch, so it is logged and skipped as if absent.
+	// 2. Check frontmatter of the claimed task / goal file. Only a pin naming hermes or roster
+	// staff may launch; any other is logged and skipped as if absent.
 	if doc, err := ReadDocument(lease.File); err == nil {
+		var staffing *roster.Roster
+		if loaded, loadErr := roster.Load(m.Config.StatePath()); loadErr == nil {
+			staffing = loaded
+		}
 		for _, field := range []string{"agent", "model"} {
 			pin, _ := doc.FrontMatter[field].(string)
 			pin = strings.TrimSpace(pin)
 			if pin == "" {
 				continue
 			}
-			if roster.RetiredRunner(pin) {
-				m.log("legacy runner pin " + strconv.Quote(pin) + " in " + filepath.Base(lease.File) + " names a retired runner; using the configured model")
+			if !launchablePin(staffing, pin) {
+				m.log("legacy runner pin " + strconv.Quote(pin) + " in " + filepath.Base(lease.File) + " is neither hermes nor roster staff; using the configured model")
 				continue
+			}
+			if strings.EqualFold(pin, "hermes") {
+				return "hermes"
 			}
 			return pin
 		}
@@ -2542,6 +2549,18 @@ func (m *Manager) resolveLegacyTargetModel(route workflowRoute, lease Lease) str
 
 	// 4. Default harness model
 	return harnessSettings.Model
+}
+
+// launchablePin reports whether a front-matter agent:/model: pin may reach the harness as written:
+// it names hermes, or roster staff in the "@name" form the harness expands. Werkrby launches Hermes
+// workers only, and a roster staff entry is the one way to name another runner.
+func launchablePin(staffing *roster.Roster, pin string) bool {
+	pin = strings.TrimSpace(pin)
+	if strings.EqualFold(pin, "hermes") {
+		return true
+	}
+	name, ok := strings.CutPrefix(pin, roster.StaffPrefix)
+	return ok && staffing.Has(name)
 }
 
 func phaseForFile(routeName, file string) string {

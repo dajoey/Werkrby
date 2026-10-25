@@ -2140,14 +2140,22 @@ func herdrRunnerModel(model string) string {
 // under the workspace cwd: an empty or "default" model is the default runner, roster staff
 // ("@name") expand to their runner and args, and a hermes launch whose args carry no -p,
 // --profile or --profile= gets the session key's worker profile in front (wk-chat for chat
-// turns, wk-notify for notification and heartbeat turns, wk-code otherwise). A bare retired
-// runner name is refused: only roster staff may name one of those runners. resolveTarget
+// turns, wk-notify for notification and heartbeat turns, wk-code otherwise). Every other bare
+// runner name (a retired one, or one herdr supports such as codex or cursor) is refused: only
+// roster staff may name another runner. resolveTarget
 // launches what this returns and runnerLaunch reads the turn's ledger from it, so the two
 // cannot name different profiles.
 func herdrLaunch(cwd, key, model string) (string, []string, error) {
 	requested := herdrRunnerModel(model)
-	if roster.RetiredRunner(requested) {
-		return "", nil, fmt.Errorf("runner %q is retired; Werkrby launches Hermes workers only (roster staff or a hermes model)", requested)
+	switch {
+	case strings.HasPrefix(requested, roster.StaffPrefix):
+	case strings.Contains(requested, ":"):
+		// A direct pane address ("w8:p2") launches nothing: resolveTarget prompts that pane.
+		return requested, nil, nil
+	case strings.EqualFold(requested, defaultHerdrRunner):
+		requested = defaultHerdrRunner
+	default:
+		return "", nil, fmt.Errorf("runner %q is not hermes or roster staff; Werkrby launches Hermes workers only (roster staff or a hermes model)", requested)
 	}
 	kind, args, err := roster.Expand(filepath.Join(cwd, roster.StateDirName), requested)
 	if err != nil {

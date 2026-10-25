@@ -79,3 +79,39 @@ func TestHerdrBareChatFallbackRunsTheChatProfile(t *testing.T) {
 		t.Fatalf("EventFinal texts = %q, want the wk-chat ledger's answer", finals)
 	}
 }
+
+// herdrLaunch is an allowlist: a bare model string other than hermes is refused, whatever runner
+// herdr itself supports (codex, cursor and others are installed on the host). Roster staff stay
+// the one way to name another runner.
+func TestHerdrLaunchRefusesEveryBareKindButHermes(t *testing.T) {
+	dir := t.TempDir()
+	writeHermesDefaultsRoster(t, dir)
+	for _, model := range []string{"codex", "cursor", " Cursor ", "gemini"} {
+		if kind, args, err := herdrLaunch(dir, "orchestrator:tasks:task_implementation:tasks-x:1", model); err == nil {
+			t.Errorf("herdrLaunch(%q) = kind %q args %q, want a refusal: only hermes or roster staff may launch", model, kind, args)
+		}
+	}
+	for _, model := range []string{"hermes", "Hermes", "", "default"} {
+		if kind, _, err := herdrLaunch(dir, "orchestrator:tasks:task_implementation:tasks-x:1", model); err != nil || kind != "hermes" {
+			t.Errorf("herdrLaunch(%q) = kind %q, %v; want hermes", model, kind, err)
+		}
+	}
+}
+
+// End to end: a turn whose model is a bare codex never starts a codex pane.
+func TestHerdrCodexModelNeverStartsAPane(t *testing.T) {
+	dir := t.TempDir()
+	writeHermesDefaultsRoster(t, dir)
+	script := hermesFakeHerdr(t, dir)
+	writeHermesScreen(t, dir, "codex screen\n")
+	startHermesSim(t, dir, nil)
+
+	got := runHermesTurnConfigured(t, dir, script, "hermes", "orchestrator:tasks:task_implementation:tasks-x:1", "codex", hermesTestTaskPrompt("tasks-x"))
+
+	if starts := hermesStarts(t, dir); len(starts) != 0 {
+		t.Fatalf("agent starts = %q, want none for a bare codex model", starts)
+	}
+	if got.err == nil {
+		t.Fatal("Send returned no error for a bare codex model, want the launch refusal")
+	}
+}
