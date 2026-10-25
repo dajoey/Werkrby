@@ -138,6 +138,7 @@ type Manager struct {
 	scanTimerMu                 sync.Mutex
 	holdLogMu                   sync.Mutex
 	holdLogged                  map[string]time.Time
+	workCardLogged              map[string]time.Time // when each held work Claude card was last logged (guarded by holdLogMu)
 	shadow                      admissionShadowState
 	runsShadow                  runsShadowState
 	admissionSnapshotPath       string // tests; empty means the collector's default snapshot
@@ -707,6 +708,11 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 		if m.rosterHeld("queue", route, phase, candidate.name, document) {
 			continue
 		}
+		// A work Claude card with no Claude seat to run on waits here, never claimed onto another
+		// model.
+		if m.workCardHeld(candidate.name, document) {
+			continue
+		}
 		// Work window: personal claims may not take the slot reserved for work
 		// Claude cards. Skipped, not claimed; a later work card in this queue
 		// still can be.
@@ -946,6 +952,11 @@ func (m *Manager) ensureRouteDirectories() error {
 }
 
 func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease, recovery bool) {
+	// Every dispatch path (a claim, an adopted orphan, a recovery) passes here: a work Claude card
+	// with no Claude seat goes back to its queue folder unsent.
+	if m.releaseUnseatedWorkCard(route, lease) {
+		return
+	}
 	m.setInflight(lease.ID, true)
 	isRepair := lease.Lane == repairLane
 	m.jobs.Add(1)
@@ -1084,6 +1095,12 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 			// until reconciliation observes the agent-authored durable file move.
 		}
 		targetModel := m.resolveTargetModel(route, lease)
+		if leaseIsWorkCard(lease) && !m.claudeTarget(targetModel) {
+			// The seat changed between the check above and routing (a cap, a stop): never send work
+			// Claude data to another model.
+			m.releaseWorkCard(route, lease)
+			return
+		}
 		// Record what this dispatch actually runs on before the send: a quota
 		// park must wake at the plan's real reset, and the model string (not
 		// the document, which roster-routed work never pins) is the only
@@ -2302,6 +2319,11 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 	if !ok {
 		return "", false
 	}
+	workCard := lease.WorkCard || frontMatterIsWorkCard(frontMatter)
+	if workCard && !isClaudeStaff(staffing, staffing.Landing(stateDir, name, time.Now())) {
+		m.log("claude_only: " + filepath.Base(lease.File) + " would land on a non-Claude seat past " + name + "; not dispatched")
+		return "", true
+	}
 	shadowDone := m.shadowDispatchPending(lease, phase, name, frontMatter)
 	assigned, err := staffing.Assign(stateDir, name, lease.SessionKey, time.Now())
 	if err != nil {
@@ -2312,6 +2334,10 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 	}
 	if assigned != name {
 		m.log("roster: " + name + " is at its daily cap; " + filepath.Base(lease.File) + " goes to " + assigned)
+	}
+	if workCard && !isClaudeStaff(staffing, assigned) {
+		m.log("claude_only: " + filepath.Base(lease.File) + " was assigned the non-Claude seat " + assigned + "; not dispatched")
+		return "", true
 	}
 	if shadowDone != nil {
 		shadowDone(assigned)
@@ -2331,6 +2357,14 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 	text := func(key string) string {
 		value, _ := frontMatter[key].(string)
 		return strings.TrimSpace(value)
+	}
+	if frontMatterIsWorkCard(frontMatter) {
+		// A work Claude card runs on a Claude seat or nowhere, in every phase: no role, pin or
+		// escalation may move it onto another runner (work_card_fence.go).
+		if name := workCardSeat(staffing, frontMatter, fileName, logf); name != "" {
+			return name, true
+		}
+		return "", false
 	}
 
 	name := ""
@@ -2466,6 +2500,11 @@ func (m *Manager) paceHeld(route workflowRoute, phase, name string, document Doc
 }
 
 func (m *Manager) resolveLegacyTargetModel(route workflowRoute, lease Lease) string {
+	// Legacy routing names no Claude seat (Werkrby launches only Hermes here), so a work Claude
+	// card has no model on this path.
+	if leaseIsWorkCard(lease) {
+		return ""
+	}
 	harnessSettings := m.harnessSettings()
 	phase := normalizeLeasePhase(route.Name, lease.Phase)
 
