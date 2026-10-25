@@ -154,3 +154,47 @@ func TestHermesBlockedDispatchesDoNotFailTheTask(t *testing.T) {
 		t.Fatalf("lease recovery_count %d, hermes_blocked_count %d, state %q; want 0, 4, error", got.RecoveryCount, got.HermesBlockedCount, got.State)
 	}
 }
+
+// Every dispatch names its claimed document in the send's context, the first and a recovery
+// alike, so a harness that waits on a blocked worker before typing can tell whether the worker's
+// earlier turn already moved the document (and then types nothing).
+func TestDispatchNamesTheClaimedDocumentToTheHarness(t *testing.T) {
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(config.PathForRoot(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(cfg, "tasks", "claimed document fixture", ""); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeRecipient()
+	fake.sendErrs = []error{hermesBlockedErr()}
+	manager := New(cfg, fake, extensions.Runner{})
+	ctx := context.Background()
+	if err := manager.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+	leases, err := manager.loadLeases()
+	if err != nil || len(leases) != 1 {
+		t.Fatalf("leases = %#v, %v", leases, err)
+	}
+	leases[0].HeartbeatAt = time.Now().UTC().Add(-time.Minute)
+	if err := manager.saveLease(leases[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.recoverStale(ctx); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+	want := leases[0].File
+	if filepath.Base(filepath.Dir(want)) != "working" {
+		t.Fatalf("lease file %s is not in working/", want)
+	}
+	if len(fake.claimed) != 2 || fake.claimed[0] != want || fake.claimed[1] != want {
+		t.Fatalf("claimed documents named to the harness = %q, want %q for the first dispatch and the recovery", fake.claimed, want)
+	}
+}

@@ -19,7 +19,8 @@ import (
 // `agent prompt` rejects the first dir/reject submissions with herdr's agent_blocked error before
 // any input is sent (as herdr does for an already blocked agent) and otherwise records the prompt
 // in dir/prompts/<n> and returns once the simulator acks it, and `agent send-keys` is counted in
-// dir/keys.
+// dir/keys. Each typed prompt appends the status the last `agent get` reported to
+// dir/typed-states, so a test sees whether a prompt went into a pane herdr called working.
 func blockedFakeHerdr(t *testing.T, dir, kind string, statuses []string, reject int) string {
 	t.Helper()
 	for _, sub := range []string{"prompts", "acks"} {
@@ -57,6 +58,7 @@ agent)
 		total=$(wc -l < "$dir/statuses")
 		[ "$n" -gt "$total" ] && n=$total
 		st=$(sed -n "${n}p" "$dir/statuses")
+		echo "$st" > "$dir/last-status"
 		printf '{"result":{"agent":{"name":"%%s","agent":"%%s","agent_status":"%%s","pane_id":"w1:p9","agent_session":{"value":""}}}}\n' "$1" "$(cat "$dir/kind")" "$st"
 		;;
 	prompt)
@@ -66,6 +68,7 @@ agent)
 			exit 1
 		fi
 		n=$(( $(ls "$dir/prompts" | wc -l) + 1 ))
+		cat "$dir/last-status" >> "$dir/typed-states" 2>/dev/null || echo unread >> "$dir/typed-states"
 		printf '%%s' "$2" > "$dir/prompts/.tmp-$n" && mv "$dir/prompts/.tmp-$n" "$dir/prompts/$n"
 		for i in $(seq 1 1000); do [ -f "$dir/acks/$n" ] && break; sleep 0.01; done
 		echo '{"result":{}}'

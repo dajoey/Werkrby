@@ -14,6 +14,7 @@ import (
 	"github.com/agent0ai/spynel/internal/config"
 	"github.com/agent0ai/spynel/internal/core"
 	"github.com/agent0ai/spynel/internal/extensions"
+	"github.com/agent0ai/spynel/internal/harness"
 	"github.com/agent0ai/spynel/internal/workspace"
 )
 
@@ -31,6 +32,8 @@ type fakeHarness struct {
 	// a send error: an error for a refused turn, a final for a turn that
 	// completed and then failed on the way back.
 	sendErrFinal bool
+	// claimed is the claimed document each Send's context named (harness.ClaimedDocument).
+	claimed []string
 }
 
 func newFakeRecipient() *fakeHarness {
@@ -52,9 +55,10 @@ func (f *fakeHarness) Interrupt(_ context.Context, key string) (bool, error) {
 	f.active[key] = false
 	return true, nil
 }
-func (f *fakeHarness) Send(_ context.Context, key, prompt string, emit core.Emit) (string, bool, error) {
+func (f *fakeHarness) Send(ctx context.Context, key, prompt string, emit core.Emit) (string, bool, error) {
 	f.mu.Lock()
 	f.calls++
+	f.claimed = append(f.claimed, harness.ClaimedDocument(ctx))
 	f.keys = append(f.keys, key)
 	f.prompts = append(f.prompts, prompt)
 	var sendErr error

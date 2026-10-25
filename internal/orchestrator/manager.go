@@ -1116,13 +1116,16 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 		var threadID string
 		var steered bool
 		run = m.runBegin(lease, targetModel)
+		// The send names the claimed document, so a harness that waits on a blocked worker can see
+		// that the worker's earlier turn already moved it and type nothing.
+		sendCtx := harness.WithClaimedDocument(ctx, lease.File)
 		for sendAttempt := 0; ; sendAttempt++ {
 			if ms, ok := m.Harness.(interface {
 				SendWithModel(context.Context, string, string, string, core.Emit) (string, bool, error)
 			}); ok && targetModel != "" {
-				threadID, steered, err = ms.SendWithModel(ctx, lease.SessionKey, prompt, targetModel, emit)
+				threadID, steered, err = ms.SendWithModel(sendCtx, lease.SessionKey, prompt, targetModel, emit)
 			} else {
-				threadID, steered, err = m.Harness.Send(ctx, lease.SessionKey, prompt, emit)
+				threadID, steered, err = m.Harness.Send(sendCtx, lease.SessionKey, prompt, emit)
 			}
 			if err == nil || sendAttempt >= 1 || ctx.Err() != nil {
 				break

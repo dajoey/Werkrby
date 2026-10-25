@@ -61,7 +61,21 @@ type Herdr struct {
 	// defaultHermesBlockedPoll).
 	hermesBlockedWait time.Duration
 	hermesBlockedPoll time.Duration
+
+	// submitted is the last prompt herdr accepted for each worker and when it was sent, so a turn
+	// that finds the worker still running that prompt's turn can judge it from the ledger. A
+	// successful turn forgets its worker. Guarded by mu.
+	submitted map[string]hermesSubmitted
 }
+
+// hermesSubmitted is a prompt herdr accepted for a worker, and when it was sent.
+type hermesSubmitted struct {
+	prompt string
+	since  time.Time
+}
+
+// maxRememberedSubmissions bounds Herdr.submitted: past it the oldest entry is dropped.
+const maxRememberedSubmissions = 64
 
 const (
 	// defaultHermesBlockedWait is how long a turn waits on a blocked Hermes worker pane before it
@@ -96,6 +110,12 @@ type herdrTurn struct {
 	done      chan struct{}
 	// headless marks a `claude -p` turn (sendHeadless): there is no pane to type into or close.
 	headless bool
+	// notSent: the prompt was never typed, because the worker's earlier turn moved the claimed
+	// document out of its folder while this turn waited on the blocked pane. earlier is that
+	// turn's prompt when this process sent it, so the ledger can judge it.
+	notSent       bool
+	movedDocument string
+	earlier       *hermesSubmitted
 }
 
 type herdrAgentItem struct {
@@ -874,6 +894,10 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 		delete(h.active, key)
 		h.mu.Unlock()
 		close(turn.done)
+		if turnSuccess {
+			// The worker is idle after a completed turn, so no later turn needs this one's prompt.
+			h.forgetSubmitted(target)
+		}
 		if turnSuccess && isOrchestratorKey(cleanKey) {
 			go h.cleanupCompletedTab(key, tabID, paneID, target)
 		}
@@ -976,7 +1000,14 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 	// is no transcript: the launch profile's ledger proves delivery and holds the answer.
 	isHermes := agentKind == "hermes" || runnerKind == "hermes"
 	var hermes hermesVerdict
-	if isHermes && promptErr == nil && finalText == "" {
+	if turn.notSent {
+		// This prompt was never typed: the worker's earlier turn moved the claimed document while
+		// this turn waited on its blocked pane, so that document's transition owns the outcome.
+		finalText = h.earlierTurnReport(turnContext, target, launchArgs, turn)
+		if turnContext.Err() != nil {
+			return threadID, false, turnContext.Err()
+		}
+	} else if isHermes && promptErr == nil && finalText == "" {
 		hermes = h.judgeHermesTurn(turnContext, target, launchArgs, prompt, promptStart)
 		if turnContext.Err() != nil {
 			return threadID, false, turnContext.Err()
@@ -992,7 +1023,7 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 	// still no agent session and no new transcript, the prompt was typed into a
 	// terminal that the worker was not yet reading. A Hermes turn the ledger or
 	// screen shows was delivered is never re-sent.
-	if promptErr == nil && turn.isDynamic && !hasRealSession && finalText == "" && !hermes.delivered {
+	if promptErr == nil && !turn.notSent && turn.isDynamic && !hasRealSession && finalText == "" && !hermes.delivered {
 		if emit != nil {
 			emit(core.Event{
 				Kind:      core.EventStatus,
@@ -1233,8 +1264,16 @@ func cleanHerdrTerminalOutput(text string) string {
 // failed: herdr rejects a submission to an already blocked agent before any input is sent, so the
 // prompt is submitted again once the pane clears, and a pane still blocked after the wait returns
 // a *hermesBlockedError.
+//
+// A resubmission is typed only into a pane that holds idle with the claimed document still in its
+// folder. A pane that clears into working has resumed the turn it was blocked in, and a Hermes
+// worker queues a prompt typed into a busy pane (busy_input_mode: queue) and runs it as a second
+// full turn after that one, so the in-flight turn is followed to its end first. When that turn,
+// or any earlier one, moved the claimed document (ClaimedDocument) out of its folder, the prompt
+// is not typed at all: turn.notSent is set and sendInternal judges the earlier turn instead.
 func (h *Herdr) promptWorker(ctx context.Context, turn *herdrTurn, target, prompt string, hermes bool, runner herdrRunner, status func(string)) ([]byte, error) {
 	submit := func() ([]byte, error) {
+		since := time.Now()
 		cmd := exec.CommandContext(ctx, h.config.Command, "agent", "prompt", target, prompt, "--wait", "--timeout", "900000")
 		turn.cmd = cmd
 		out, err := cmd.CombinedOutput()
@@ -1244,14 +1283,20 @@ func (h *Herdr) promptWorker(ctx context.Context, turn *herdrTurn, target, promp
 			turn.cmd = cmd
 			out, err = cmd.CombinedOutput()
 		}
+		if hermes && (err == nil || !strings.Contains(string(out), "agent_blocked")) {
+			h.rememberSubmitted(target, prompt, since)
+		}
 		return out, err
 	}
 	out, err := submit()
 	if hermes && err != nil && strings.Contains(string(out), "agent_blocked") {
 		// One wait, from the first rejection, covers every resubmission, so a pane that clears and
-		// blocks again before the prompt lands cannot keep the turn here past the bound.
+		// blocks again before the prompt lands cannot keep the turn here past the bound. Time spent
+		// following a resumed (working) turn to its end is not blocked time and moves the bound out
+		// by as much; an idle pane's settle reads count toward it.
 		first := time.Now()
 		deadline := first.Add(h.hermesBlockedBound())
+	resubmit:
 		for err != nil && strings.Contains(string(out), "agent_blocked") {
 			if !time.Now().Before(deadline) {
 				return out, &hermesBlockedError{target: target, waited: time.Since(first)}
@@ -1260,8 +1305,38 @@ func (h *Herdr) promptWorker(ctx context.Context, turn *herdrTurn, target, promp
 			if waitErr != nil {
 				return out, waitErr
 			}
-			if state == "" {
-				break // herdr could not report the agent: the rejection stands, as before
+			switch state {
+			case "":
+				break resubmit // herdr could not report the agent: the rejection stands, as before
+			case "idle", "done", "working":
+				// Type only into a pane whose idle reading holds; checkIdleStability follows a
+				// resumed turn to its end on the way.
+				settling := time.Now()
+				if state == "working" {
+					status(fmt.Sprintf("Herdr: hermes worker %s resumed its earlier turn; following it to its end before typing this prompt", target))
+				}
+				if settleErr := h.checkIdleStability(ctx, target, true, runner, status); settleErr != nil {
+					return out, settleErr
+				}
+				if state == "working" {
+					deadline = deadline.Add(time.Since(settling))
+				}
+			default:
+				// A status this harness does not know is no evidence the pane takes input: re-read it
+				// after one poll.
+				select {
+				case <-ctx.Done():
+					return out, ctx.Err()
+				case <-time.After(min(h.hermesBlockedPollEvery(), max(time.Until(deadline), 0))):
+				}
+				continue
+			}
+			if path, moved := claimedDocumentMoved(ctx); moved {
+				status(fmt.Sprintf("Herdr: hermes worker %s's earlier turn moved %s out of its claimed folder; this prompt is not sent", target, path))
+				turn.notSent = true
+				turn.movedDocument = path
+				turn.earlier = h.lastSubmitted(target)
+				return nil, nil
 			}
 			out, err = submit()
 		}
@@ -1273,6 +1348,80 @@ func (h *Herdr) promptWorker(ctx context.Context, turn *herdrTurn, target, promp
 		err = h.checkIdleStability(ctx, target, hermes, runner, status)
 	}
 	return out, err
+}
+
+// claimedDocumentMoved reports whether the claimed document ctx names (WithClaimedDocument) is gone
+// from its path: the worker's turn moved it to its next folder. A ctx that names none, or a path
+// that cannot be read for another reason, is not a move.
+func claimedDocumentMoved(ctx context.Context) (string, bool) {
+	path := ClaimedDocument(ctx)
+	if path == "" {
+		return "", false
+	}
+	_, err := os.Stat(path)
+	return path, os.IsNotExist(err)
+}
+
+// rememberSubmitted records the prompt herdr accepted for target.
+func (h *Herdr) rememberSubmitted(target, prompt string, since time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.submitted == nil {
+		h.submitted = map[string]hermesSubmitted{}
+	}
+	if _, ok := h.submitted[target]; !ok && len(h.submitted) >= maxRememberedSubmissions {
+		oldest := ""
+		for name, entry := range h.submitted {
+			if oldest == "" || entry.since.Before(h.submitted[oldest].since) {
+				oldest = name
+			}
+		}
+		delete(h.submitted, oldest)
+	}
+	h.submitted[target] = hermesSubmitted{prompt: prompt, since: since}
+}
+
+// lastSubmitted is the last prompt herdr accepted for target in this process, or nil.
+func (h *Herdr) lastSubmitted(target string) *hermesSubmitted {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	entry, ok := h.submitted[target]
+	if !ok {
+		return nil
+	}
+	return &entry
+}
+
+func (h *Herdr) forgetSubmitted(target string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.submitted, target)
+}
+
+func (h *Herdr) hermesBlockedPollEvery() time.Duration {
+	if h.hermesBlockedPoll > 0 {
+		return h.hermesBlockedPoll
+	}
+	return defaultHermesBlockedPoll
+}
+
+// earlierTurnReport is the final text of a turn whose prompt was never typed (turn.notSent): the
+// earlier turn's answer as its profile ledger records it, when this process sent that turn's
+// prompt, else a note that this prompt was not sent. A failed earlier turn is reported in the
+// note, not returned as this turn's error: the document it moved already settled the outcome.
+func (h *Herdr) earlierTurnReport(ctx context.Context, target string, launchArgs []string, turn *herdrTurn) string {
+	note := fmt.Sprintf("Werkrby did not send this prompt: the worker's earlier turn moved %s out of its claimed folder while the worker's pane was blocked.", turn.movedDocument)
+	if turn.earlier == nil {
+		return note
+	}
+	verdict := h.judgeHermesTurn(ctx, target, launchArgs, turn.earlier.prompt, turn.earlier.since)
+	switch {
+	case verdict.final != "":
+		return verdict.final
+	case verdict.err != nil:
+		return note + " That turn ended with an error: " + verdict.err.Error()
+	}
+	return note
 }
 
 func (h *Herdr) hermesBlockedBound() time.Duration {
@@ -1287,10 +1436,7 @@ func (h *Herdr) hermesBlockedBound() time.Duration {
 // report one, which the caller treats as before), the context's error when the turn is cancelled,
 // or a *hermesBlockedError once deadline passes with the pane still blocked.
 func (h *Herdr) waitHermesUnblocked(ctx context.Context, target string, deadline time.Time, run herdrRunner, status func(string)) (string, error) {
-	poll := h.hermesBlockedPoll
-	if poll <= 0 {
-		poll = defaultHermesBlockedPoll
-	}
+	poll := h.hermesBlockedPollEvery()
 	started := time.Now()
 	status(fmt.Sprintf("Herdr: hermes worker %s is blocked on a prompt; waiting up to %s for it to clear", target, time.Until(deadline).Round(time.Second)))
 	for {
