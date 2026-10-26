@@ -40,7 +40,7 @@ agent)
 		echo '{"result":{}}'
 		;;
 	get)
-		echo '{"result":{"agent":{"agent":"agy","agent_status":"blocked","agent_session":{"value":"sess-1"}}}}'
+		echo '{"result":{"agent":{"agent":"hermes","agent_status":"blocked","agent_session":{"value":"sess-1"}}}}'
 		;;
 	rename)
 		echo '{"result":{}}'
@@ -50,7 +50,7 @@ agent)
 		echo '{"result":{}}'
 		;;
 	prompt)
-		echo "agent_blocked: runner is blocked"
+		echo "prompt failed: runner exploded"
 		exit 1
 		;;
 	esac
@@ -77,7 +77,7 @@ esac
 		Name:         "herdr",
 		Command:      scriptPath,
 		Cwd:          dir,
-		Model:        "agy",
+		Model:        "hermes",
 		SessionsFile: filepath.Join(dir, "sessions.json"),
 	})
 	if err != nil {
@@ -94,7 +94,8 @@ esac
 	}
 
 	key := "orchestrator:tasks:task_implementation:test-task-fence:1"
-	if _, _, sendErr := h.Send(context.Background(), key, "run test", emit); sendErr == nil {
+	_, _, sendErr := h.Send(context.Background(), key, "run test", emit)
+	if sendErr == nil {
 		t.Fatal("h.Send succeeded on a blocked agent, expected a failed turn")
 	}
 	if gotFinal {
