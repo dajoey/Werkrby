@@ -885,6 +885,11 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 	h.mu.Unlock()
 
 	var turnSuccess bool
+	// turnUndelivered marks the prompt_not_delivered failure: no runner session
+	// ever received the prompt, so there is no leftover session to fence and
+	// the pane is kept for the in-place retry (pinned by
+	// TestHerdrUndeliveredPromptMustNotCountAsFinishedTurn).
+	var turnUndelivered bool
 	cleanKey := strings.TrimSpace(key)
 	defer func() {
 		cancel()
@@ -896,8 +901,22 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 			// The worker is idle after a completed turn, so no later turn needs this one's prompt.
 			h.forgetSubmitted(target)
 		}
-		if turnSuccess && isOrchestratorKey(cleanKey) {
+		if !isOrchestratorKey(cleanKey) {
+			return
+		}
+		if turnSuccess {
 			go h.cleanupCompletedTab(key, tabID, paneID, target)
+			return
+		}
+		// A failed pane-backed orchestrator turn must not leave its session
+		// working: herdr's prompt wait can end (error, timeout, no final
+		// reply) while the runner keeps processing the prompt in the pane,
+		// and that leftover session then edits the same document the next
+		// attempt's session edits (2026-10-26 double dispatch,
+		// tasks-20261026-werkrby-double-dispatch-01). Stop the worker so the
+		// claim cannot carry a second live session after its turn ended.
+		if !turn.headless && !turnUndelivered {
+			go h.stopWorkerAfterFailedTurn(key, tabID, paneID, target)
 		}
 	}()
 
@@ -1081,6 +1100,7 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 
 		// If that also yields nothing, return an error that Werkrby retries in place, never EventFinal.
 		if promptErr != nil || (!hasRealSession && finalText == "" && !hermes.delivered) {
+			turnUndelivered = true
 			notDeliveredErr := fmt.Errorf("prompt_not_delivered: worker %s never received prompt, please retry", target)
 			if emit != nil {
 				emit(core.Event{
@@ -2233,6 +2253,17 @@ func (h *Herdr) isTabFocused(tabID string) bool {
 // owns the worker and runs its own cleanup when it ends.
 func (h *Herdr) cleanupCompletedTab(key, tabID, paneID, agentName string) {
 	h.teardownWorker(key, tabID, paneID, agentName, false)
+}
+
+// stopWorkerAfterFailedTurn fences a worker whose orchestrator turn failed:
+// interrupt the runner (ctrl+c stops an in-flight turn) and tear the worker
+// down. teardownWorker's key-lock discipline keeps this from touching a newer
+// turn that already claimed the worker.
+func (h *Herdr) stopWorkerAfterFailedTurn(key, tabID, paneID, agentName string) {
+	if agentName != "" {
+		_ = exec.Command(h.config.Command, "agent", "send-keys", agentName, "ctrl+c").Run()
+	}
+	h.teardownWorker(key, tabID, paneID, agentName, true)
 }
 
 func (h *Herdr) teardownWorker(key, tabID, paneID, agentName string, force bool) {

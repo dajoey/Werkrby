@@ -951,6 +951,42 @@ func (m *Manager) ensureRouteDirectories() error {
 	return nil
 }
 
+// liveLeaseConflict reports another lease that already covers the same
+// document and phase with a fresh heartbeat. It is the machine check behind the
+// 2026-10-26 double dispatch (tasks-20261026-werkrby-double-dispatch-01): one
+// live lease must mean exactly one provider session, so a dispatch that would
+// run a second session under a live lease is refused before it reaches the
+// harness. Leases whose heartbeat is older than the route's stale window are
+// not live; they are recovery material, not a running session.
+func (m *Manager) liveLeaseConflict(lease Lease) (Lease, bool) {
+	leases, err := m.loadLeases()
+	if err != nil {
+		return Lease{}, false
+	}
+	route, ok := routeByName(lease.Route)
+	if !ok {
+		return Lease{}, false
+	}
+	now := time.Now()
+	for _, other := range leases {
+		if other.ID == lease.ID || other.Route != lease.Route || other.Phase != lease.Phase {
+			continue
+		}
+		if filepath.Base(other.File) != filepath.Base(lease.File) || filepath.Base(other.File) == "" {
+			continue
+		}
+		switch other.State {
+		case "claiming", "processing", "recovering":
+		default:
+			continue
+		}
+		if now.Sub(other.HeartbeatAt) < route.StaleAfter {
+			return other, true
+		}
+	}
+	return Lease{}, false
+}
+
 func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease, recovery bool) {
 	// Every dispatch path (a claim, an adopted orphan, a recovery) passes here: a work Claude card
 	// with no Claude seat goes back to its queue folder unsent.
@@ -969,6 +1005,15 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 			// waiting for the periodic recovery scan.
 			m.requestScan()
 		}()
+		if other, live := m.liveLeaseConflict(lease); live {
+			// Leave the lease in place without a provider turn: recovery
+			// re-runs this dispatch once the conflicting lease stops being
+			// live. Logging instead of an error state keeps the refused
+			// dispatch from burning recovery attempts on a busy document.
+			m.log(fmt.Sprintf("refused %s dispatch for %s: live lease %s (state %s, heartbeat %s ago) already covers this document and phase; a second provider session may not start while it lives",
+				lease.Phase, filepath.Base(lease.File), other.ID, other.State, time.Since(other.HeartbeatAt).Truncate(time.Second)))
+			return
+		}
 		if !m.acquireCapacity(ctx, isRepair) {
 			return
 		}
