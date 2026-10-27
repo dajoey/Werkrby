@@ -116,26 +116,61 @@ func TestSourceIdentityDeduplicationStrictlyScansLongHistory(t *testing.T) {
 	}
 }
 
-func TestSourceIdentityDeduplicationFailsClosedOnCorruptHistory(t *testing.T) {
+func TestSourceIdentityDeduplicationSkipsCorruptAndTornLines(t *testing.T) {
 	store := New(t.TempDir())
-	if _, err := store.Append("whatsapp", "person", Entry{Role: "user", SourceMessageID: "whatsapp:old", Content: "original"}); err != nil {
+	if _, err := store.Append("cli", "local", Entry{Role: "user", SourceMessageID: "cli:old", Content: "original"}); err != nil {
 		t.Fatal(err)
 	}
-	file, err := os.OpenFile(store.Path("whatsapp", "person"), os.O_APPEND|os.O_WRONLY, 0o600)
+	if _, err := store.Append("cli", "local", Entry{Role: "assistant", Content: "reply"}); err != nil {
+		t.Fatal(err)
+	}
+	path := store.Path("cli", "local")
+	// A torn ENOSPC append leaves a partial JSON line with no closing brace
+	// and no trailing newline, exactly what the 2026-10-27 disk-full window
+	// left in cli/local.jsonl and what bricked every CLI command.
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := file.WriteString("{corrupt}\n"); err != nil {
+	if _, err := file.WriteString(`{"at":"2026-10-27T11:46:00Z","role":"user","source_message_id":"cli:torn","content":"tor`); err != nil {
 		_ = file.Close()
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, sourceID := range []string{"whatsapp:old", "whatsapp:new"} {
-		if found, err := store.HasUserSourceID("whatsapp", "person", sourceID); err == nil || found {
-			t.Fatalf("corrupt duplicate check did not fail closed: source=%s found=%t err=%v", sourceID, found, err)
-		}
+	if found, err := store.HasUserSourceID("cli", "local", "cli:old"); err != nil || !found {
+		t.Fatalf("parseable identity before the torn line = %t, %v", found, err)
+	}
+	if found, err := store.HasUserSourceID("cli", "local", "cli:torn"); err != nil || found {
+		t.Fatalf("a torn identity is unreadable and must never match = %t, %v", found, err)
+	}
+	if found, err := store.HasUserSourceID("cli", "local", "cli:absent"); err != nil || found {
+		t.Fatalf("absent identity = %t, %v", found, err)
+	}
+	// The next append after a torn tail starts its own line, so the new record
+	// stays parseable and the torn fragment stays isolated.
+	if _, err := store.Append("cli", "local", Entry{Role: "user", SourceMessageID: "cli:after", Content: "next request"}); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := store.HasUserSourceID("cli", "local", "cli:after"); err != nil || !found {
+		t.Fatalf("identity appended after a torn tail = %t, %v", found, err)
+	}
+	// A corrupt line with a trailing newline is skipped the same way and is
+	// never reinterpreted as an admission record.
+	file, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("{\"corrupt}\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := store.HasUserSourceID("cli", "local", "cli:old"); err != nil || !found {
+		t.Fatalf("parseable identity after a corrupt line = %t, %v", found, err)
 	}
 }
 

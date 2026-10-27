@@ -215,6 +215,39 @@ func TestTaskCommandDelegatesCreationPolicyToCommunicationAgent(t *testing.T) {
 	}
 }
 
+func TestHandleSurvivesTornHistoryTail(t *testing.T) {
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := config.Load(config.PathForRoot(root))
+	harness := newServiceHarness()
+	service := New(cfg, harness)
+	if _, err := service.History.Append("cli", "local", history.Entry{Role: "user", SourceMessageID: "seed", Content: "seed"}); err != nil {
+		t.Fatal(err)
+	}
+	// A torn ENOSPC append: a partial JSON line with no trailing newline, the
+	// shape that bricked every werkrby CLI command on 2026-10-27.
+	file, err := os.OpenFile(service.History.Path("cli", "local"), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString(`{"at":"2026-10-27T11:46:00Z","role":"user","content":"tor`); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var response core.Event
+	if err := service.Handle(context.Background(), core.Message{Channel: "cli", Conversation: "local", Sender: "cli", Text: "/jobs"}, func(event core.Event) { response = event }); err != nil {
+		t.Fatalf("cli command with a torn history tail: %v", err)
+	}
+	if response.Text == "" {
+		t.Fatal("cli command returned no response with a torn history tail")
+	}
+}
+
 func TestCreationPromptsRetainFrameworkEvidenceGroundedHonestyWithCustomChatPrompt(t *testing.T) {
 	root := t.TempDir()
 	if err := workspace.Init(root, false); err != nil {

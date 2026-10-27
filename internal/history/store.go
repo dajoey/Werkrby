@@ -720,7 +720,11 @@ func (s *Store) HasEntries(channel, conversation string) (bool, error) {
 	return info.Size() > 0, nil
 }
 
-// HasUserSourceID strictly checks retained history with bounded memory.
+// HasUserSourceID checks retained history with bounded memory so admission
+// deduplication stays exact for every parseable entry. A line that cannot be
+// parsed has no recoverable source identity (a torn ENOSPC tail, for example);
+// it is skipped and never reinterpreted, because one unreadable line must not
+// brick the conversation or the CLI commands that share this admission check.
 // Recovery's entry limit must not prevent new messages in long conversations.
 func (s *Store) HasUserSourceID(channel, conversation, sourceID string) (bool, error) {
 	if sourceID == "" {
@@ -746,7 +750,7 @@ func (s *Store) HasUserSourceID(channel, conversation, sourceID string) (bool, e
 		}
 		var entry Entry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			return false, errors.New("conversation history contains corrupt correlation data")
+			continue
 		}
 		if entry.Role == "user" && entry.SourceMessageID == sourceID {
 			found = true
