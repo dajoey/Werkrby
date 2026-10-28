@@ -285,8 +285,8 @@ func (r *Roster) validate() error {
 		if !namePattern.MatchString(s.Runner) {
 			return fmt.Errorf("staff %s: runner %q is invalid", name, s.Runner)
 		}
-		if s.Headless && s.Runner != "claude" && s.Runner != "kimi" && s.Runner != "agy" {
-			return fmt.Errorf("staff %s: headless needs runner claude, kimi or agy, not %q", name, s.Runner)
+		if s.Headless && s.Runner != "claude" && s.Runner != "kimi" && s.Runner != "agy" && s.Runner != "hermes" {
+			return fmt.Errorf("staff %s: headless needs runner claude, kimi, agy or hermes, not %q", name, s.Runner)
 		}
 		if s.ExplicitOutcome && !s.Headless {
 			return fmt.Errorf("staff %s: explicit_outcome needs headless: true", name)

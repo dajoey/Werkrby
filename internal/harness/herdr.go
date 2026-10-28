@@ -47,6 +47,14 @@ type Herdr struct {
 	headlessKimiCommand string
 	// headlessAgyCommand is the agy executable for `headless: true` agy staff (default: agyExecutable).
 	headlessAgyCommand string
+	// headlessHermesCommand is the Hermes executable for `headless: true` hermes staff (default:
+	// hermesExecutable).
+	headlessHermesCommand string
+	// headlessHermesStopScript is the gateway-turn stop script a cut hermes turn runs (default:
+	// hermesSessionStopScript); headlessHermesStopPython is the interpreter it runs under
+	// (default: the Hermes venv python when present, else python3). Tests replace both.
+	headlessHermesStopScript string
+	headlessHermesStopPython string
 
 	cliChatIdleThreshold time.Duration
 }

@@ -86,6 +86,7 @@ func headlessSecretEnvName(name string) bool {
 func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string, staff roster.Staff, cfg HarnessConfig, emit core.Emit) (string, bool, error) {
 	kimi := staff.Runner == "kimi"
 	agy := staff.Runner == "agy"
+	hermes := staff.Runner == "hermes"
 	runner := "claude"
 	command := h.headlessCommand
 	switch {
@@ -100,6 +101,12 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		command = h.headlessAgyCommand
 		if command == "" {
 			command = agyExecutable()
+		}
+	case hermes:
+		runner = "hermes"
+		command = h.headlessHermesCommand
+		if command == "" {
+			command = hermesExecutable()
 		}
 	case command == "":
 		command = "claude"
@@ -121,8 +128,20 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	h.mu.Lock()
 	previous := h.sessions[key]
 	h.mu.Unlock()
+	// A hermes one-shot turn reports its result as data through --usage-file (written even when the
+	// run fails): success, session id and the provider failure text are read from it after exit.
+	var usagePath string
+	if hermes {
+		path, err := hermesUsageFile(cfg.Cwd)
+		if err != nil {
+			startErr := fmt.Errorf("prepare hermes usage report for %s: %w", target, err)
+			emitHeadlessError(emit, "", startErr.Error())
+			return "", false, startErr
+		}
+		usagePath = path
+	}
 	var args []string
-	resumed := false // a kimi (-S) or agy (--conversation) turn resumed the remembered session
+	resumed := false // a kimi (-S), agy (--conversation) or hermes (--resume) turn resumed the remembered session
 	if kimi {
 		// Kimi takes the prompt as the -p value (the pane path already hands Herdr the prompt as one
 		// argument, so it fits the same limit) and runs tools without asking in prompt mode.
@@ -142,6 +161,19 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 			resumed = true
 		}
 		args = append(append(args, agyPermissionArgs(cfg)...), staff.Args...)
+	} else if hermes {
+		// Hermes one-shot (-z) takes the prompt as its value and prints only the final reply on
+		// stdout; the turn's result as data is the --usage-file JSON. The seat's args carry
+		// -p <profile> and the model pins. Approvals are auto-bypassed by -z; the profile's
+		// pre_tool_call guard hooks still fire and refuse forbidden commands (live-checked before
+		// this shipped), so a headless seat runs under no fewer guards than its pane did.
+		args = []string{"-z", prompt}
+		if hermesSessionPattern.MatchString(previous) {
+			args = append(args, "--resume", previous)
+			resumed = true
+		}
+		args = append(args, "--usage-file", usagePath)
+		args = append(args, staff.Args...)
 	} else {
 		args = []string{"-p", "--output-format", "stream-json", "--verbose"}
 		if path := transcriptPath("claude", previous, cfg.Cwd); path != "" {
@@ -163,7 +195,7 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	if taskID := headlessTaskID(key); taskID != "" {
 		cmd.Env = append(cmd.Env, "WERKRBY_TASK_ID="+taskID)
 	}
-	if !kimi && !agy {
+	if !kimi && !agy && !hermes {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
 	// Claude Code starts tool and MCP children that can inherit stdout. On cancel the whole process
@@ -178,18 +210,26 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		return "", false, err
 	}
 	turn.cmd = cmd
+	// The gateway-turn stop script matches the run's sessions by cwd and start time; a margin
+	// before the client started keeps clock jitter from missing them.
+	started := time.Now().Unix()
 	if err := cmd.Start(); err != nil {
 		startErr := fmt.Errorf("start headless %s for %s: %w", runner, target, err)
 		emitHeadlessError(emit, "", startErr.Error())
 		return "", false, startErr
 	}
 	if emit != nil {
-		emit(core.Event{Kind: core.EventStatus, Text: fmt.Sprintf("Headless: running staff %s as %s -p in %s", staffName, runner, cfg.Cwd)})
+		mode := "-p"
+		if hermes {
+			mode = "-z"
+		}
+		emit(core.Event{Kind: core.EventStatus, Text: fmt.Sprintf("Headless: running staff %s as %s %s in %s", staffName, runner, mode, cfg.Cwd)})
 	}
-	// Claude Code writes its own Agent Wall log (the run-activity mod); Kimi's and agy's are written
-	// from their streams.
+	// Claude Code writes its own Agent Wall log (the run-activity mod); Kimi's, agy's and Hermes's
+	// are written from their streams (a hermes one-shot turn logs start, task and finish only: its
+	// stdout carries no tool events).
 	var activity *headlessActivity
-	if kimi || agy {
+	if kimi || agy || hermes {
 		activity = newHeadlessActivity(headlessActivityDir(), cmd.Process.Pid, cfg.Cwd, prompt, kimiModelArg(staff.Args))
 	}
 
@@ -222,10 +262,25 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	var threadID string
 	var final *headlessResultLine
 	var kimiReply string
-	kimiDone := false // Kimi printed its closing session.resume_hint: the turn's answer is complete
+	var hermesResult bytes.Buffer // a hermes one-shot turn's stdout: the final reply, or the client's failure message
+	kimiDone := false             // Kimi printed its closing session.resume_hint: the turn's answer is complete
 	reader := bufio.NewReader(stdout)
 	for {
 		line, readErr := reader.ReadBytes('\n')
+		if hermes {
+			// One-shot stdout is only the final reply text: no per-line JSON to parse. Keep the
+			// tail when a reply exceeds the cap; the outcome fence sits at the end.
+			if hermesResult.Len()+len(line) > hermesResultCap {
+				keep := hermesResult.Bytes()[hermesResult.Len()-hermesResultCap/2:]
+				hermesResult.Reset()
+				hermesResult.Write(keep)
+			}
+			hermesResult.Write(line)
+			if readErr != nil {
+				break
+			}
+			continue
+		}
 		if kimi {
 			if msg, ok := parseKimiLine(line); ok {
 				if msg.sessionID != "" && threadID == "" {
@@ -306,21 +361,50 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	waitErr := cmd.Wait()
 	close(tickerDone)
 	<-tickerExited
+	// A hermes turn's result as data: the usage report carries the session id, whether the turn
+	// completed and the provider failure text (written even when the run fails). It is kept under
+	// its final per-run name before anything else reads it.
+	var hermesReport *hermesUsageReport
+	if hermes {
+		report, err := finishHermesUsage(usagePath, cmd.Process.Pid)
+		if err != nil && emit != nil {
+			emit(core.Event{Kind: core.EventStatus, Text: fmt.Sprintf("Headless: hermes usage report for %s unreadable: %v", target, err)})
+		}
+		hermesReport = report
+		if hermesReport != nil && hermesReport.SessionID != "" && threadID == "" {
+			threadID = hermesReport.SessionID
+			h.rememberSession(key, threadID)
+		}
+	}
 	// A turn that reported no session leaves no session for the key: a stale id from an earlier
 	// turn would be handed back by ThreadID and resumed by the next turn as if this one had
 	// continued it. An interrupted or timed-out turn keeps the earlier session, since it may have
 	// died before Claude Code printed one.
 	// Kimi prints its session id only when a turn finishes, and an agy turn that fails early may
-	// print none, so a resumed turn that failed without one still has its session: keep it.
-	if threadID == "" && turnContext.Err() == nil && !((kimi || agy) && resumed) {
+	// print none, so a resumed turn that failed without one still has its session: keep it. A
+	// hermes turn names its session in the usage report whenever the client got that far; a turn
+	// cut before then keeps the resumed session too.
+	if threadID == "" && turnContext.Err() == nil && !((kimi || agy || hermes) && resumed) {
 		h.forgetSession(key)
 	}
 	if turnContext.Err() != nil {
 		activity.finish("stopped: " + turnContext.Err().Error())
+		// The client's exit alone ends only the client: the profile's gateway keeps a detached
+		// turn running. Stop it before the turn is reported failed, so no work continues after
+		// the failure is on record.
+		stopped := ""
+		if hermes {
+			if err := h.stopHermesGatewayTurn(staff, cfg, started); err != nil {
+				stopped = "; gateway turn stop: " + err.Error()
+			}
+		}
 		if errors.Is(turnContext.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
-			detail := fmt.Sprintf("headless worker %s exceeded %s", target, herdrWaitCeiling)
+			detail := fmt.Sprintf("headless worker %s exceeded %s%s", target, herdrWaitCeiling, stopped)
 			emitHeadlessError(emit, threadID, detail)
 			return threadID, false, fmt.Errorf("runner turn failed: %s", detail)
+		}
+		if stopped != "" {
+			return threadID, false, fmt.Errorf("%w%s", turnContext.Err(), stopped)
 		}
 		return threadID, false, turnContext.Err()
 	}
@@ -337,6 +421,24 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		}
 		activity.finish("")
 		final = &headlessResultLine{Type: "result", Subtype: "success", Result: kimiReply, SessionID: threadID}
+	}
+	if hermes {
+		// The usage report is the turn's data and it is written even when the run fails, so it is
+		// authoritative over the exit status: a report recording a completed run stands whatever
+		// the client's exit was, and a missing or uncompleted report fails the turn. A stale
+		// --resume fails before any run (exit 1, "No session found matching"): forget the session
+		// so the next turn on this key starts fresh instead of failing the same way.
+		if hermesReport == nil || hermesReport.Failed || !hermesReport.Completed {
+			detail := hermesFailureDetail(hermesReport, hermesResult.String(), stderr.String(), waitErr)
+			if hermesMissingSession(stderr.String()) {
+				h.forgetSession(key)
+			}
+			activity.finish(detail)
+			emitHeadlessError(emit, threadID, detail)
+			return threadID, false, fmt.Errorf("runner turn failed: %s", detail)
+		}
+		activity.finish("")
+		final = &headlessResultLine{Type: "result", Subtype: "success", Result: strings.TrimSpace(hermesResult.String()), SessionID: threadID}
 	}
 	// A success result stands whatever the exit status: the process may have been killed after
 	// its result, or exited non-zero while shutting down.
@@ -682,6 +784,178 @@ func agyPermissionArgs(cfg HarnessConfig) []string {
 		if arg == "--dangerously-skip-permissions" {
 			return []string{arg}
 		}
+	}
+	return nil
+}
+
+// hermesResultCap bounds a hermes one-shot turn's captured stdout (the final reply); past it the
+// oldest half is dropped, since the outcome fence sits at the end of the reply.
+const hermesResultCap = 2 * 1024 * 1024
+
+// hermesSessionStopScript stops the gateway turn a killed hermes one-shot client leaves running;
+// hermesVenvPython is the interpreter it needs (the script's gateway RPC imports hermes_cli).
+const (
+	hermesSessionStopScript = "/home/dajoey/ops/hermes-session-stop.py"
+	hermesVenvPython        = "/home/dajoey/.hermes/hermes-agent/venv/bin/python"
+	hermesStopTimeout       = 5 * time.Minute
+)
+
+// hermesExecutable is the hermes binary for a headless seat: hermes on PATH, else ~/.local/bin/hermes.
+func hermesExecutable() string {
+	if path, err := exec.LookPath("hermes"); err == nil {
+		return path
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		candidate := filepath.Join(home, ".local", "bin", "hermes")
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "hermes"
+}
+
+// hermesSessionPattern is the shape of a Hermes session id as the usage report writes one
+// (`local-<hex>`). A remembered value is resumed only when it matches, so it can never be mistaken
+// for a flag, and a future id-shape change degrades to fresh sessions instead of failing turns.
+var hermesSessionPattern = regexp.MustCompile(`^local-[0-9a-fA-F]{8,}$`)
+
+// hermesUsageDir is where a hermes one-shot turn keeps its --usage-file report: under the
+// workspace's runtime state, one file per run. The orchestrator's own run directory
+// (runtime/turns/<lease>) is removed when the dispatch ends, so the report lives where the run's
+// other artifacts (the Agent Wall activity log) live for the run's lifetime and after it.
+func hermesUsageDir(cwd string) string {
+	return filepath.Join(cwd, roster.StateDirName, "runtime", "hermes-usage")
+}
+
+// hermesUsageFile creates the temp report path a hermes one-shot turn writes its --usage-file JSON
+// to; finishHermesUsage renames it to its final per-run name after the run.
+func hermesUsageFile(cwd string) (string, error) {
+	dir := hermesUsageDir(cwd)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp(dir, "turn-*.usage.json")
+	if err != nil {
+		return "", err
+	}
+	name := f.Name()
+	return name, f.Close()
+}
+
+// hermesUsageReport is the part of a `hermes -z --usage-file` report a headless turn reads. The
+// report is written even when the run fails: a failed turn carries the provider failure text the
+// orchestrator's quota handling reads (live: "HTTP 429: Weekly/Monthly Limit Exhausted. Your
+// limit will reset at ..."), and every run that started names its session id.
+type hermesUsageReport struct {
+	SessionID      string `json:"session_id"`
+	Completed      bool   `json:"completed"`
+	Failed         bool   `json:"failed"`
+	TurnExitReason string `json:"turn_exit_reason"`
+	Failure        string `json:"failure"`
+}
+
+// finishHermesUsage reads a finished hermes turn's usage report and keeps it under its final
+// per-run name (<pid>-usage.json). A missing or unparseable report returns an error: the turn then
+// fails rather than passing on an unreadable result.
+func finishHermesUsage(usagePath string, pid int) (*hermesUsageReport, error) {
+	raw, err := os.ReadFile(usagePath)
+	if err != nil {
+		return nil, err
+	}
+	var report hermesUsageReport
+	if err := json.Unmarshal(raw, &report); err != nil {
+		return nil, fmt.Errorf("parse usage report: %w", err)
+	}
+	if pid > 0 {
+		final := filepath.Join(filepath.Dir(usagePath), fmt.Sprintf("%d-usage.json", pid))
+		if err := os.Rename(usagePath, final); err != nil {
+			_ = err // the temp report still holds the data; only the name is a convenience
+		}
+	}
+	return &report, nil
+}
+
+// hermesFailureDetail names why a hermes one-shot turn failed: the usage report's provider failure
+// text first (the quota wall wording the orchestrator matches), then the client's stdout message,
+// then stderr, then the exit status. A turn that started but did not complete names its exit
+// reason. The "Command helper: applied N secrets" noise on stderr never outranks the others.
+func hermesFailureDetail(report *hermesUsageReport, stdout, stderrTail string, waitErr error) string {
+	if report != nil && strings.TrimSpace(report.Failure) != "" {
+		return strings.TrimSpace(report.Failure)
+	}
+	if report != nil && !report.Completed && strings.TrimSpace(report.TurnExitReason) != "" {
+		return "hermes turn did not complete: " + strings.TrimSpace(report.TurnExitReason)
+	}
+	if report == nil && waitErr == nil {
+		// A client that exited 0 without a report leaves no readable result: the turn fails
+		// rather than passing its stdout off as a finished one.
+		return "hermes -z ended without a usage report"
+	}
+	for _, text := range []string{stdout, stderrTail} {
+		if tail := strings.TrimSpace(text); tail != "" {
+			if len(tail) > 2000 {
+				tail = tail[len(tail)-2000:]
+			}
+			return tail
+		}
+	}
+	if waitErr != nil {
+		return "hermes -z failed: " + waitErr.Error()
+	}
+	return "hermes -z ended without a usage report"
+}
+
+// hermesMissingSession reports whether a failed hermes turn was the stale-resume case: the client
+// refuses a --resume id it has no session for, before any run (live: exit 1, `Error: No session
+// found matching '<id>'`, and no usage report).
+func hermesMissingSession(stderrTail string) bool {
+	return strings.Contains(stderrTail, "No session found matching")
+}
+
+// hermesProfileArg is the -p profile name in a seat's launch args, for the gateway-turn stop
+// script ("" is Hermes's default profile).
+func hermesProfileArg(args []string) string {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == "-p" || args[i] == "--profile" {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+// stopHermesGatewayTurn stops the detached gateway turn of a cut hermes one-shot client: the
+// client's exit alone ends only the client, and the gateway keeps the turn running while it stays
+// active. The stop script finds the run's sessions in the profile's state.db by cwd and start time
+// (a margin before the client started), interrupts the ones the gateway still reports running, and
+// waits for them to settle.
+func (h *Herdr) stopHermesGatewayTurn(staff roster.Staff, cfg HarnessConfig, started int64) error {
+	script := h.headlessHermesStopScript
+	if script == "" {
+		script = hermesSessionStopScript
+	}
+	interpreter := h.headlessHermesStopPython
+	if interpreter == "" {
+		interpreter = "python3"
+		if _, err := os.Stat(hermesVenvPython); err == nil {
+			interpreter = hermesVenvPython
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), hermesStopTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, interpreter, script,
+		"--profile", hermesProfileArg(staff.Args),
+		"--cwd", cfg.Cwd,
+		"--since", strconv.FormatInt(started-60, 10),
+		"--settle", "240",
+	).CombinedOutput()
+	if err != nil {
+		detail := strings.TrimSpace(string(out))
+		if detail == "" {
+			detail = err.Error()
+		} else if len(detail) > 500 {
+			detail = detail[len(detail)-500:]
+		}
+		return fmt.Errorf("stop the gateway turn: %s", detail)
 	}
 	return nil
 }
