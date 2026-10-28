@@ -761,6 +761,7 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 
 	// 3. Spawn a dedicated worker in a full-width dedicated tab
 	tabArgs := []string{"tab", "create", "--label", tabLabel, "--cwd", absCwd, "--no-focus"}
+	tabArgs = append(tabArgs, paneTaskEnvArgs(key)...)
 	if workspaceID != "" {
 		tabArgs = append(tabArgs, "--workspace", workspaceID)
 	}
@@ -780,6 +781,7 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 	// Fallback to pane split if tab creation failed
 	if newPaneID == "" {
 		splitArgs := []string{"pane", "split", "--direction", "right", "--ratio", "0.5", "--cwd", absCwd, "--no-focus"}
+		splitArgs = append(splitArgs, paneTaskEnvArgs(key)...)
 		if callerPane != "" {
 			splitArgs = append(splitArgs, "--pane", callerPane)
 		}
