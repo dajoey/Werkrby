@@ -3,6 +3,7 @@ package history
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -379,6 +380,71 @@ func TestOversizeMultibyteContentStaysValidUTF8(t *testing.T) {
 	entries, _, err := store.Entries("tui", "local")
 	if err != nil || len(entries) != 1 || !utf8.ValidString(entries[0].Content) {
 		t.Fatalf("multibyte oversize entry unreadable or invalid: %d, %v", len(entries), err)
+	}
+}
+
+func TestRecoveryTailReadsOnlyTheRetainedTail(t *testing.T) {
+	store := New(t.TempDir())
+	now := time.Now().UTC()
+	for index := 0; index < 10; index++ {
+		if _, err := store.Append("cli", "oversize", Entry{At: now.Add(time.Duration(index) * time.Second), Role: "assistant", Content: fmt.Sprintf("filler %d", index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, truncated, _, err := store.RecoveryTail("cli", "oversize", 4)
+	if err != nil || !truncated || len(entries) != 4 {
+		t.Fatalf("oversize tail = %d entries, truncated=%t, err=%v; want 4, true, nil", len(entries), truncated, err)
+	}
+	if entries[0].Content != "filler 6" || entries[3].Content != "filler 9" {
+		t.Fatalf("tail entries are not the newest four in order: %q..%q", entries[0].Content, entries[3].Content)
+	}
+	exact, truncated, _, err := store.RecoveryTail("cli", "oversize", 10)
+	if err != nil || truncated || len(exact) != 10 {
+		t.Fatalf("exact-fit tail = %d entries, truncated=%t, err=%v; want 10, false, nil", len(exact), truncated, err)
+	}
+}
+
+func TestRecoveryTailIgnoresCorruptionBeyondTheRetainedTail(t *testing.T) {
+	store := New(t.TempDir())
+	path := store.Path("cli", "partial")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{\"role\":\"corrupt\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for index := 0; index < 10; index++ {
+		if _, err := store.Append("cli", "partial", Entry{At: now.Add(time.Duration(index) * time.Second), Role: "assistant", Content: fmt.Sprintf("filler %d", index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, truncated, _, err := store.RecoveryTail("cli", "partial", 4)
+	if err != nil || !truncated || len(entries) != 4 || entries[3].Content != "filler 9" {
+		t.Fatalf("tail beyond a corrupt prefix = %d entries, truncated=%t, err=%v; want 4, true, nil (the prefix must never be scanned)", len(entries), truncated, err)
+	}
+}
+
+func TestRecoveryTailStillFailsClosedOnCorruptTail(t *testing.T) {
+	store := New(t.TempDir())
+	now := time.Now().UTC()
+	for index := 0; index < 10; index++ {
+		if _, err := store.Append("cli", "torn", Entry{At: now.Add(time.Duration(index) * time.Second), Role: "assistant", Content: fmt.Sprintf("filler %d", index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file, err := os.OpenFile(store.Path("cli", "torn"), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("{\"role\":\"assistant\",\"content\":\"torn\"\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.RecoveryTail("cli", "torn", 4); err == nil {
+		t.Fatalf("corrupt newest tail did not fail closed")
 	}
 }
 

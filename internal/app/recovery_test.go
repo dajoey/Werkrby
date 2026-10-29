@@ -103,20 +103,30 @@ func TestRecoveryLeavesOlderUncoveredRequestEligibleAfterExcludedCommand(t *test
 	}
 }
 
-func TestRecoveryFailsClosedWhenConversationExceedsBound(t *testing.T) {
+func TestRecoveryTruncatedTailDoesNotFailClosedAndStillDrivesNewestRequest(t *testing.T) {
 	service, target, _ := newRecoveryTestService(t)
 	now := time.Now().UTC()
-	if _, err := service.History.Append("cli", "overflow", history.Entry{At: now, AcceptedAt: now, Role: "user", Content: "must not recover from a partial history", SourceMessageID: "local:overflow"}); err != nil {
-		t.Fatal(err)
-	}
 	for index := 0; index < recoveryTotalEntryMax; index++ {
-		if _, err := service.History.Append("cli", "overflow", history.Entry{At: now.Add(time.Duration(index+1) * time.Microsecond), Role: "assistant", Content: "bounded filler"}); err != nil {
+		if _, err := service.History.Append("cli", "overflow", history.Entry{At: now.Add(time.Duration(index) * time.Microsecond), Role: "assistant", Content: "bounded filler"}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	newest := now.Add(time.Duration(recoveryTotalEntryMax) * time.Microsecond)
+	if _, err := service.History.Append("cli", "overflow", history.Entry{At: newest, AcceptedAt: newest, Role: "user", Content: "newest unanswered request", SourceMessageID: "local:overflow"}); err != nil {
+		t.Fatal(err)
+	}
 	result := service.scanRecovery(context.Background(), "periodic")
-	if result.Dispatched != 0 || result.FailedClosed == 0 || !result.Truncated || len(target.prompts) != 0 {
-		t.Fatalf("overflow recovery did not fail closed: result=%#v prompts=%#v", result, target.prompts)
+	if result.Dispatched != 1 || result.FailedClosed != 0 || !result.Truncated {
+		t.Fatalf("oversize tail recovery did not truncate without failing closed: result=%#v prompts=%#v", result, target.prompts)
+	}
+	named := false
+	for _, entry := range service.Runtime.Logs() {
+		if entry.Event == "scan_completed" && strings.Contains(entry.Text, "truncated_in=cli/overflow") {
+			named = true
+		}
+	}
+	if !named {
+		t.Fatalf("scan_completed log line does not name the truncated conversation")
 	}
 }
 

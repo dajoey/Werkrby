@@ -429,7 +429,7 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 		// --resume fails before any run (exit 1, "No session found matching"): forget the session
 		// so the next turn on this key starts fresh instead of failing the same way.
 		if hermesReport == nil || hermesReport.Failed || !hermesReport.Completed {
-			detail := hermesFailureDetail(hermesReport, hermesResult.String(), stderr.String(), waitErr)
+			detail := hermesHeadlessFailureDetail(hermesReport, hermesResult.String(), stderr.String(), waitErr)
 			if hermesMissingSession(stderr.String()) {
 				h.forgetSession(key)
 			}
@@ -875,11 +875,11 @@ func finishHermesUsage(usagePath string, pid int) (*hermesUsageReport, error) {
 	return &report, nil
 }
 
-// hermesFailureDetail names why a hermes one-shot turn failed: the usage report's provider failure
+// hermesHeadlessFailureDetail names why a hermes one-shot turn failed: the usage report's provider failure
 // text first (the quota wall wording the orchestrator matches), then the client's stdout message,
 // then stderr, then the exit status. A turn that started but did not complete names its exit
 // reason. The "Command helper: applied N secrets" noise on stderr never outranks the others.
-func hermesFailureDetail(report *hermesUsageReport, stdout, stderrTail string, waitErr error) string {
+func hermesHeadlessFailureDetail(report *hermesUsageReport, stdout, stderrTail string, waitErr error) string {
 	if report != nil && strings.TrimSpace(report.Failure) != "" {
 		return strings.TrimSpace(report.Failure)
 	}

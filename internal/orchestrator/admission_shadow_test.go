@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/agent0ai/spynel/internal/admission"
 	"github.com/agent0ai/spynel/internal/config"
 	"github.com/agent0ai/spynel/internal/extensions"
 	"github.com/agent0ai/spynel/internal/roster"
@@ -237,18 +238,24 @@ roles:
 	}
 }
 
-// claude_only front matter reaches admission: a zai seat cannot take it.
+// claude_only front matter reaches admission: a zai seat cannot take it. The old path holds the
+// same document itself (work_card_fence.go: no Claude seat, so it stays unclaimed), so admission
+// is asked directly about the role's zai seat.
 func TestAdmissionShadowPassesClaudeOnly(t *testing.T) {
 	f := newShadowFixture(t, "shadow")
 	name := f.newTask("claude only", map[string]any{"claude_only": true})
+	document, err := ReadDocument(filepath.Join(f.base, "todo", name))
+	if err != nil {
+		t.Fatal(err)
+	}
 	m := f.manager()
 	f.scanTodo(m)
-	if !claimed(f, name) {
-		t.Fatal("the task was not claimed")
+	if claimed(f, name) {
+		t.Fatal("a claude_only task was claimed with no Claude seat in the roster")
 	}
-	m.Wait()
-	if joined := strings.Join(f.shadowLines(), "\n"); !strings.Contains(joined, "claude_only") {
-		t.Fatalf("claude_only not reflected:\n%s", joined)
+	decision, ok := m.shadowDecide(phaseTaskImplementation, name, "implementer", document.FrontMatter)
+	if !ok || decision.Verdict != admission.Wait || !strings.Contains(decision.Reason, "claude_only") {
+		t.Fatalf("admission on the zai seat = %+v (%v), want a claude_only wait", decision, ok)
 	}
 }
 
@@ -392,8 +399,8 @@ func TestAdmissionShadowPassesClaudeOnlyString(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := f.manager()
-	m.shadowQueued("queue", f.tasks, phaseTaskImplementation, name, document, false)
-	if joined := strings.Join(f.shadowLines(), "\n"); !strings.Contains(joined, "claude_only") {
-		t.Fatalf("claude_only: \"true\" not reflected:\n%s", joined)
+	decision, ok := m.shadowDecide(phaseTaskImplementation, name, "implementer", document.FrontMatter)
+	if !ok || decision.Verdict != admission.Wait || !strings.Contains(decision.Reason, "claude_only") {
+		t.Fatalf("claude_only: \"true\" not reflected: %+v (%v)", decision, ok)
 	}
 }

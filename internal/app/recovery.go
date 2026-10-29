@@ -18,12 +18,13 @@ import (
 )
 
 const (
-	recoveryInterval        = 5 * time.Minute
-	recoveryWindow          = 24 * time.Hour
-	recoveryConversationMax = 100
-	recoveryEntryMax        = 2000
-	recoveryTotalEntryMax   = 2000
-	recoveryDispatchMax     = 20
+	recoveryInterval         = 5 * time.Minute
+	recoveryWindow           = 24 * time.Hour
+	recoveryConversationMax  = 100
+	recoveryEntryMax         = 2000
+	recoveryTotalEntryMax    = 2000
+	recoveryDispatchMax      = 20
+	recoveryTruncatedNameMax = 8
 )
 
 type recoveryExecution struct {
@@ -50,6 +51,9 @@ type RecoveryStatus struct {
 	Excluded      int       `json:"excluded,omitempty"`
 	FailedClosed  int       `json:"failed_closed,omitempty"`
 	Truncated     bool      `json:"truncated,omitempty"`
+	// TruncatedNames feeds only the runtime scan_completed log line. It is
+	// never serialized: the published recovery status stays aggregate-only.
+	TruncatedNames []string `json:"-"`
 }
 
 func (s *Service) reserveRecoveryExecution(message core.Message) (recoveryReservation, string, error) {
@@ -306,15 +310,14 @@ func (s *Service) scanRecovery(ctx context.Context, trigger string) RecoveryStat
 			continue
 		}
 		result.Conversations++
-		entries, tailTruncated, _, readErr := s.History.RecoveryTail(conversation.Channel, conversation.Conversation, recoveryEntryMax, recoveryTotalEntryMax)
+		entries, tailTruncated, _, readErr := s.History.RecoveryTail(conversation.Channel, conversation.Conversation, recoveryEntryMax)
 		if tailTruncated {
 			result.Truncated = true
+			if len(result.TruncatedNames) < recoveryTruncatedNameMax {
+				result.TruncatedNames = append(result.TruncatedNames, conversation.Channel+"/"+conversation.Conversation)
+			}
 		}
 		if readErr != nil {
-			result.FailedClosed++
-			continue
-		}
-		if tailTruncated {
 			result.FailedClosed++
 			continue
 		}
@@ -583,7 +586,11 @@ func (s *Service) publishRecoveryStatus(status RecoveryStatus) {
 	s.recoveryMu.Lock()
 	s.recoveryStatus = status
 	s.recoveryMu.Unlock()
-	s.Runtime.LogEvent("info", "recovery", "scan_completed", fmt.Sprintf("Conversation recovery scan completed: conversations=%d entries=%d eligible=%d dispatched=%d excluded=%d failed_closed=%d truncated=%t", status.Conversations, status.Entries, status.Eligible, status.Dispatched, status.Excluded, status.FailedClosed, status.Truncated))
+	message := fmt.Sprintf("Conversation recovery scan completed: conversations=%d entries=%d eligible=%d dispatched=%d excluded=%d failed_closed=%d truncated=%t", status.Conversations, status.Entries, status.Eligible, status.Dispatched, status.Excluded, status.FailedClosed, status.Truncated)
+	if len(status.TruncatedNames) > 0 {
+		message += " truncated_in=" + strings.Join(status.TruncatedNames, ",")
+	}
+	s.Runtime.LogEvent("info", "recovery", "scan_completed", message)
 }
 
 func (s *Service) RecoveryStatus() RecoveryStatus {
