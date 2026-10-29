@@ -1481,6 +1481,16 @@ func (m *Manager) reconcileTaskTransition(ctx context.Context, route workflowRou
 				m.log(note + " " + target)
 				return "todo", target, nil
 			}
+			if stagingErr := validateStagingCleanup(document); stagingErr != nil {
+				note := "Direct completion rejected: " + stagingErr.Error() + " Werkrby returned this task to todo."
+				now := time.Now().UTC()
+				target := statusPath(base, "todo", name)
+				if err := moveDocumentWithUpdate(path, target, "todo", now, note, nil); err != nil {
+					return "todo", path, err
+				}
+				m.log(note + " " + target)
+				return "todo", target, nil
+			}
 		}
 		if status == "review" || status == "done" {
 			// The pre-registered acceptance check gates this hand-off; without
@@ -1546,6 +1556,16 @@ func (m *Manager) reconcileTaskTransition(ctx context.Context, route workflowRou
 			}
 			m.log(note + " " + target)
 			return "todo", target, nil
+		}
+	}
+	if status == "done" {
+		document, readErr := ReadDocument(path)
+		if readErr != nil {
+			return status, path, m.skipUnreadableDocument(path, readErr)
+		}
+		if stagingErr := validateStagingCleanup(document); stagingErr != nil {
+			note := "Review acceptance rejected: " + stagingErr.Error() + " Werkrby returned this task to todo."
+			return m.redirectTransition(path, statusPath(base, "todo", name), "todo", note)
 		}
 	}
 	if status != "waiting" {

@@ -106,6 +106,11 @@ func CreateWithOptions(cfg config.Config, routeName, title, body string, options
 			body = "# " + title + "\n\n## Objective\n\n" + title + "\n\n## Acceptance criteria\n\n- " + acceptance + "\n\n## Context\n\n- Created by Werkrby.\n\n## Progress\n\n- Not started.\n"
 		}
 	}
+	if routeName == "tasks" {
+		if staging := stagingDefaultsFromBody(body); len(staging) > 0 {
+			front["staging"] = staging
+		}
+	}
 	document := Document{FrontMatter: front, Body: body}
 	directory := cfg.Resolve(route.Source)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
