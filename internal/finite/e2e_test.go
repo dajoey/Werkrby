@@ -55,7 +55,7 @@ func TestFiniteFakeProviderWorkflow(t *testing.T) {
 		if run.SupervisorPID == nil || run.StartedAt == nil || run.EndedAt == nil {
 			t.Fatalf("run %d lacks persisted start/end identity: %+v", run.ID, run)
 		}
-		if !fileExists(run.RunDir + string(os.PathSeparator) + "session.json") || !fileExists(run.RunDir+string(os.PathSeparator)+"usage.json") {
+		if !fileExists(run.RunDir+string(os.PathSeparator)+"session.json") || !fileExists(run.RunDir+string(os.PathSeparator)+"usage.json") {
 			t.Fatalf("run %d lacks session/usage artifacts in %s", run.ID, run.RunDir)
 		}
 		usage, err := engine.store.GetUsage(context.Background(), run.ID)

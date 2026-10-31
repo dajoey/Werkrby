@@ -18,15 +18,15 @@ import (
 const engineOwnerConfigEnv = "WERKRBY_FINITE_ENGINE_OWNER_CONFIG"
 
 type engineOwnerCase struct {
-	Base           string
-	Root           string
-	Worker         string
-	PlanPath       string
-	BriefPath      string
-	TaskID         string
-	Failpoint      string
-	Action         string
-	MarkerPath     string
+	Base       string
+	Root       string
+	Worker     string
+	PlanPath   string
+	BriefPath  string
+	TaskID     string
+	Failpoint  string
+	Action     string
+	MarkerPath string
 }
 
 type engineOwnerMarker struct {
@@ -60,10 +60,10 @@ func TestFiniteEngineOwnerHelperProcess(t *testing.T) {
 	}
 	var engine *Engine
 	engine, err = NewEngine(Config{Root: ownerCase.Root, WorkerDir: ownerCase.Worker}, EngineOptions{
-		Harness: harness.HarnessConfig{Name: "finite-engine-fixture", Cwd: ownerCase.Worker, Env: []string{engineFixturePlanEnv + "=" + ownerCase.PlanPath}},
-		Seats: func(context.Context) ([]Seat, error) { return []Seat{{Name: "fake-seat", Available: true}}, nil },
+		Harness:    harness.HarnessConfig{Name: "finite-engine-fixture", Cwd: ownerCase.Worker, Env: []string{engineFixturePlanEnv + "=" + ownerCase.PlanPath}},
+		Seats:      func(context.Context) ([]Seat, error) { return []Seat{{Name: "fake-seat", Available: true}}, nil },
 		Executable: executable,
-		StopGrace: 25 * time.Millisecond,
+		StopGrace:  25 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -203,10 +203,10 @@ func openCrashedEngine(t *testing.T, ownerCase engineOwnerCase) *Engine {
 		t.Fatal(err)
 	}
 	engine, err := NewEngine(Config{Root: ownerCase.Root, WorkerDir: ownerCase.Worker}, EngineOptions{
-		Harness: harness.HarnessConfig{Name: "finite-engine-fixture", Cwd: ownerCase.Worker, Env: []string{engineFixturePlanEnv + "=" + ownerCase.PlanPath}},
-		Seats: func(context.Context) ([]Seat, error) { return []Seat{{Name: "fake-seat", Available: true}}, nil },
+		Harness:    harness.HarnessConfig{Name: "finite-engine-fixture", Cwd: ownerCase.Worker, Env: []string{engineFixturePlanEnv + "=" + ownerCase.PlanPath}},
+		Seats:      func(context.Context) ([]Seat, error) { return []Seat{{Name: "fake-seat", Available: true}}, nil },
 		Executable: executable,
-		StopGrace: 25 * time.Millisecond,
+		StopGrace:  25 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("reopen crashed owner: %v", err)

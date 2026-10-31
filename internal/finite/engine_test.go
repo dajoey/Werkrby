@@ -17,20 +17,20 @@ import (
 )
 
 const (
-	engineFixturePlanEnv         = "WERKRBY_FINITE_ENGINE_FIXTURE_PLAN"
+	engineFixturePlanEnv          = "WERKRBY_FINITE_ENGINE_FIXTURE_PLAN"
 	engineFixtureDuplicateGateEnv = "WERKRBY_FINITE_ENGINE_DUPLICATE_GATE"
 )
 
 type engineFixtureBehavior struct {
-	Result       ResultOutcome `json:"result,omitempty"`
-	Wait         *Wait         `json:"wait,omitempty"`
-	Block        bool          `json:"block,omitempty"`
-	NoResult     bool          `json:"no_result,omitempty"`
-	Fail         bool          `json:"fail,omitempty"`
-	Wall         bool          `json:"wall,omitempty"`
-	WakeAt       string        `json:"wake_at,omitempty"`
-	SkipUsage    bool          `json:"skip_usage,omitempty"`
-	ExitCode     *int          `json:"exit_code,omitempty"`
+	Result    ResultOutcome `json:"result,omitempty"`
+	Wait      *Wait         `json:"wait,omitempty"`
+	Block     bool          `json:"block,omitempty"`
+	NoResult  bool          `json:"no_result,omitempty"`
+	Fail      bool          `json:"fail,omitempty"`
+	Wall      bool          `json:"wall,omitempty"`
+	WakeAt    string        `json:"wake_at,omitempty"`
+	SkipUsage bool          `json:"skip_usage,omitempty"`
+	ExitCode  *int          `json:"exit_code,omitempty"`
 }
 
 type engineFixturePlan struct {
@@ -62,9 +62,9 @@ func newEngineFixture(t *testing.T, plan engineFixturePlan) *Engine {
 		Seats: func(context.Context) ([]Seat, error) {
 			return []Seat{{Name: "fake-seat", Available: true}}, nil
 		},
-		Executable:  executable,
+		Executable:   executable,
 		PollInterval: 10 * time.Millisecond,
-		StopGrace:   25 * time.Millisecond,
+		StopGrace:    25 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
