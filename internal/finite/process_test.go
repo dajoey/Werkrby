@@ -176,8 +176,10 @@ func (h *finiteFixtureHarness) Send(ctx context.Context, key, prompt string, emi
 		if err != nil {
 			return "", false, err
 		}
-		command := exec.Command(executable, "finite-fake-provider")
-		command.Env = append(os.Environ(), h.cfg.Env...)
+		command := exec.Command(executable, "finite-fake-provider",
+			finiteProviderRunIDArg, os.Getenv(finiteRunIDEnv),
+			finiteProviderTokenArg, os.Getenv(finiteRunTokenEnv))
+		command.Env = mergeEnvironment(os.Environ(), h.cfg.Env)
 		if err := command.Start(); err != nil {
 			return "", false, err
 		}

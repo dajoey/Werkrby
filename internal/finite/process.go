@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	finiteRunIDEnv    = "WERKRBY_FINITE_RUN_ID"
-	finiteRunTokenEnv = "WERKRBY_FINITE_PROCESS_TOKEN"
-	finiteRunDirEnv   = "WERKRBY_FINITE_RUN_DIR"
-	finiteJobNameEnv  = "WERKRBY_FINITE_JOB_NAME"
+	finiteRunIDEnv         = "WERKRBY_FINITE_RUN_ID"
+	finiteRunTokenEnv      = "WERKRBY_FINITE_PROCESS_TOKEN"
+	finiteRunDirEnv        = "WERKRBY_FINITE_RUN_DIR"
+	finiteJobNameEnv       = "WERKRBY_FINITE_JOB_NAME"
+	finiteProviderRunIDArg = "--finite-run-id"
+	finiteProviderTokenArg = "--finite-process-token"
 )
 
 var (

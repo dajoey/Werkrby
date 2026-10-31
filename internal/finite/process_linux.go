@@ -24,14 +24,12 @@ const processBoundarySupported = true
 var errLinuxProcessGone = errors.New("linux process exited")
 
 type linuxProcess struct {
-	pid    int
-	pgrp   int
-	start  string
-	state  byte
-	uid    int
-	args   []string
-	env    map[string]string
-	envErr error
+	pid   int
+	pgrp  int
+	start string
+	state byte
+	uid   int
+	args  []string
 }
 
 type linuxSupervisorLaunch struct{}
@@ -94,9 +92,6 @@ func inspectRun(ctx context.Context, runID int64, token string) (RunProcesses, e
 			continue
 		}
 		processes = append(processes, process)
-		if process.envErr != nil {
-			return unknown(fmt.Errorf("inspect PID %d environment: %w", pid, process.envErr))
-		}
 		binding, isSupervisor, err := linuxSupervisorBinding(process.args)
 		if err != nil {
 			return unknown(fmt.Errorf("inspect PID %d supervisor arguments: %w", pid, err))
@@ -125,15 +120,15 @@ func inspectRun(ctx context.Context, runID int64, token string) (RunProcesses, e
 		if observation.Supervisor != nil && process.pgrp == observation.Supervisor.PID {
 			matches = true
 		}
-		envRunID, hasRunID := process.env[finiteRunIDEnv]
-		envToken, hasToken := process.env[finiteRunTokenEnv]
-		if hasRunID || hasToken {
-			runMatches := hasRunID && envRunID == strconv.FormatInt(runID, 10)
-			tokenMatches := hasToken && envToken == token
-			if runMatches != tokenMatches {
+		provider, marked, err := linuxProviderBinding(process.args)
+		if err != nil {
+			return unknown(fmt.Errorf("inspect PID %d provider arguments: %w", process.pid, err))
+		}
+		if marked {
+			if provider.runID == runID && provider.token != token || provider.token == token && provider.runID != runID {
 				return unknown(ErrProcessTokenMismatch)
 			}
-			if runMatches && tokenMatches {
+			if provider.runID == runID && provider.token == token {
 				matches = true
 			}
 		}
@@ -161,6 +156,49 @@ func linuxSupervisorBinding(args []string) (supervisorBinding, bool, error) {
 	return binding, true, err
 }
 
+// linuxProviderBinding recognizes only explicit run-boundary markers. A
+// provider adapter that can outlive its supervisor must preserve these exact
+// arguments; an unmarked daemon or external gateway is not an admitted Linux
+// provider boundary.
+func linuxProviderBinding(args []string) (supervisorBinding, bool, error) {
+	var binding supervisorBinding
+	var runIDText, token string
+	seenRunID, seenToken := false, false
+	for index := 1; index < len(args); index++ {
+		switch args[index] {
+		case finiteProviderRunIDArg:
+			if seenRunID || index+1 >= len(args) {
+				return supervisorBinding{}, true, fmt.Errorf("invalid provider run-ID marker")
+			}
+			seenRunID = true
+			index++
+			runIDText = args[index]
+		case finiteProviderTokenArg:
+			if seenToken || index+1 >= len(args) {
+				return supervisorBinding{}, true, fmt.Errorf("invalid provider token marker")
+			}
+			seenToken = true
+			index++
+			token = args[index]
+		}
+	}
+	if !seenRunID && !seenToken {
+		return supervisorBinding{}, false, nil
+	}
+	if !seenRunID || !seenToken {
+		return supervisorBinding{}, true, fmt.Errorf("incomplete provider run marker")
+	}
+	runID, err := strconv.ParseInt(runIDText, 10, 64)
+	if err != nil {
+		return supervisorBinding{}, true, err
+	}
+	if err := validateRunBinding(runID, token); err != nil {
+		return supervisorBinding{}, true, err
+	}
+	binding.runID, binding.token = runID, token
+	return binding, true, nil
+}
+
 func readLinuxProcess(pid int, withFiles bool) (*linuxProcess, error) {
 	root := filepath.Join("/proc", strconv.Itoa(pid))
 	stat, err := readLinuxBounded(filepath.Join(root, "stat"), 64*1024)
@@ -179,7 +217,7 @@ func readLinuxProcess(pid int, withFiles bool) (*linuxProcess, error) {
 	if err != nil {
 		return nil, err
 	}
-	process := &linuxProcess{pid: pid, pgrp: pgrp, start: fields[19], state: stat[closing+2], env: map[string]string{}}
+	process := &linuxProcess{pid: pid, pgrp: pgrp, start: fields[19], state: stat[closing+2]}
 	status, err := readLinuxBounded(filepath.Join(root, "status"), 1024*1024)
 	if err != nil {
 		return nil, linuxProcessReadError(err)
@@ -212,31 +250,6 @@ func readLinuxProcess(pid int, withFiles bool) (*linuxProcess, error) {
 		if len(argument) != 0 {
 			process.args = append(process.args, string(argument))
 		}
-	}
-	// PID 1 and empty-argv kernel threads cannot be spawned provider
-	// processes. Their protected environments are not run evidence. Every
-	// eligible user process still fails closed on an environment read error.
-	if pid == 1 || len(process.args) == 0 {
-		return process, nil
-	}
-	environ, err := readLinuxBounded(filepath.Join(root, "environ"), 4*1024*1024)
-	if err != nil {
-		return nil, linuxProcessReadError(err)
-	}
-	for _, variable := range bytes.Split(environ, []byte{0}) {
-		equals := bytes.IndexByte(variable, '=')
-		if equals <= 0 {
-			continue
-		}
-		key, value := string(variable[:equals]), string(variable[equals+1:])
-		if key != finiteRunIDEnv && key != finiteRunTokenEnv && key != finiteRunDirEnv && key != finiteJobNameEnv {
-			continue
-		}
-		if previous, exists := process.env[key]; exists && previous != value {
-			process.envErr = fmt.Errorf("conflicting %s values", key)
-			continue
-		}
-		process.env[key] = value
 	}
 	return process, nil
 }
