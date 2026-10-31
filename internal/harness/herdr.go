@@ -74,6 +74,13 @@ type Herdr struct {
 	// defaultHermesInflightBudget).
 	hermesDeliveryWait   time.Duration
 	hermesInflightBudget time.Duration
+	// hermesStallBound bounds the in-flight wait when this turn writes no new ledger row (zero
+	// means defaultHermesStallBound): a turn the gateway dropped ends as unresolved inside the
+	// bound instead of holding the pane lock for the whole in-flight budget.
+	hermesStallBound time.Duration
+	// hermesWaitStatusEvery is how often the in-flight wait reports status (zero means
+	// defaultHermesWaitStatusEvery), so chat activity and the job lease stay live.
+	hermesWaitStatusEvery time.Duration
 	// hermesBlockedWait bounds how long a turn waits on a Hermes worker pane herdr reports blocked
 	// (zero means defaultHermesBlockedWait); hermesBlockedPoll is the re-read interval (zero means
 	// defaultHermesBlockedPoll).
@@ -1045,7 +1052,7 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 			return threadID, false, turnContext.Err()
 		}
 	} else if isHermes && promptErr == nil && finalText == "" {
-		hermes = h.judgeHermesTurn(turnContext, target, launchArgs, prompt, promptStart)
+		hermes = h.judgeHermesTurn(turnContext, target, launchArgs, prompt, promptStart, status)
 		if turnContext.Err() != nil {
 			return threadID, false, turnContext.Err()
 		}
@@ -1108,7 +1115,7 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 			}
 		}
 		if isHermes && promptErr == nil && finalText == "" {
-			hermes = h.judgeHermesTurn(turnContext, target, launchArgs, prompt, rePromptStart)
+			hermes = h.judgeHermesTurn(turnContext, target, launchArgs, prompt, rePromptStart, status)
 			if turnContext.Err() != nil {
 				return threadID, false, turnContext.Err()
 			}
@@ -1148,13 +1155,22 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 	if finalText == "" {
 		finalOut, _ := exec.Command(h.config.Command, "agent", "read", target, "--source", "recent-unwrapped", "--lines", "250").Output()
 		raw := strings.TrimSpace(string(finalOut))
-		if raw == "" {
-			raw = strings.TrimSpace(string(promptOut))
+		probe := raw
+		if probe == "" {
+			// The prompt command's output is the typing receipt: error evidence only, never
+			// cleaned into a reply (2026-10-31: a receipt reached a chat as the reply).
+			probe = strings.TrimSpace(string(promptOut))
 		}
-		if strings.Contains(raw, "monthly spending limit") || strings.Contains(raw, "spending limit") {
-			return threadID, false, fmt.Errorf("provider spending limit reached: %s", raw)
+		if strings.Contains(probe, "monthly spending limit") || strings.Contains(probe, "spending limit") {
+			return threadID, false, fmt.Errorf("provider spending limit reached: %s", probe)
 		}
 		finalText = cleanHerdrTerminalOutput(raw)
+		if finalText != "" && isHermes && hermesBoxPattern.MatchString(raw) && !hermesScreenHoldsThisTurn(raw, prompt) {
+			// A warm pane keeps earlier turns' reply boxes, and herdr can go idle before this
+			// turn's rule is drawn: a screen box without this turn's prompt preview above it
+			// belongs to an earlier turn, never this one.
+			return threadID, false, fmt.Errorf("runner turn failed: the worker screen holds no reply for this turn")
+		}
 		if finalText == "" && promptErr == nil {
 			// Cleaning strips chrome, prompt echoes and earlier turns; nothing left means the
 			// screen holds no reply. The raw pane is never a reply (2026-10-31: 250 lines of
@@ -1460,7 +1476,7 @@ func (h *Herdr) earlierTurnReport(ctx context.Context, target string, launchArgs
 	if turn.earlier == nil {
 		return note
 	}
-	verdict := h.judgeHermesTurn(ctx, target, launchArgs, turn.earlier.prompt, turn.earlier.since)
+	verdict := h.judgeHermesTurn(ctx, target, launchArgs, turn.earlier.prompt, turn.earlier.since, nil)
 	switch {
 	case verdict.final != "":
 		return verdict.final

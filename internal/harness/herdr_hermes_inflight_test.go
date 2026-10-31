@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/agent0ai/spynel/internal/core"
 )
 
 // hermesWarmChatScreen is a warm chat pane right after the new prompt was submitted: the earlier
@@ -192,5 +194,164 @@ func TestHerdrHermesPromptNeverInLedgerKeepsTheScreenErrorPanel(t *testing.T) {
 	assertNoScreenInFinals(t, got)
 	if got.err == nil || !strings.Contains(got.err.Error(), "Gateway draining: not_ready") {
 		t.Fatalf("Send error = %v, want the screen panel's error text", got.err)
+	}
+}
+
+// The gateway recorded this turn's user row and then went silent (a gateway restart after the
+// prompt landed): no assistant row, no failed_turn row. The judge must end the wait at the
+// no-new-rows stall bound instead of holding the pane lock for the whole in-flight budget, and
+// it must keep reporting status while it waits, so chat activity and the job lease stay live.
+func TestHerdrHermesDeliveredSilentTurnEndsWithinTheStallBound(t *testing.T) {
+	dir := t.TempDir()
+	hermesHome := filepath.Join(dir, "hermes-home")
+	t.Setenv("HERMES_HOME", hermesHome)
+	ledger := newHermesTestLedger(t, hermesChatLedger(hermesHome))
+	hermesEarlierChatTurn(ledger)
+	key := "chat:telegram:4242"
+	writeWarmHermesWorker(t, dir, key)
+	script := hermesFakeHerdr(t, dir)
+	writeHermesScreen(t, dir, hermesWarmChatScreen("Werkrby chat for telegram/4242."))
+	startHermesSim(t, dir, func(n int, prompt string) {
+		ledger.add("local-chat", hermesTestRow{role: "user", content: prompt})
+	})
+
+	start := time.Now()
+	got := runHermesTurn(t, dir, script, key, "", "Werkrby chat for telegram/4242.\n\nJoey: anything new?")
+	elapsed := time.Since(start)
+
+	assertNoScreenInFinals(t, got)
+	if finals := got.finals(); len(finals) != 0 {
+		t.Fatalf("a delivered silent turn delivered %q", finals)
+	}
+	if got.err == nil || !strings.Contains(got.err.Error(), HermesUnresolvedTurn) {
+		t.Fatalf("Send error = %v, want %q", got.err, HermesUnresolvedTurn)
+	}
+	if elapsed >= 4*time.Second {
+		t.Fatalf("a silent turn held the turn for %s; want the no-new-rows stall bound, well inside the 5s in-flight budget", elapsed)
+	}
+	statuses := 0
+	for _, ev := range got.events {
+		if ev.Kind == core.EventStatus && strings.Contains(ev.Text, "still running in the ledger") {
+			statuses++
+		}
+	}
+	if statuses == 0 {
+		t.Fatalf("no status events during the in-flight wait: %+v", got.events)
+	}
+}
+
+// herdr did not launch this worker (a direct pane address): no launch args, so no launch
+// profile and no trusted ledger. A readable root ledger must not fail the turn after the
+// delivery wait; the screen decides, guarded by this turn's own prompt preview.
+func TestHerdrHermesUnknownLaunchUsesTheScreenNotTheRootLedger(t *testing.T) {
+	dir := t.TempDir()
+	hermesHome := filepath.Join(dir, "hermes-home")
+	t.Setenv("HERMES_HOME", hermesHome)
+	root := newHermesTestLedger(t, filepath.Join(hermesHome, "state.db"))
+	root.session("local-root", "", "", time.Now())
+	root.add("local-root",
+		hermesTestRow{role: "user", content: "earlier question", at: time.Now().Add(-time.Hour)},
+		hermesTestRow{role: "assistant", content: "Older root reply.", finishReason: "stop", at: time.Now().Add(-time.Hour)},
+	)
+	script := hermesFakeHerdr(t, dir)
+	writeHermesScreen(t, dir, hermesTestTurn("Earlier question", hermesTestBox("Older root reply."))+
+		hermesTestTurn("Werkrby chat for telegram/4242.", hermesTestBox("Pane reply: the dentist card wakes on January 14."))+hermesTestChrome)
+	startHermesSim(t, dir, nil)
+
+	got := runHermesTurnConfigured(t, dir, script, "hermes", "chat:telegram:4242", "w1:p9", "Werkrby chat for telegram/4242.\n\nJoey: and the dentist?")
+
+	assertNoScreenInFinals(t, got)
+	if got.err != nil {
+		t.Fatalf("Send returned %v, want this turn's pane reply", got.err)
+	}
+	if finals := got.finals(); len(finals) != 1 || finals[0] != "Pane reply: the dentist card wakes on January 14." {
+		t.Fatalf("EventFinal texts = %q, want this turn's pane reply", finals)
+	}
+}
+
+// herdr went idle before Hermes drew this turn: the newest reply box on screen is the earlier
+// turn's. With no readable ledger there is no proof this turn ever ran, and no prompt preview
+// above the box, so the box is not this turn's reply: the turn is an error.
+func TestHerdrHermesIdleBeforeTheRuleDrawnIsAnErrorNotTheOlderBox(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HERMES_HOME", filepath.Join(dir, "no-such-hermes-home"))
+	key := "chat:telegram:4242"
+	writeWarmHermesWorker(t, dir, key)
+	script := hermesFakeHerdr(t, dir)
+	writeHermesScreen(t, dir, hermesTestTurn("Earlier question", hermesTestBox("Older reply: the library fill-out resumes now."))+hermesTestChrome)
+	startHermesSim(t, dir, nil)
+
+	got := runHermesTurn(t, dir, script, key, "", "Werkrby chat for telegram/4242.\n\nJoey: anything new?")
+
+	assertNoScreenInFinals(t, got)
+	if finals := got.finals(); len(finals) != 0 {
+		t.Fatalf("the earlier turn's reply box was delivered as %q", finals)
+	}
+	if got.err == nil {
+		t.Fatalf("Send returned no error for a turn with no reply of its own on screen")
+	}
+}
+
+// `herdr agent prompt` output is the typing receipt, never the reply: with an empty screen
+// read it must not be cleaned into a reply — the turn is an error.
+func TestHerdrHermesEmptyScreenNeverDeliversThePromptOutput(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HERMES_HOME", filepath.Join(dir, "no-such-hermes-home"))
+	key := "chat:telegram:4242"
+	writeWarmHermesWorker(t, dir, key)
+	script := hermesFakeHerdr(t, dir)
+	// No screen.txt: `agent read` returns nothing, while `agent prompt` prints its receipt.
+	startHermesSim(t, dir, nil)
+
+	got := runHermesTurn(t, dir, script, key, "", "Werkrby chat for telegram/4242.\n\nJoey: anything new?")
+
+	assertNoScreenInFinals(t, got)
+	if finals := got.finals(); len(finals) != 0 {
+		t.Fatalf("the prompt command's output was delivered as %q", finals)
+	}
+	if got.err == nil {
+		t.Fatalf("Send returned no error for an empty screen read")
+	}
+}
+
+// A false idle after the first assistant row: real turns stall minutes between rows (long tool
+// runs, provider retries), so a turn with rows and no ending yet is still alive. The judge
+// follows it in the ledger past the settle and grace windows instead of erroring, and the
+// ending — here a late answer — is the reply.
+func TestHerdrHermesIdleAfterFirstAssistantRowFollowsTheTurnToEnd(t *testing.T) {
+	dir := t.TempDir()
+	hermesHome := filepath.Join(dir, "hermes-home")
+	t.Setenv("HERMES_HOME", hermesHome)
+	ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
+	ledger.session("local-a", "", "", time.Now())
+	script := hermesFakeHerdr(t, dir)
+	writeHermesScreen(t, dir, hermesTestTurn("You are running from the Werkrby orchestrator system.", hermesTestBox("Working on it."))+hermesTestChrome)
+	var late sync.WaitGroup
+	t.Cleanup(late.Wait)
+	startHermesSim(t, dir, func(n int, prompt string) {
+		ledger.add("local-a",
+			hermesTestRow{role: "user", content: prompt},
+			hermesTestRow{role: "assistant", content: "Reading the task.", toolCalls: `[{"id":"c1"}]`, finishReason: "tool_calls"},
+			hermesTestRow{role: "tool", content: "{}"},
+		)
+		late.Add(1)
+		go func() {
+			defer late.Done()
+			// Past the settle and grace windows (0.6s + 0.6s here), with another row in
+			// between so the no-new-rows bound sees the turn is alive.
+			time.Sleep(1600 * time.Millisecond)
+			ledger.add("local-a", hermesTestRow{role: "tool", content: "{}"})
+			time.Sleep(500 * time.Millisecond)
+			ledger.add("local-a", hermesTestRow{role: "assistant", content: "Task moved to review.", finishReason: "stop"})
+		}()
+	})
+
+	got := runHermesTurn(t, dir, script, "orchestrator:tasks:task_implementation:tasks-20261031-idle-row-01:1", "", hermesTestTaskPrompt("tasks-20261031-idle-row-01"))
+
+	if got.err != nil {
+		t.Fatalf("Send returned %v, want the turn's late answer", got.err)
+	}
+	if finals := got.finals(); len(finals) != 1 || finals[0] != "Task moved to review." {
+		t.Fatalf("EventFinal texts = %q, want the turn's late answer", finals)
 	}
 }

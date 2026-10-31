@@ -49,15 +49,22 @@ const (
 	// profile ledger is readable, and it never recorded this prompt: the screen can then only
 	// hold earlier turns, so nothing on it is this turn's reply.
 	HermesPromptNotInLedger = "hermes never recorded this prompt in its ledger"
-	// defaultHermesDeliveryWait bounds the wait for a prompt's user row once herdr has called the
-	// turn finished without it: on 2026-10-31 a 56 KB chat prompt's row landed 4 s after herdr
+	// defaultHermesDeliveryWait bounds the wait for a prompt's user row once herdr has called
+	// the turn finished without it: on 2026-10-31 a 56 KB chat prompt's row landed 4 s after herdr
 	// reported the warm chat pane idle, and its answer 2 min 16 s later.
 	defaultHermesDeliveryWait = 60 * time.Second
 	// defaultHermesInflightBudget bounds the wait for the ending of a turn whose prompt landed
 	// (or whose first assistant row landed) after herdr had already called it finished.
 	defaultHermesInflightBudget = 10 * time.Minute
-	hermesLedgerPoll            = 250 * time.Millisecond
-	hermesCompressionHops       = 8
+	// defaultHermesStallBound bounds the in-flight wait once this turn stops writing ledger
+	// rows: a turn the gateway dropped (a restart after the prompt row) ends as unresolved
+	// inside the bound instead of holding the pane lock for the whole in-flight budget.
+	defaultHermesStallBound = 2 * time.Minute
+	// defaultHermesWaitStatusEvery is how often the in-flight wait reports status, so chat
+	// activity and the job lease stay live while the judge holds the pane lock.
+	defaultHermesWaitStatusEvery = 30 * time.Second
+	hermesLedgerPoll             = 250 * time.Millisecond
+	hermesCompressionHops        = 8
 )
 
 var (
@@ -91,6 +98,10 @@ type hermesLedgerTurn struct {
 	Failure string
 	// SawAssistant: the turn wrote at least one assistant row (a tool step, a draft, an answer).
 	SawAssistant bool
+	// LastRowID is the newest messages.id this turn has written in its session (the prompt's
+	// user row when nothing followed yet). The in-flight wait compares it across polls to see
+	// whether the turn is still making progress.
+	LastRowID int64
 }
 
 func (t hermesLedgerTurn) ended() bool { return t.Final != "" || t.Failure != "" }
@@ -325,21 +336,24 @@ func readHermesTurn(ctx context.Context, path, prompt string, since time.Time) (
 		}
 		return "NULL"
 	}
-	query := fmt.Sprintf(`SELECT role, content, tool_calls, %s, %s, %s, %s FROM messages
-		WHERE session_id = ? AND id > ? AND timestamp >= ? ORDER BY id`,
+	query := fmt.Sprintf(`SELECT m.id, role, content, tool_calls, %s, %s, %s, %s FROM messages m
+		WHERE m.session_id = ? AND m.id > ? AND m.timestamp >= ? ORDER BY m.id`,
 		optional("finish_reason"), optional("display_kind"), optional("display_metadata"), optional("_compressed_summary"))
 	rows, err = db.QueryContext(ctx, query, session, rowID, sinceEpoch)
 	if err != nil {
 		return turn, err
 	}
 	defer rows.Close()
+	lastID := rowID
 	for rows.Next() {
+		var id int64
 		var role string
 		var content, toolCalls, finishReason, displayKind, displayMetadata sql.NullString
 		var summary sql.NullInt64
-		if err := rows.Scan(&role, &content, &toolCalls, &finishReason, &displayKind, &displayMetadata, &summary); err != nil {
+		if err := rows.Scan(&id, &role, &content, &toolCalls, &finishReason, &displayKind, &displayMetadata, &summary); err != nil {
 			return turn, err
 		}
+		lastID = id
 		if role != "assistant" {
 			continue
 		}
@@ -363,6 +377,7 @@ func readHermesTurn(ctx context.Context, path, prompt string, since time.Time) (
 			turn.Final, turn.Failure = text, ""
 		}
 	}
+	turn.LastRowID = lastID
 	return turn, rows.Err()
 }
 
@@ -429,10 +444,13 @@ func (h *Herdr) readHermesLateEnding(ctx context.Context, launchArgs []string, p
 }
 
 // readHermesInflightTurn waits on the ledger for a turn herdr called finished before the turn
-// had started: first for the prompt's user row (bounded by the delivery wait), then for the
+// had ended: first for the prompt's user row (bounded by the delivery wait), then for the
 // turn's ending (bounded by the in-flight budget). Herdr's idle is a screen reading; a turn
-// that has not written a single assistant row has not run yet, whatever the pane shows.
-func (h *Herdr) readHermesInflightTurn(ctx context.Context, launchArgs []string, prompt string, since time.Time) (hermesLedgerTurn, error) {
+// that has not ended has not finished, whatever the pane shows — real turns stall minutes
+// between rows, so the wait follows the turn's rows, not the pane. A turn that stops writing
+// ledger rows for the stall bound has been dropped by the gateway; the wait ends and the
+// caller judges the turn unresolved. status, when non-nil, reports progress as the wait runs.
+func (h *Herdr) readHermesInflightTurn(ctx context.Context, target string, launchArgs []string, prompt string, since time.Time, status func(string)) (hermesLedgerTurn, error) {
 	path, err := h.hermesLedgerFile(launchArgs)
 	if err != nil {
 		return hermesLedgerTurn{}, err
@@ -445,9 +463,21 @@ func (h *Herdr) readHermesInflightTurn(ctx context.Context, launchArgs []string,
 	if budget == 0 {
 		budget = defaultHermesInflightBudget
 	}
+	stall := h.hermesStallBound
+	if stall == 0 {
+		stall = defaultHermesStallBound
+	}
+	every := h.hermesWaitStatusEvery
+	if every == 0 {
+		every = defaultHermesWaitStatusEvery
+	}
 	poll := hermesLedgerPoll
 	deliverBy := time.Now().Add(deliveryWait)
 	var endBy time.Time
+	var progressSession string
+	var progressRow int64
+	progressedAt := time.Now()
+	nextStatus := time.Now().Add(every)
 	for {
 		turn, err := readHermesTurn(ctx, path, prompt, since)
 		if err != nil || turn.ended() {
@@ -457,8 +487,21 @@ func (h *Herdr) readHermesInflightTurn(ctx context.Context, launchArgs []string,
 		if turn.Delivered && endBy.IsZero() {
 			endBy = now.Add(budget)
 		}
+		if turn.Delivered {
+			if turn.SessionID != progressSession || turn.LastRowID != progressRow {
+				progressSession, progressRow = turn.SessionID, turn.LastRowID
+				progressedAt = now
+			} else if now.Sub(progressedAt) >= stall {
+				// No new row for this turn inside the bound: the gateway dropped it.
+				return turn, nil
+			}
+		}
 		if (!turn.Delivered && !now.Before(deliverBy)) || (turn.Delivered && !now.Before(endBy)) {
 			return turn, nil
+		}
+		if status != nil && !now.Before(nextStatus) {
+			status(fmt.Sprintf("Herdr: hermes turn for %s still running in the ledger (%s)", target, now.Sub(progressedAt).Truncate(time.Second)))
+			nextStatus = now.Add(every)
 		}
 		select {
 		case <-ctx.Done():
@@ -525,6 +568,32 @@ func hermesDropPromptPreview(text string) string {
 	return strings.Join(kept, "\n")
 }
 
+// hermesScreenHoldsThisTurn reports whether the screen holds this turn's own prompt preview —
+// the "● <prompt>" line Hermes prints after a submitted message's opening 40-wide rule — above
+// a reply box. A warm pane keeps earlier turns' boxes, and herdr can go idle before this turn's
+// rule is drawn; without this turn's preview above a box, no box on screen is this turn's reply.
+func hermesScreenHoldsThisTurn(screen, prompt string) bool {
+	needle := hermesLedgerText(prompt)
+	if needle == "" {
+		return false
+	}
+	for _, loc := range hermesTurnRule.FindAllStringIndex(screen, -1) {
+		rest := strings.TrimLeft(screen[loc[1]:], "\r\n")
+		line := rest
+		if nl := strings.IndexByte(rest, '\n'); nl >= 0 {
+			line = rest[:nl]
+		}
+		preview := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "● "))
+		if preview == "" || !strings.HasPrefix(needle, hermesLedgerText(preview)) {
+			continue
+		}
+		if boxes := hermesBoxPattern.FindAllStringIndex(rest, -1); len(boxes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // hermesVerdict is what Werkrby learned about a finished Hermes turn.
 type hermesVerdict struct {
 	// delivered: the ledger holds this turn's user row, or the screen shows a Hermes reply.
@@ -550,26 +619,37 @@ func (h *Herdr) readWorkerScreen(target string) string {
 // failed-turn row, or a turn that wrote rows but no answer, is a turn error. Otherwise the screen
 // decides: a newest turn ending in the error panel is a turn error, and a reply box or panel on
 // screen is evidence the prompt landed.
-func (h *Herdr) judgeHermesTurn(ctx context.Context, target string, launchArgs []string, prompt string, since time.Time) hermesVerdict {
-	turn, err := h.readHermesLedger(ctx, launchArgs, prompt, since)
-	if err == nil && !turn.ended() && !turn.SawAssistant {
-		// Herdr called the turn finished, but the ledger holds no row of it past the prompt (or
-		// not even the prompt): the turn has not run yet. Wait on the ledger, never the screen.
-		turn, err = h.readHermesInflightTurn(ctx, launchArgs, prompt, since)
-		if ctx.Err() != nil {
-			return hermesVerdict{err: ctx.Err()}
-		}
-		if err != nil {
-			// The ledger was readable when the wait began; the screen is no fallback now.
-			return hermesVerdict{ledger: true, delivered: turn.Delivered, err: hermesTurnFailed("hermes ledger read failed mid-turn: " + err.Error())}
-		}
-		if !turn.Delivered {
-			// Never delivered: an error panel the newest turn drew is the cause; otherwise the
-			// caller's new-pane re-send may still run. Nothing on the screen is this turn's reply.
-			if detail, ok := hermesScreenTurnError(h.readWorkerScreen(target)); ok {
-				return hermesVerdict{ledger: true, delivered: true, err: hermesTurnFailed(detail)}
+//
+// The ledger is trusted only for a worker herdr launched itself: the launch arguments name the
+// profile, and herdr always launches Hermes with one. Without them (a direct pane address, or a
+// roster entry that no longer expands) no ledger is trusted — the root state.db belongs to
+// whichever profile is active, never proof of this turn — and the screen decides under the
+// cleaning guards. status, when non-nil, reports progress while the judge waits on the ledger.
+func (h *Herdr) judgeHermesTurn(ctx context.Context, target string, launchArgs []string, prompt string, since time.Time, status func(string)) hermesVerdict {
+	var turn hermesLedgerTurn
+	var err error
+	if len(launchArgs) > 0 {
+		turn, err = h.readHermesLedger(ctx, launchArgs, prompt, since)
+		if err == nil && !turn.ended() {
+			// Herdr called the turn finished, but the ledger holds no ending for it (not even
+			// the prompt): the turn has not run yet, or it is still running between rows. Wait
+			// on the ledger, never the screen.
+			turn, err = h.readHermesInflightTurn(ctx, target, launchArgs, prompt, since, status)
+			if ctx.Err() != nil {
+				return hermesVerdict{err: ctx.Err()}
 			}
-			return hermesVerdict{ledger: true}
+			if err != nil {
+				// The ledger was readable when the wait began; the screen is no fallback now.
+				return hermesVerdict{ledger: true, delivered: turn.Delivered, err: hermesTurnFailed("hermes ledger read failed mid-turn: " + err.Error())}
+			}
+			if !turn.Delivered {
+				// Never delivered: an error panel the newest turn drew is the cause; otherwise the
+				// caller's new-pane re-send may still run. Nothing on the screen is this turn's reply.
+				if detail, ok := hermesScreenTurnError(h.readWorkerScreen(target)); ok {
+					return hermesVerdict{ledger: true, delivered: true, err: hermesTurnFailed(detail)}
+				}
+				return hermesVerdict{ledger: true}
+			}
 		}
 	}
 	if err == nil && turn.Delivered {

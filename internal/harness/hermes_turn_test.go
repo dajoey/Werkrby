@@ -345,7 +345,7 @@ func TestJudgeHermesTurnSurfacesAFailedTurnRowThatLandsPastTheSettle(t *testing.
 	h.hermesFailureGrace = 1500 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	v := h.judgeHermesTurn(ctx, "w1:p1", []string{"-p", "wk-code"}, prompt, since)
+	v := h.judgeHermesTurn(ctx, "w1:p1", []string{"-p", "wk-code"}, prompt, since, nil)
 
 	if !v.delivered || v.final != "" {
 		t.Fatalf("verdict = %+v, want delivered with no final", v)
@@ -384,9 +384,12 @@ func TestJudgeHermesTurnWithoutAnyEndingRowStaysTheGenericVerdict(t *testing.T) 
 	}
 	h.hermesLedgerSettle = 100 * time.Millisecond
 	h.hermesFailureGrace = 200 * time.Millisecond
+	// The judge follows the turn's rows now, so the generic verdict arrives when the rows stop
+	// (the stall bound) instead of at the grace; the verdict itself is unchanged.
+	h.hermesStallBound = 300 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	v := h.judgeHermesTurn(ctx, "w1:p1", []string{"-p", "wk-code"}, prompt, since)
+	v := h.judgeHermesTurn(ctx, "w1:p1", []string{"-p", "wk-code"}, prompt, since, nil)
 
 	if !v.delivered || v.final != "" || v.err == nil {
 		t.Fatalf("verdict = %+v, want delivered with the generic turn error", v)
