@@ -96,3 +96,41 @@ func TestFiniteAmbiguousLiveness_L1(t *testing.T) {
 		assertEngineInvariants(t, engine.store, task.ID)
 	})
 }
+
+func TestFiniteRecoveryResultPublicationRace(t *testing.T) {
+	engine := newEngineFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{"1": {Result: ResultDone, Block: true}}})
+	task := intakeTestTask(t, engine.store, "result-publication-race", false)
+	if err := engine.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	run, err := engine.store.GetRun(context.Background(), 1)
+	if err != nil || run.ProcessToken == "" {
+		t.Fatalf("result-race setup did not launch: %+v, %v", run, err)
+	}
+	waitEngineInvocationCount(t, engine, 1)
+	engine.opts.hooks.inspectRun = func(ctx context.Context, runID int64, token string) (RunProcesses, error) {
+		if err := os.WriteFile(run.RunDir+"/release", []byte("publish"), 0o600); err != nil {
+			return RunProcesses{Liveness: LivenessUnknown}, err
+		}
+		for {
+			observation, err := InspectRun(ctx, runID, token)
+			if err != nil || observation.Liveness == LivenessAbsent {
+				return observation, err
+			}
+			select {
+			case <-ctx.Done():
+				return RunProcesses{Liveness: LivenessUnknown}, ctx.Err()
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}
+	if err := engine.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := engine.store.GetTask(context.Background(), task.ID)
+	settled, _ := engine.store.GetRun(context.Background(), run.ID)
+	if current.State != StateDone || settled.Outcome != RunOK || settled.Error != "" {
+		t.Fatalf("result published during absence scan was lost: task=%+v run=%+v", current, settled)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}

@@ -161,11 +161,11 @@ func TestFiniteWaitWallReviewTransitions_P1_P3_P4(t *testing.T) {
 			t.Fatalf("review setup did not dispatch: %+v", runs)
 		}
 		scanEngineUntil(t, engine, task.ID, StateDone, 4)
+		runs, _ := engine.store.ListRuns(context.Background(), task.ID)
 		accounting, err := engine.store.DerivedAccounting(context.Background(), task.ID, PhaseReview)
 		if err != nil || accounting.Attempts != 2 || accounting.ReviewCycles != 1 {
-			t.Fatalf("derived review accounting = %+v, %v", accounting, err)
+			t.Fatalf("derived review accounting = %+v, %v; runs=%+v", accounting, err, runs)
 		}
-		runs, _ := engine.store.ListRuns(context.Background(), task.ID)
 		late := validTestResult(runs[0], ResultFailed)
 		writeEngineRunResult(t, runs[0], *late)
 		beforeEvents := countRows(t, engine.store, `SELECT COUNT(*) FROM task_events`)

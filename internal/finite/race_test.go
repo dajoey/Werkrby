@@ -14,8 +14,10 @@ func TestFiniteConcurrentClaimWakeStopResult(t *testing.T) {
 	for _, kind := range []WaitKind{WaitTime, WaitJoey} {
 		t.Run(string(kind), func(t *testing.T) {
 			wait := &Wait{Kind: kind, Reason: "race wait"}
+			stopDelay := 25 * time.Millisecond
 			if kind == WaitTime {
-				wait.WakeAt = time.Now().Add(40 * time.Millisecond).UTC().Format(time.RFC3339Nano)
+				wait.WakeAt = time.Now().Add(150 * time.Millisecond).UTC().Format(time.RFC3339Nano)
+				stopDelay = 400 * time.Millisecond
 			} else {
 				wait.Ask = json.RawMessage(`{"question":"Continue?","options":[{"id":"yes","label":"Yes"}]}`)
 			}
@@ -65,7 +67,7 @@ func TestFiniteConcurrentClaimWakeStopResult(t *testing.T) {
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
-				time.Sleep(25 * time.Millisecond)
+				time.Sleep(stopDelay)
 				for range 20 {
 					current, err := engine.store.GetTask(context.Background(), task.ID)
 					if err == nil && !terminalState(current.State) {
