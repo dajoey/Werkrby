@@ -105,6 +105,10 @@ func (e *Engine) recoverRun(ctx context.Context, run Run) error {
 		return ErrProcessUnknown
 	}
 
+	// A fast worker may publish its result between the first result check and
+	// the absence scan. Re-read only after reliable absence so that a complete
+	// result cannot be misclassified as a missing result.
+	result, resultErr, resultPresent = readRecoveredResult(run)
 	execution, err := readRecoveredExecution(run)
 	if err != nil {
 		return err
