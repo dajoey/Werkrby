@@ -37,7 +37,9 @@ type DeliveryHTTPError struct {
 	StatusCode int
 }
 
-func (e *DeliveryHTTPError) Error() string { return fmt.Sprintf("finite: receiver returned HTTP %d", e.StatusCode) }
+func (e *DeliveryHTTPError) Error() string {
+	return fmt.Sprintf("finite: receiver returned HTTP %d", e.StatusCode)
+}
 
 // HTTPDeliveryTransport sends exact payload bytes to a durable receiver.
 type HTTPDeliveryTransport struct {

@@ -133,7 +133,7 @@ func newOutboxProcessFixture(t *testing.T, id string) *outboxProcessFixture {
 	store, entry := newOutboxTestEntry(t, id)
 	httpTransport := &http.Transport{DisableKeepAlives: true}
 	base := &HTTPDeliveryTransport{
-		Token: "outbox-process-token-outbox-process-token",
+		Token:  "outbox-process-token-outbox-process-token",
 		Client: &http.Client{Transport: httpTransport, Timeout: 2 * time.Second},
 	}
 	transport := &recordingDeliveryTransport{base: base}

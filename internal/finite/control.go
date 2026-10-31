@@ -37,7 +37,9 @@ type ControlError struct {
 	Message    string
 }
 
-func (e *ControlError) Error() string { return fmt.Sprintf("finite: owner returned %d: %s", e.StatusCode, e.Message) }
+func (e *ControlError) Error() string {
+	return fmt.Sprintf("finite: owner returned %d: %s", e.StatusCode, e.Message)
+}
 
 // ControlClient reaches the owner without opening the workflow database.
 type ControlClient struct {
