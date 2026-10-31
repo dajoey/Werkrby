@@ -102,6 +102,6 @@ func insertTaskEvent(ctx context.Context, tx txRunner, eventID, taskID string, r
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO task_events(
 		event_id,task_id,run_id,kind,from_state,to_state,task_version,payload_json,created_at
-	) VALUES(?,?,?,?,?,?,?,?,?)`, eventID, taskID, run, kind, nullString(string(from)), to, version, payload, created)
+	) VALUES(?,?,?,?,?,?,?,?,?)`, eventID, taskID, run, kind, nullString(string(from)), to, version, string(payload), created)
 	return err
 }

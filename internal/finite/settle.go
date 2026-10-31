@@ -107,7 +107,7 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		now := s.now().UTC()
 		if result != nil {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO run_results(run_id,task_id,phase,outcome,result_json) VALUES(?,?,?,?,?)`,
-				run.ID, task.ID, run.Phase, result.Outcome, resultJSON); err != nil {
+				run.ID, task.ID, run.Phase, result.Outcome, string(resultJSON)); err != nil {
 				return fmt.Errorf("finite: insert run result: %w", err)
 			}
 		}
@@ -330,7 +330,7 @@ func insertTerminalOutbox(ctx context.Context, tx txRunner, eventID, taskID stri
 	deliveryID := fmt.Sprintf("task:%s:v%d:default", taskID, version)
 	payload, _ := json.Marshal(map[string]any{"task_id": taskID, "run_id": runID, "state": state, "version": version})
 	_, err := tx.ExecContext(ctx, `INSERT INTO outbox(delivery_id,event_id,channel,kind,payload_json,created_at,available_at)
-		VALUES(?,?,?,?,?,?,?)`, deliveryID, eventID, "default", "task_terminal", payload, stamp(now), stamp(now))
+		VALUES(?,?,?,?,?,?,?)`, deliveryID, eventID, "default", "task_terminal", string(payload), stamp(now), stamp(now))
 	return err
 }
 
