@@ -2988,16 +2988,20 @@ func (m *Manager) isControlCancelled(leaseID string) bool {
 // dead or misbehaving runner. Only the harness control-plane error text is
 // matched, never the provider event stream, and quota refusals (429 plan
 // limits) deliberately do not match: those wait for reset on the same runner
-// without spending an attempt. A one-shot Hermes client that never reached its
-// gateway (unreachable, or draining before a restart) never started the turn, so
-// it is the same retry, not a recovery agent's job.
+// without spending an attempt. A one-shot Hermes client refused by its gateway
+// before connecting (draining before a restart, or inaccessible inside a restart
+// window; hermes_cli/gateway_client.py GatewayUnavailableError) sent no prompt,
+// so it is the same retry, not a recovery agent's job. "Gateway connection
+// failed" deliberately does not match: Hermes raises it for any socket error
+// while the turn runs, after the gateway may have accepted the prompt, and a
+// blind retry would run the same task twice.
 func transientProviderError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "please retry") || strings.Contains(msg, "overloaded") || strings.Contains(msg, "prompt_not_delivered") ||
-		strings.Contains(msg, "gateway connection failed") || strings.Contains(msg, "gateway draining: not_ready") || strings.Contains(msg, "gateway inaccessible")
+		strings.Contains(msg, "gateway draining: not_ready") || strings.Contains(msg, "gateway inaccessible")
 }
 
 // restoreLeaseForRetry returns a lease parked by a refused attempt's terminal

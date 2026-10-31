@@ -963,11 +963,14 @@ func TestTransientProviderErrorRetriesInPlace(t *testing.T) {
 		"transient then success": {errs: []error{transient}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
 		// An undelivered prompt is retried once in place on the same worker
 		"prompt_not_delivered then success": {errs: []error{errors.New("prompt_not_delivered: worker sj-t-a1-test never received prompt, please retry")}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
-		// A one-shot Hermes client that never reached its gateway never started the turn
-		// (live 2026-10-31T05:03:45Z, two reviews in a 7-dispatch burst): retried once in
-		// place, not handed to a recovery agent.
-		"hermes gateway unreachable then success": {errs: []error{errors.New("runner turn failed: Command helper: applied 4 secrets\nError: Gateway connection failed; no local fallback")}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
-		"hermes gateway draining then success":    {errs: []error{errors.New("runner turn failed: Gateway draining: not_ready")}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
+		// A draining gateway refuses before any prompt is sent: retried once in place,
+		// not handed to a recovery agent.
+		"hermes gateway draining then success": {errs: []error{errors.New("runner turn failed: Gateway draining: not_ready")}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
+		// Hermes rewrites any socket error during the turn (a 30 s prompt.submit timeout in a
+		// dispatch burst, live 2026-10-31T05:03:45Z) to this text while the gateway may still
+		// run the turn: never retried blind in place.
+		"hermes gateway connection failed": {errs: []error{errors.New("runner turn failed: Command helper: applied 4 secrets\nError: Gateway connection failed; no local fallback")}, wantCalls: 1, wantState: "error", wantError: "Gateway connection failed"},
+		"hermes gateway disconnected":      {errs: []error{errors.New("runner turn failed: Gateway disconnected; turn outcome is unknown. Resume the printed session ID to see it.")}, wantCalls: 1, wantState: "error", wantError: "Gateway disconnected"},
 		// The dominant live shape of the same outage (2026-10-31T05:19:42Z, three
 		// dispatches in one gateway restart window, 50 occurrences in the observer
 		// log): the one-shot client's standard gateway-connect wrapper. The turn
