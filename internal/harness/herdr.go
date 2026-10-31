@@ -68,6 +68,12 @@ type Herdr struct {
 	// boundary row, or a late answer) after the settle expired; zero means
 	// defaultHermesFailureGrace, negative means no re-read.
 	hermesFailureGrace time.Duration
+	// hermesDeliveryWait bounds the wait for a prompt's user row after herdr reported the turn
+	// finished with the readable ledger still missing it (zero means defaultHermesDeliveryWait);
+	// hermesInflightBudget bounds the wait for that late turn's ending (zero means
+	// defaultHermesInflightBudget).
+	hermesDeliveryWait   time.Duration
+	hermesInflightBudget time.Duration
 	// hermesBlockedWait bounds how long a turn waits on a Hermes worker pane herdr reports blocked
 	// (zero means defaultHermesBlockedWait); hermesBlockedPoll is the re-read interval (zero means
 	// defaultHermesBlockedPoll).
@@ -1134,6 +1140,11 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 	}
 	h.rememberSession(key, threadID)
 
+	if finalText == "" && isHermes && hermes.ledger && promptErr == nil {
+		// The readable ledger judged this turn and holds no answer for it: the prompt never
+		// reached Hermes, so the screen holds only earlier turns. Never scrape a reply from it.
+		return threadID, false, hermesTurnFailed(HermesPromptNotInLedger)
+	}
 	if finalText == "" {
 		finalOut, _ := exec.Command(h.config.Command, "agent", "read", target, "--source", "recent-unwrapped", "--lines", "250").Output()
 		raw := strings.TrimSpace(string(finalOut))
@@ -1144,8 +1155,11 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 			return threadID, false, fmt.Errorf("provider spending limit reached: %s", raw)
 		}
 		finalText = cleanHerdrTerminalOutput(raw)
-		if finalText == "" {
-			finalText = raw
+		if finalText == "" && promptErr == nil {
+			// Cleaning strips chrome, prompt echoes and earlier turns; nothing left means the
+			// screen holds no reply. The raw pane is never a reply (2026-10-31: 250 lines of
+			// scrollback reached Joey's Telegram).
+			return threadID, false, fmt.Errorf("runner turn failed: the worker screen shows no reply for this turn")
 		}
 	}
 

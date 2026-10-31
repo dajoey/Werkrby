@@ -314,6 +314,8 @@ func runHermesTurnConfigured(t *testing.T, dir, script, configModel, key, model,
 	h.SetComposerWaitTimeout(20 * time.Millisecond)
 	h.hermesLedgerSettle = 600 * time.Millisecond
 	h.hermesFailureGrace = 600 * time.Millisecond
+	h.hermesDeliveryWait = 2 * time.Second
+	h.hermesInflightBudget = 5 * time.Second
 	var mu sync.Mutex
 	var events []core.Event
 	emit := func(e core.Event) {
