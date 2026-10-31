@@ -247,11 +247,7 @@ func ownerInvocationCount(t *testing.T, ownerCase engineOwnerCase) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	count := 0
-	for _, line := range stringsSplitNonempty(string(contents)) {
-		count++
-	}
-	return count
+	return len(stringsSplitNonempty(string(contents)))
 }
 
 func stringsSplitNonempty(value string) []string {
