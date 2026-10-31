@@ -313,6 +313,7 @@ func runHermesTurnConfigured(t *testing.T, dir, script, configModel, key, model,
 	h.SetIdleStability(3, 10*time.Millisecond)
 	h.SetComposerWaitTimeout(20 * time.Millisecond)
 	h.hermesLedgerSettle = 600 * time.Millisecond
+	h.hermesFailureGrace = 600 * time.Millisecond
 	var mu sync.Mutex
 	var events []core.Event
 	emit := func(e core.Event) {

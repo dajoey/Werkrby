@@ -67,6 +67,10 @@ type Lease struct {
 	// HermesBlockedCount is how many hermes_blocked errors this lease absorbed without spending
 	// RecoveryCount (recordHermesBlocked, at most hermesBlockedBudget).
 	HermesBlockedCount int `json:"hermes_blocked_count,omitempty"`
+	// UnresolvedTurnCount is how many generic no-final-reply verdicts this lease absorbed
+	// without spending RecoveryCount (recordHermesUnresolvedTurn, at most
+	// hermesUnresolvedTurnBudget).
+	UnresolvedTurnCount int `json:"unresolved_turn_count,omitempty"`
 	// ReviewRisk is the task's risk when Werkrby claimed it for review:
 	// reviewRiskHigh or reviewRiskRoutine. Empty means unknown (an older
 	// lease, or a review adopted without a claim) and never earns a credit.
@@ -3143,6 +3147,9 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 	if m.recordHermesBlocked(lease, err) {
 		return
 	}
+	if m.recordHermesUnresolvedTurn(lease, err) {
+		return
+	}
 	lease.LastError = err.Error()
 	lease.RecoveryCount++
 	lease.State = "error"
@@ -3193,6 +3200,11 @@ func (m *Manager) leaseRemovedByReconcile(lease Lease, err error) bool {
 // re-dispatch the document for ever.
 const hermesBlockedBudget = 6
 
+// hermesUnresolvedTurnBudget is how many generic no-final-reply verdicts one lease absorbs
+// without spending RecoveryCount. Past it the verdict counts like any other, so a turn-end
+// detection that never resolves cannot re-dispatch the document for ever.
+const hermesUnresolvedTurnBudget = 6
+
 // recordHermesBlocked handles a Hermes worker pane that stayed blocked on a prompt past the
 // harness's wait (harness.HermesBlockedCode). That is a harness condition the prompt watcher
 // clears, not a defect of the task: the lease is parked in error for another dispatch, the error
@@ -3229,6 +3241,51 @@ func (m *Manager) recordHermesBlocked(lease Lease, err error) bool {
 	msg := fmt.Sprintf("hermes blocked %s (%d of %d, not counted toward recovery): %v", lease.File, lease.HermesBlockedCount, hermesBlockedBudget, err)
 	if m.LogError != nil {
 		m.LogError("orchestrator", harness.HermesBlockedCode, msg)
+	} else {
+		m.log(msg)
+	}
+	return true
+}
+
+// recordHermesUnresolvedTurn handles the generic no-final-reply verdict judgeHermesTurn emits
+// (harness.HermesUnresolvedTurn) for a delivered turn that wrote rows but ended with neither an
+// answer row nor a failed-turn boundary row inside the settle and grace windows. The turn ran —
+// it often handed real work on — and the harness could not classify how it ended, so the verdict
+// is not evidence of a repeatedly failing task: the lease is parked in error for another
+// dispatch, the error is logged as hermes_unresolved_turn, and neither RecoveryCount nor the
+// consecutive-error fail-out is spent, up to hermesUnresolvedTurnBudget per lease. It reports
+// whether it handled the error.
+func (m *Manager) recordHermesUnresolvedTurn(lease Lease, err error) bool {
+	if err == nil || !strings.Contains(err.Error(), harness.HermesUnresolvedTurn) {
+		return false
+	}
+	current, loadErr := m.loadLease(lease.ID)
+	if os.IsNotExist(loadErr) {
+		// Reconcile removed the lease after the worker moved the document: handled, and never
+		// saved back (that would run the transition again).
+		return true
+	}
+	if loadErr == nil {
+		lease = current
+	}
+	if lease.UnresolvedTurnCount >= hermesUnresolvedTurnBudget {
+		return false
+	}
+	now := time.Now().UTC()
+	lease.UnresolvedTurnCount++
+	lease.LastError = err.Error()
+	lease.State = "error"
+	lease.HeartbeatAt = now
+	if saveErr := m.saveLease(lease); saveErr != nil {
+		m.log("save unresolved-turn lease: " + saveErr.Error())
+	}
+	note := fmt.Sprintf("the worker turn ended without a final reply or a failure row (%d of %d allowed); Werkrby dispatches it again; attempt not spent", lease.UnresolvedTurnCount, hermesUnresolvedTurnBudget)
+	if progressErr := updateDocumentProgress(lease.File, now, note); progressErr != nil {
+		m.log("record unresolved-turn progress: " + progressErr.Error())
+	}
+	msg := fmt.Sprintf("unresolved hermes turn %s (%d of %d, not counted toward recovery): %v", lease.File, lease.UnresolvedTurnCount, hermesUnresolvedTurnBudget, err)
+	if m.LogError != nil {
+		m.LogError("orchestrator", "hermes_unresolved_turn", msg)
 	} else {
 		m.log(msg)
 	}

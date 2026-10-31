@@ -33,7 +33,18 @@ const (
 	// hermesCompactionPrefix opens the summary row context compression writes; it is never an answer.
 	hermesCompactionPrefix = "[CONTEXT COMPACTION"
 
+	// HermesUnresolvedTurn is the detail of the verdict judgeHermesTurn emits when a delivered
+	// turn wrote rows but ended with neither an answer row nor a failed-turn boundary row inside
+	// the settle and grace windows: the turn ran, the harness could not classify how it ended.
+	// The orchestrator keys its do-not-strike rule (recordHermesUnresolvedTurn) on this text.
+	HermesUnresolvedTurn = "hermes turn ended without a final reply"
+
 	defaultHermesLedgerSettle = 5 * time.Second
+	// defaultHermesFailureGrace bounds the re-read for a turn ending that lands after the settle
+	// window: under the 2026-10-30 provider storm the gateway persisted the failed_turn row
+	// 10.4s after the turn's last row, past the settle, and the judge's generic verdict then hid
+	// a quota wall from the orchestrator's classifier. Only turns that already stalled pay it.
+	defaultHermesFailureGrace = 10 * time.Second
 	hermesLedgerPoll          = 250 * time.Millisecond
 	hermesCompressionHops     = 8
 )
@@ -344,31 +355,17 @@ func readHermesTurn(ctx context.Context, path, prompt string, since time.Time) (
 	return turn, rows.Err()
 }
 
-// readHermesLedger resolves the launch profile's ledger and reads the turn. A delivered turn
-// that has not yet written its answer or failure row is re-read for a short settle window: the
-// gateway persists the rows before the pane returns to its composer, so this only covers a
-// slow flush.
-func (h *Herdr) readHermesLedger(ctx context.Context, launchArgs []string, prompt string, since time.Time) (hermesLedgerTurn, error) {
-	home, err := hermesHomeDir(h.hermesHome)
-	if err != nil {
-		return hermesLedgerTurn{}, err
-	}
-	path, err := hermesLedgerPath(home, launchArgs)
-	if err != nil {
-		return hermesLedgerTurn{}, err
-	}
-	settle := h.hermesLedgerSettle
-	if settle == 0 {
-		settle = defaultHermesLedgerSettle
-	}
+// pollHermesTurn re-reads the turn at path until it ends, is not worth waiting for (an error,
+// or never delivered), or budget runs out; budget <= 0 reads once.
+func pollHermesTurn(ctx context.Context, path, prompt string, since time.Time, budget time.Duration) (hermesLedgerTurn, error) {
 	poll := hermesLedgerPoll
-	if settle > 0 && settle < poll {
-		poll = settle
+	if budget > 0 && budget < poll {
+		poll = budget
 	}
-	deadline := time.Now().Add(settle)
+	deadline := time.Now().Add(budget)
 	for {
 		turn, err := readHermesTurn(ctx, path, prompt, since)
-		if err != nil || !turn.Delivered || turn.ended() || settle <= 0 || !time.Now().Before(deadline) {
+		if err != nil || !turn.Delivered || turn.ended() || budget <= 0 || !time.Now().Before(deadline) {
 			return turn, err
 		}
 		select {
@@ -377,6 +374,47 @@ func (h *Herdr) readHermesLedger(ctx context.Context, launchArgs []string, promp
 		case <-time.After(poll):
 		}
 	}
+}
+
+func (h *Herdr) hermesLedgerFile(launchArgs []string) (string, error) {
+	home, err := hermesHomeDir(h.hermesHome)
+	if err != nil {
+		return "", err
+	}
+	return hermesLedgerPath(home, launchArgs)
+}
+
+// readHermesLedger resolves the launch profile's ledger and reads the turn. A delivered turn
+// that has not yet written its answer or failure row is re-read for a short settle window: the
+// gateway persists the rows before the pane returns to its composer, so this only covers a
+// slow flush.
+func (h *Herdr) readHermesLedger(ctx context.Context, launchArgs []string, prompt string, since time.Time) (hermesLedgerTurn, error) {
+	path, err := h.hermesLedgerFile(launchArgs)
+	if err != nil {
+		return hermesLedgerTurn{}, err
+	}
+	settle := h.hermesLedgerSettle
+	if settle == 0 {
+		settle = defaultHermesLedgerSettle
+	}
+	return pollHermesTurn(ctx, path, prompt, since, settle)
+}
+
+// readHermesLateEnding re-reads a delivered turn for its ending after the settle window closed:
+// the gateway can persist the failed_turn boundary row (or a late answer) long after the pane
+// went quiet — 10.4s under the 2026-10-30 provider storm — and the generic verdict an expired
+// settle emits hides the row's real error from the orchestrator's quota classifier. Bounded;
+// the caller falls back to the generic verdict when it expires with no ending.
+func (h *Herdr) readHermesLateEnding(ctx context.Context, launchArgs []string, prompt string, since time.Time) (hermesLedgerTurn, error) {
+	path, err := h.hermesLedgerFile(launchArgs)
+	if err != nil {
+		return hermesLedgerTurn{}, err
+	}
+	grace := h.hermesFailureGrace
+	if grace == 0 {
+		grace = defaultHermesFailureGrace
+	}
+	return pollHermesTurn(ctx, path, prompt, since, grace)
 }
 
 // hermesNewestTurnTail is the screen text the newest turn drew after its last reply box: after
@@ -471,7 +509,21 @@ func (h *Herdr) judgeHermesTurn(ctx context.Context, target string, launchArgs [
 			if detail, ok := hermesScreenTurnError(h.readWorkerScreen(target)); ok {
 				v.err = hermesTurnFailed(detail)
 			} else if turn.SawAssistant {
-				v.err = hermesTurnFailed("hermes turn ended without a final reply")
+				// The ending row can land past the settle window (a provider storm
+				// persisted one 10.4s after the turn's last row): one bounded re-read
+				// before the generic verdict. A landed failure carries the real error
+				// (quota stays quota); a landed answer is the reply.
+				if late, err := h.readHermesLateEnding(ctx, launchArgs, prompt, since); err == nil {
+					switch {
+					case late.Final != "":
+						v.final = late.Final
+					case late.Failure != "":
+						v.err = hermesTurnFailed(late.Failure)
+					}
+				}
+				if v.final == "" && v.err == nil {
+					v.err = hermesTurnFailed(HermesUnresolvedTurn)
+				}
 			}
 		}
 		return v

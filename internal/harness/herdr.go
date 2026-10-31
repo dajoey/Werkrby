@@ -64,6 +64,10 @@ type Herdr struct {
 	// hermesLedgerSettle bounds the re-reads of a delivered Hermes turn whose answer row has not
 	// landed yet; zero means defaultHermesLedgerSettle, negative means no re-read.
 	hermesLedgerSettle time.Duration
+	// hermesFailureGrace bounds the one re-read for a delivered turn's ending (a failed-turn
+	// boundary row, or a late answer) after the settle expired; zero means
+	// defaultHermesFailureGrace, negative means no re-read.
+	hermesFailureGrace time.Duration
 	// hermesBlockedWait bounds how long a turn waits on a Hermes worker pane herdr reports blocked
 	// (zero means defaultHermesBlockedWait); hermesBlockedPoll is the re-read interval (zero means
 	// defaultHermesBlockedPoll).

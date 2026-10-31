@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -296,5 +297,101 @@ func TestCleanHerdrTerminalOutputHermesDropsPromptPreviewFromBoxlessTurn(t *test
 	got := cleanHerdrTerminalOutput(screen)
 	if strings.Contains(got, "And the dentist?") || !strings.Contains(got, "Agent init failed") {
 		t.Fatalf("cleanHerdrTerminalOutput = %q, want the turn's own output without the prompt preview", got)
+	}
+}
+
+// The failed-turn boundary row can land long after the pane went quiet: under the 2026-10-30
+// Z.ai quota storm the gateway persisted session local-f2e810d67b…'s row 10.4s after the turn's
+// last tool row, past the settle window, so judgeHermesTurn fell through to the generic
+// "no final reply" verdict, isQuotaError could not classify it, and three such strikes moved a
+// healthy task to failed/. One bounded re-read surfaces the row's real error.
+func TestJudgeHermesTurnSurfacesAFailedTurnRowThatLandsPastTheSettle(t *testing.T) {
+	dir := t.TempDir()
+	hermesHome := filepath.Join(dir, "hermes-home")
+	t.Setenv("HERMES_HOME", hermesHome)
+	ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
+	ledger.session("local-late", "", "", time.Now())
+	prompt := hermesTestTaskPrompt("tasks-20261031-late-boundary-01")
+	since := time.Now()
+	ledger.add("local-late",
+		hermesTestRow{role: "user", content: prompt},
+		hermesTestRow{role: "assistant", content: "Let me read the task first.", toolCalls: `[{"id": "call_1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]`, finishReason: "tool_calls"},
+		hermesTestRow{role: "tool", content: "{}"},
+	)
+	script := hermesFakeHerdr(t, dir)
+	// The screen holds only the turn's interim box: it cannot classify the turn, the ledger must.
+	writeHermesScreen(t, dir, hermesTestTurn("You are running from the Werkrby orchestrator system.", hermesTestBox("Let me read the task first."))+hermesTestChrome)
+	var late sync.WaitGroup
+	t.Cleanup(late.Wait)
+	late.Add(1)
+	go func() {
+		defer late.Done()
+		time.Sleep(500 * time.Millisecond) // the settle window (150ms) has closed; the grace has not
+		// Real boundary-row bytes: messages row 54170 of session local-f2e810d67b… in
+		// ~/.hermes/profiles/wk-code/state.db, persisted 22:34:36.597Z, 10.4s after the
+		// turn's last tool row.
+		ledger.add("local-late", hermesTestRow{role: "assistant",
+			content:         "This turn did not complete. Some actions may already have run; verify their effects before resending.",
+			displayKind:     "failed_turn",
+			displayMetadata: `{"error": "HTTP 429: Rate limit reached for requests", "error_surface": {"layer": "provider", "code": "rate_limit", "retryable": true, "provider": "zai", "model": "glm-5.3-flash", "provider_label": "Z.AI / GLM"}}`,
+		})
+	}()
+
+	h, err := NewHerdr(HarnessConfig{Name: "herdr", Command: script, Cwd: dir, Model: "hermes", SessionsFile: filepath.Join(dir, "sessions.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.hermesLedgerSettle = 150 * time.Millisecond
+	h.hermesFailureGrace = 1500 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	v := h.judgeHermesTurn(ctx, "w1:p1", []string{"-p", "wk-code"}, prompt, since)
+
+	if !v.delivered || v.final != "" {
+		t.Fatalf("verdict = %+v, want delivered with no final", v)
+	}
+	if v.err == nil {
+		t.Fatal("no error: the late failed-turn row was never surfaced")
+	}
+	for _, want := range []string{"runner turn failed", "HTTP 429: Rate limit reached for requests", "[rate_limit]"} {
+		if !strings.Contains(v.err.Error(), want) {
+			t.Fatalf("verdict error %q does not carry %q (the orchestrator must see the quota wall)", v.err, want)
+		}
+	}
+}
+
+// Nothing lands inside the grace either: the verdict stays the generic unresolved-turn error,
+// which the orchestrator does not count toward the terminal fail-out.
+func TestJudgeHermesTurnWithoutAnyEndingRowStaysTheGenericVerdict(t *testing.T) {
+	dir := t.TempDir()
+	hermesHome := filepath.Join(dir, "hermes-home")
+	t.Setenv("HERMES_HOME", hermesHome)
+	ledger := newHermesTestLedger(t, hermesWorkerLedger(hermesHome))
+	ledger.session("local-silent", "", "", time.Now())
+	prompt := hermesTestTaskPrompt("tasks-20261031-silent-01")
+	since := time.Now()
+	ledger.add("local-silent",
+		hermesTestRow{role: "user", content: prompt},
+		hermesTestRow{role: "assistant", content: "Let me read the task first.", toolCalls: `[{"id": "call_1", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}]`, finishReason: "tool_calls"},
+		hermesTestRow{role: "tool", content: "{}"},
+	)
+	script := hermesFakeHerdr(t, dir)
+	writeHermesScreen(t, dir, hermesTestTurn("You are running from the Werkrby orchestrator system.", hermesTestBox("Let me read the task first."))+hermesTestChrome)
+
+	h, err := NewHerdr(HarnessConfig{Name: "herdr", Command: script, Cwd: dir, Model: "hermes", SessionsFile: filepath.Join(dir, "sessions.json")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.hermesLedgerSettle = 100 * time.Millisecond
+	h.hermesFailureGrace = 200 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	v := h.judgeHermesTurn(ctx, "w1:p1", []string{"-p", "wk-code"}, prompt, since)
+
+	if !v.delivered || v.final != "" || v.err == nil {
+		t.Fatalf("verdict = %+v, want delivered with the generic turn error", v)
+	}
+	if !strings.Contains(v.err.Error(), "runner turn failed") || !strings.Contains(v.err.Error(), HermesUnresolvedTurn) {
+		t.Fatalf("verdict error %q, want the generic unresolved-turn verdict", v.err)
 	}
 }
