@@ -9,6 +9,27 @@ import (
 	"time"
 )
 
+// SettlementFailpoint identifies one statement boundary in SettleRun.
+type SettlementFailpoint string
+
+const (
+	SettlementAfterRunResultsInsert     SettlementFailpoint = "after_run_results_insert"
+	SettlementAfterRunUpdate            SettlementFailpoint = "after_run_update"
+	SettlementAfterUsageInsert          SettlementFailpoint = "after_usage_insert"
+	SettlementAfterTaskUpdate           SettlementFailpoint = "after_task_update"
+	SettlementAfterSettlementEventInsert SettlementFailpoint = "after_settlement_event_insert"
+	SettlementAfterOutboxInsert         SettlementFailpoint = "after_outbox_insert"
+	SettlementBeforeCommit              SettlementFailpoint = "before_commit"
+	SettlementAfterCommit               SettlementFailpoint = "after_commit"
+)
+
+// registerSettlementFailpoint is package-private so only same-package tests can arm it.
+func registerSettlementFailpoint(point SettlementFailpoint, hook func() error) func() {
+	return func() {}
+}
+
+func runSettlementFailpoint(point SettlementFailpoint) error { return nil }
+
 // SettleRun applies one terminal settlement and replays it idempotently.
 func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, error) {
 	fingerprint, err := settlementFingerprint(req)
