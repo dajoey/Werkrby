@@ -124,7 +124,7 @@ func decodeJoeyAsk(data []byte) (JoeyAsk, error) {
 	decoder.DisallowUnknownFields()
 	var ask JoeyAsk
 	if err := decoder.Decode(&ask); err != nil {
-		return JoeyAsk{}, invalidResult("invalid Joey ask: "+err.Error())
+		return JoeyAsk{}, invalidResult("invalid Joey ask: " + err.Error())
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {

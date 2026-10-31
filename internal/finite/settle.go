@@ -182,13 +182,13 @@ func settlementFingerprint(req SettlementRequest) (string, error) {
 		usage = encoded
 	}
 	value := struct {
-		Outcome     RunOutcome      `json:"outcome"`
-		ExitCode    *int            `json:"exit_code"`
-		Result      json.RawMessage `json:"result"`
-		Invalid     bool            `json:"invalid"`
-		Usage       json.RawMessage `json:"usage"`
-		WallWakeAt  *time.Time      `json:"wall_wake_at"`
-		Error       string          `json:"error"`
+		Outcome    RunOutcome      `json:"outcome"`
+		ExitCode   *int            `json:"exit_code"`
+		Result     json.RawMessage `json:"result"`
+		Invalid    bool            `json:"invalid"`
+		Usage      json.RawMessage `json:"usage"`
+		WallWakeAt *time.Time      `json:"wall_wake_at"`
+		Error      string          `json:"error"`
 	}{req.ExecutionOutcome, req.ExitCode, result, req.ResultError != nil, usage, req.WallWakeAt, req.Error}
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -322,7 +322,9 @@ func applySettlementWait(task *Task, run Run, outcome RunOutcome, result *Result
 	}
 }
 
-func terminalState(state State) bool { return state == StateDone || state == StateFailed || state == StateCancelled }
+func terminalState(state State) bool {
+	return state == StateDone || state == StateFailed || state == StateCancelled
+}
 
 func insertTerminalOutbox(ctx context.Context, tx txRunner, eventID, taskID string, runID int64, state State, version int64, now time.Time) error {
 	deliveryID := fmt.Sprintf("task:%s:v%d:default", taskID, version)

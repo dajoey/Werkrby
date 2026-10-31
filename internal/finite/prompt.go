@@ -15,10 +15,10 @@ const typedResultContract = `TYPED RESULT
 Write at most 256 KiB of JSON with schema_version=1 and the exact task_id, run_id, and phase from FINITE TURN. Unknown fields are invalid. Implementation outcomes: done, review, todo, wait, failed. Review outcomes: accepted, rejected, wait, failed. Include bounded progress and evidence in summary; put large evidence under artifacts/. A wait includes a typed time or joey wait object.`
 
 var promptPacks = map[string]string{
-	"code":          "PACK: code\nMake the smallest maintainable code change and run focused failing-first verification.",
-	"docs":          "PACK: docs\nVerify claims against the source and keep documentation concise and current.",
+	"code":           "PACK: code\nMake the smallest maintainable code change and run focused failing-first verification.",
+	"docs":           "PACK: docs\nVerify claims against the source and keep documentation concise and current.",
 	"infrastructure": "PACK: infrastructure\nPrefer reversible changes, explicit fences, and evidence of live behavior.",
-	"testing":       "PACK: testing\nExercise real boundaries with deterministic temporary state and report exact evidence.",
+	"testing":        "PACK: testing\nExercise real boundaries with deterministic temporary state and report exact evidence.",
 }
 
 // BuildPrompt renders a full static bundle or a dynamic-only resume delta.

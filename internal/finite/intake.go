@@ -128,7 +128,7 @@ func (s *Store) IntakeBrief(ctx context.Context, sourcePath string) (task Task, 
 		MaxFailures: brief.MaxFailures, MaxReviewCycles: brief.MaxReviewCycles,
 		BriefPath: briefPath, BriefSHA256: hash,
 		ProjectionPath: filepath.Join(s.cfg.ProjectionDir(), brief.ID+".md"),
-		Version: 0, CreatedAt: now, UpdatedAt: now,
+		Version:        0, CreatedAt: now, UpdatedAt: now,
 	}
 	err = s.withImmediateTx(ctx, func(tx txRunner) error {
 		_, insertErr := tx.ExecContext(ctx, `INSERT INTO tasks(
