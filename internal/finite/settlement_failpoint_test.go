@@ -92,8 +92,8 @@ func TestFiniteSettlementFailpointsAtomicityAndReplay(t *testing.T) {
 func assertSettlementWriteCounts(t *testing.T, s *Store, runID int64, want int) {
 	t.Helper()
 	queries := map[string]string{
-		"results":   `SELECT COUNT(*) FROM run_results WHERE run_id=?`,
-		"usage":     `SELECT COUNT(*) FROM run_usage WHERE run_id=?`,
+		"results":     `SELECT COUNT(*) FROM run_results WHERE run_id=?`,
+		"usage":       `SELECT COUNT(*) FROM run_usage WHERE run_id=?`,
 		"settlements": `SELECT COUNT(*) FROM task_events WHERE run_id=? AND kind='settled'`,
 	}
 	for name, query := range queries {
