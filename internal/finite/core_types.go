@@ -72,14 +72,14 @@ type LaunchFunc func(ctx context.Context, run Run) error
 
 // SettlementRequest converges normal, invalid, failed, recovered, and stopped runs.
 type SettlementRequest struct {
-	RunID             int64
+	RunID               int64
 	ExpectedTaskVersion int64
-	ExecutionOutcome  RunOutcome
-	ExitCode          *int
-	Result            *Result
-	ResultError       error
-	Usage             *Usage
-	Error             string
+	ExecutionOutcome    RunOutcome
+	ExitCode            *int
+	Result              *Result
+	ResultError         error
+	Usage               *Usage
+	Error               string
 }
 
 // PromptRequest separates the static provider bundle from dynamic turn data.
@@ -125,14 +125,14 @@ type UsageAccumulator struct {
 
 // OutboxEntry is the durable delivery record produced by settlement.
 type OutboxEntry struct {
-	DeliveryID string
-	EventID    string
-	Channel    string
-	Kind       string
+	DeliveryID  string
+	EventID     string
+	Channel     string
+	Kind        string
 	PayloadJSON string
-	CreatedAt  time.Time
+	CreatedAt   time.Time
 	AvailableAt time.Time
-	SendCount  int
+	SendCount   int
 	DeliveredAt *time.Time
-	LastError  string
+	LastError   string
 }

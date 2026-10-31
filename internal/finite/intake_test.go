@@ -70,8 +70,8 @@ func TestFiniteIntakeStrictBriefAndIsolation(t *testing.T) {
 	t.Run("config_requires_distinct_disposable_root", func(t *testing.T) {
 		worker := t.TempDir()
 		for name, cfg := range map[string]Config{
-			"same":       {Root: worker, WorkerDir: worker},
-			"legacy":     {Root: filepath.Join(worker, ".werkrby"), WorkerDir: worker},
+			"same":        {Root: worker, WorkerDir: worker},
+			"legacy":      {Root: filepath.Join(worker, ".werkrby"), WorkerDir: worker},
 			"root_nested": {Root: filepath.Join(worker, "state"), WorkerDir: worker},
 		} {
 			t.Run(name, func(t *testing.T) {

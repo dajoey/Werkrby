@@ -1,8 +1,8 @@
 package finite
 
 const (
-	MaxResultBytes    = 256 * 1024
-	MaxProgressRunes  = 16000
+	MaxResultBytes   = 256 * 1024
+	MaxProgressRunes = 16000
 )
 
 // ReadResult reads and validates the result bound to run.

@@ -19,17 +19,17 @@ func TestFiniteResultValidationReplayAndAccounting_X1_X3(t *testing.T) {
 	}
 
 	invalid := map[string]string{
-		"malformed":       `{`,
-		"unknown_top":     `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"todo","progress":"x","front_matter":{"state":"done"}}`,
-		"unknown_nested":  `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"todo","progress":"x","summary":{"outcome":"x","evidence":"y","uncertainty":"z","status":"done"}}`,
-		"wrong_run":       `{"schema_version":1,"run_id":41,"task_id":"task-result","phase":"implementation","outcome":"todo","progress":"x"}`,
-		"wrong_task":      `{"schema_version":1,"run_id":42,"task_id":"other","phase":"implementation","outcome":"todo","progress":"x"}`,
-		"wrong_phase":     `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"review","outcome":"accepted","progress":"x"}`,
-		"phase_outcome":   `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"accepted","progress":"x"}`,
-		"schema_version":  `{"schema_version":2,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"todo","progress":"x"}`,
-		"missing_wait":    `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"wait","progress":"x"}`,
-		"unknown_ask":     `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"wait","progress":"x","wait":{"kind":"joey","reason":"Need answer","ask":{"question":"Continue?","options":[{"id":"yes","label":"Yes"}],"answer":"yes"}}}`,
-		"trailing_json":   valid + `{}`,
+		"malformed":         `{`,
+		"unknown_top":       `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"todo","progress":"x","front_matter":{"state":"done"}}`,
+		"unknown_nested":    `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"todo","progress":"x","summary":{"outcome":"x","evidence":"y","uncertainty":"z","status":"done"}}`,
+		"wrong_run":         `{"schema_version":1,"run_id":41,"task_id":"task-result","phase":"implementation","outcome":"todo","progress":"x"}`,
+		"wrong_task":        `{"schema_version":1,"run_id":42,"task_id":"other","phase":"implementation","outcome":"todo","progress":"x"}`,
+		"wrong_phase":       `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"review","outcome":"accepted","progress":"x"}`,
+		"phase_outcome":     `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"accepted","progress":"x"}`,
+		"schema_version":    `{"schema_version":2,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"todo","progress":"x"}`,
+		"missing_wait":      `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"wait","progress":"x"}`,
+		"unknown_ask":       `{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"wait","progress":"x","wait":{"kind":"joey","reason":"Need answer","ask":{"question":"Continue?","options":[{"id":"yes","label":"Yes"}],"answer":"yes"}}}`,
+		"trailing_json":     valid + `{}`,
 		"oversize_progress": fmt.Sprintf(`{"schema_version":1,"run_id":42,"task_id":"task-result","phase":"implementation","outcome":"todo","progress":%q}`, strings.Repeat("x", MaxProgressRunes+1)),
 	}
 	for name, data := range invalid {
