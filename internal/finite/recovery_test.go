@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,7 +22,7 @@ func TestFiniteAmbiguousLiveness_L1(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			engine := newEngineFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{"1": {Result: ResultDone, Block: true}}})
-			task := intakeTestTask(t, engine.store, "ambiguous-"+test.name, false)
+			task := intakeTestTask(t, engine.store, "ambiguous-"+strings.ReplaceAll(test.name, "_", "-"), false)
 			if err := engine.ScanOnce(context.Background()); err != nil {
 				t.Fatal(err)
 			}

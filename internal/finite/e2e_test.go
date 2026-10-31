@@ -26,7 +26,7 @@ func TestFiniteFakeProviderWorkflow(t *testing.T) {
 		"1": {Result: ResultDone},
 		"2": {Result: ResultAccepted},
 	}})
-	task := intakeTestTask(t, engine.store, "fake-workflow-世界", true)
+	task := intakeTestTask(t, engine.store, "fake-workflow", true)
 	if err := engine.ScanOnce(context.Background()); err != nil {
 		t.Fatalf("initial owner scan: %v", err)
 	}
