@@ -17,6 +17,18 @@ type Brief struct {
 	Body            string
 }
 
+// JoeyAsk is the closed human-question contract used by a Joey wait.
+type JoeyAsk struct {
+	Question string          `json:"question"`
+	Options  []JoeyAskOption `json:"options"`
+}
+
+// JoeyAskOption is one stable answer choice.
+type JoeyAskOption struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
 // Accounting is derived from execution records, never stored on a task.
 type Accounting struct {
 	Attempts     int
@@ -79,6 +91,7 @@ type SettlementRequest struct {
 	Result              *Result
 	ResultError         error
 	Usage               *Usage
+	WallWakeAt          *time.Time
 	Error               string
 }
 
