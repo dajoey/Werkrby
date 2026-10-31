@@ -4,6 +4,7 @@ package harness
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"os/exec"
 	"strconv"
@@ -28,7 +29,7 @@ func TestConfigureHeadlessProcessUnix(t *testing.T) {
 }
 
 func TestHeadlessProcessCancelKillsUnixProcessGroup(t *testing.T) {
-	cmd := exec.Command("sh", "-c", `sleep 30 & child=$!; printf '%s\n' "$child"; wait`)
+	cmd := exec.CommandContext(context.Background(), "sh", "-c", `sleep 30 & child=$!; printf '%s\n' "$child"; wait`)
 	configureHeadlessProcess(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
