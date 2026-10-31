@@ -134,6 +134,13 @@ func scanEngineUntil(t *testing.T, engine *Engine, taskID string, desired State,
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	runs, _ := engine.store.ListRuns(context.Background(), taskID)
+	for _, run := range runs {
+		result, _ := os.ReadFile(filepath.Join(run.RunDir, "result.json"))
+		completion, _ := os.ReadFile(filepath.Join(run.RunDir, "completion.json"))
+		log, _ := os.ReadFile(filepath.Join(run.RunDir, "supervisor.log"))
+		t.Logf("run=%+v result=%s completion=%s supervisor_log=%s", run, result, completion, log)
+	}
 	t.Fatalf("task did not reach %s with %d runs; last state %+v", desired, maxRuns, last)
 	return Task{}
 }
