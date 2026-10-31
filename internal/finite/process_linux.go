@@ -213,6 +213,13 @@ func readLinuxProcess(pid int, withFiles bool) (*linuxProcess, error) {
 			process.args = append(process.args, string(argument))
 		}
 	}
+	// PID 1 cannot be a process spawned by a finite run. Its protected
+	// environment is not run evidence, but its arguments remain available for
+	// the exact supervisor check above. Every eligible run process still fails
+	// closed on an environment read error.
+	if pid == 1 {
+		return process, nil
+	}
 	environ, err := readLinuxBounded(filepath.Join(root, "environ"), 4*1024*1024)
 	if err != nil {
 		return nil, linuxProcessReadError(err)
