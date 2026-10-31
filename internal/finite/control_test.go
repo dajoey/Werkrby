@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -207,11 +206,4 @@ func TestFiniteControlToken(t *testing.T) {
 	if strings.ContainsAny(first, " \t\r\n") {
 		t.Fatalf("control token contains whitespace")
 	}
-}
-
-func ExampleControlClient_Status() {
-	client := ControlClient{Endpoint: "http://127.0.0.1:8080", Token: "owner-provided-token"}
-	_, _ = client.Status(context.Background(), "example-task")
-	fmt.Println("status requested through the owner")
-	// Output: status requested through the owner
 }
