@@ -2,7 +2,6 @@ package finite
 
 import (
 	"context"
-	"os/exec"
 
 	"github.com/agent0ai/spynel/internal/harness"
 )
