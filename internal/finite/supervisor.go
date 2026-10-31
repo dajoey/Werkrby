@@ -47,21 +47,6 @@ type SupervisorHandle struct {
 	waitErr  error
 }
 
-type supervisorLaunch interface {
-	Started(*exec.Cmd) error
-	Close() error
-}
-
-type supervisorContainment interface {
-	Close() error
-}
-
-type supervisorBinding struct {
-	runID  int64
-	runDir string
-	token  string
-}
-
 type supervisorRequest struct {
 	SchemaVersion  int                   `json:"schema_version"`
 	RunID          int64                 `json:"run_id"`
@@ -337,45 +322,6 @@ func validateSupervisorSpec(spec *SupervisorSpec) error {
 		return fmt.Errorf("supervisor harness name is empty")
 	}
 	return nil
-}
-
-func parseSupervisorArgs(args []string) (supervisorBinding, error) {
-	if len(args) != 7 || args[0] != "supervise" {
-		return supervisorBinding{}, fmt.Errorf("supervisor protocol requires supervise --run-id <id> --run-dir <dir> --process-token <token>")
-	}
-	var binding supervisorBinding
-	var runIDText string
-	seen := map[string]bool{}
-	for index := 1; index < len(args); index += 2 {
-		name, value := args[index], args[index+1]
-		if seen[name] {
-			return supervisorBinding{}, fmt.Errorf("duplicate supervisor argument %s", name)
-		}
-		seen[name] = true
-		switch name {
-		case "--run-id":
-			runIDText = value
-		case "--run-dir":
-			binding.runDir = value
-		case "--process-token":
-			binding.token = value
-		default:
-			return supervisorBinding{}, fmt.Errorf("unknown supervisor argument %s", name)
-		}
-	}
-	runID, err := strconv.ParseInt(runIDText, 10, 64)
-	if err != nil {
-		return supervisorBinding{}, err
-	}
-	binding.runID = runID
-	if err := validateRunBinding(binding.runID, binding.token); err != nil {
-		return supervisorBinding{}, err
-	}
-	if binding.runDir == "" || !filepath.IsAbs(binding.runDir) {
-		return supervisorBinding{}, fmt.Errorf("supervisor run directory must be absolute")
-	}
-	binding.runDir = filepath.Clean(binding.runDir)
-	return binding, nil
 }
 
 func readSupervisorRequest(path string) (supervisorRequest, error) {

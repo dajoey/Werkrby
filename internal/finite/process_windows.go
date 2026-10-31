@@ -18,10 +18,7 @@ import (
 
 const processBoundarySupported = true
 
-const (
-	jobObjectTerminate = 0x0008
-	jobObjectQuery     = 0x0004
-)
+const jobObjectQuery = 0x0004
 
 var (
 	openJobObjectW     = windows.NewLazySystemDLL("kernel32.dll").NewProc("OpenJobObjectW")
@@ -154,7 +151,7 @@ func inspectRun(ctx context.Context, runID int64, token string) (RunProcesses, e
 	unknown := func(err error) (RunProcesses, error) {
 		return RunProcesses{Liveness: LivenessUnknown}, err
 	}
-	job, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery|jobObjectTerminate)
+	job, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery)
 	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
 		return RunProcesses{Liveness: LivenessAbsent}, nil
 	}
