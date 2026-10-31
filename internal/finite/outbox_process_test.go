@@ -139,7 +139,7 @@ func newOutboxProcessFixture(t *testing.T, id string) *outboxProcessFixture {
 	transport := &recordingDeliveryTransport{base: base}
 	processor := NewOutboxProcessor(store, transport)
 	processor.RetryDelay = 0
-	t.Cleanup(func() { _ = httpTransport.CloseIdleConnections() })
+	t.Cleanup(httpTransport.CloseIdleConnections)
 	return &outboxProcessFixture{
 		store: store, entry: entry, transport: transport, processor: processor,
 		root: t.TempDir(), token: base.Token,
