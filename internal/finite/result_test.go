@@ -126,11 +126,15 @@ func TestFiniteResultValidationReplayAndAccounting_X1_X3(t *testing.T) {
 
 	t.Run("cap_failure_is_terminal_and_uncharged_lost_is_not_attempt", func(t *testing.T) {
 		s := newTestStore(t)
-		task := intakeTestTask(t, s, "task-cap", false)
-		if _, err := s.db.Exec(`UPDATE tasks SET max_runs=1,max_failures=1 WHERE id=?`, task.ID); err != nil {
+		source := filepath.Join(t.TempDir(), "task-cap.md")
+		brief := []byte("---\nid: task-cap\ntitle: Cap task\nrisk: low\nreview_required: false\nmax_runs: 1\nmax_failures: 1\n---\n\nReach the cap exactly once.\n")
+		if err := os.WriteFile(source, brief, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		task.MaxRuns, task.MaxFailures = 1, 1
+		task, err := s.IntakeBrief(context.Background(), source)
+		if err != nil {
+			t.Fatal(err)
+		}
 		run := dispatchTestRun(t, s, task, PhaseImplementation)
 		settled, err := s.SettleRun(context.Background(), SettlementRequest{RunID: run.ID, ExpectedTaskVersion: task.Version + 1, ExecutionOutcome: RunTimeout})
 		if err != nil || settled.State != StateFailed {
