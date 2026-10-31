@@ -13,11 +13,10 @@ import (
 func TestFiniteConcurrentClaimWakeStopResult(t *testing.T) {
 	for _, kind := range []WaitKind{WaitTime, WaitJoey} {
 		t.Run(string(kind), func(t *testing.T) {
+			clock := newEngineTestClock()
 			wait := &Wait{Kind: kind, Reason: "race wait"}
-			stopDelay := 25 * time.Millisecond
 			if kind == WaitTime {
-				wait.WakeAt = time.Now().Add(150 * time.Millisecond).UTC().Format(time.RFC3339Nano)
-				stopDelay = 400 * time.Millisecond
+				wait.WakeAt = clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
 			} else {
 				wait.Ask = json.RawMessage(`{"question":"Continue?","options":[{"id":"yes","label":"Yes"}]}`)
 			}
@@ -25,6 +24,7 @@ func TestFiniteConcurrentClaimWakeStopResult(t *testing.T) {
 				"1": {Result: ResultWait, Wait: wait},
 				"2": {Result: ResultDone, Block: true},
 			}})
+			engine.store.now = clock.Now
 			task := intakeTestTask(t, engine.store, "race-"+string(kind), false)
 			if err := engine.ScanOnce(context.Background()); err != nil {
 				t.Fatal(err)
@@ -33,6 +33,9 @@ func TestFiniteConcurrentClaimWakeStopResult(t *testing.T) {
 				t.Fatalf("race setup did not commit exactly one claim: %+v", runs)
 			}
 			scanEngineUntil(t, engine, task.ID, StateWaiting, 1)
+			if kind == WaitTime {
+				clock.Advance(2 * time.Hour)
+			}
 
 			var workers sync.WaitGroup
 			for worker := 0; worker < 4; worker++ {
@@ -67,7 +70,17 @@ func TestFiniteConcurrentClaimWakeStopResult(t *testing.T) {
 			workers.Add(1)
 			go func() {
 				defer workers.Done()
-				time.Sleep(stopDelay)
+				for range 2000 {
+					runs, _ := engine.store.ListRuns(context.Background(), task.ID)
+					if len(runs) >= 2 && runs[1].StartedAt != nil {
+						break
+					}
+					current, err := engine.store.GetTask(context.Background(), task.ID)
+					if err != nil || terminalState(current.State) {
+						return
+					}
+					time.Sleep(5 * time.Millisecond)
+				}
 				for range 20 {
 					current, err := engine.store.GetTask(context.Background(), task.ID)
 					if err == nil && !terminalState(current.State) {

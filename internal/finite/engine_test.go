@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,27 @@ type engineFixtureBehavior struct {
 type engineFixturePlan struct {
 	Runs            map[string]engineFixtureBehavior `json:"runs"`
 	InvocationsPath string                           `json:"invocations_path"`
+}
+
+type engineTestClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newEngineTestClock() *engineTestClock {
+	return &engineTestClock{now: time.Now().UTC()}
+}
+
+func (c *engineTestClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *engineTestClock) Advance(duration time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(duration)
+	c.mu.Unlock()
 }
 
 func newEngineFixture(t *testing.T, plan engineFixturePlan) *Engine {

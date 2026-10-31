@@ -10,11 +10,13 @@ import (
 
 func TestFiniteWaitWallReviewTransitions_P1_P3_P4(t *testing.T) {
 	t.Run("P1/implementation_wall_wakes_without_charge", func(t *testing.T) {
-		wake := time.Now().Add(750 * time.Millisecond).UTC().Format(time.RFC3339Nano)
+		clock := newEngineTestClock()
+		wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
 		engine := newEngineFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
 			"1": {NoResult: true, Wall: true, WakeAt: wake},
 			"2": {Result: ResultDone},
 		}})
+		engine.store.now = clock.Now
 		task := intakeTestTask(t, engine.store, "wall-implementation", false)
 		if err := engine.ScanOnce(context.Background()); err != nil {
 			t.Fatal(err)
@@ -35,17 +37,20 @@ func TestFiniteWaitWallReviewTransitions_P1_P3_P4(t *testing.T) {
 		if got := engineInvocationCount(t, engine); got != 1 {
 			t.Fatalf("dispatch occurred before provider reset: %d invocations", got)
 		}
+		clock.Advance(2 * time.Hour)
 		scanEngineUntil(t, engine, task.ID, StateDone, 2)
 		assertEngineInvariants(t, engine.store, task.ID)
 	})
 
 	t.Run("P1/review_wall_resumes_review", func(t *testing.T) {
-		wake := time.Now().Add(500 * time.Millisecond).UTC().Format(time.RFC3339Nano)
+		clock := newEngineTestClock()
+		wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
 		engine := newEngineFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
 			"1": {Result: ResultDone},
 			"2": {NoResult: true, Wall: true, WakeAt: wake},
 			"3": {Result: ResultAccepted},
 		}})
+		engine.store.now = clock.Now
 		task := intakeTestTask(t, engine.store, "wall-review", true)
 		if err := engine.ScanOnce(context.Background()); err != nil {
 			t.Fatal(err)
@@ -57,6 +62,7 @@ func TestFiniteWaitWallReviewTransitions_P1_P3_P4(t *testing.T) {
 		if waiting.ResumeState != StateReview {
 			t.Fatalf("review wall resumed into %s", waiting.ResumeState)
 		}
+		clock.Advance(2 * time.Hour)
 		scanEngineUntil(t, engine, task.ID, StateDone, 3)
 		runs, _ := engine.store.ListRuns(context.Background(), task.ID)
 		if runs[1].Outcome != RunWall || runs[2].Phase != PhaseReview {
@@ -89,11 +95,13 @@ func TestFiniteWaitWallReviewTransitions_P1_P3_P4(t *testing.T) {
 	})
 
 	t.Run("P3/time_wait_has_one_wake_transition", func(t *testing.T) {
-		wake := time.Now().Add(300 * time.Millisecond).UTC().Format(time.RFC3339Nano)
+		clock := newEngineTestClock()
+		wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
 		engine := newEngineFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
 			"1": {Result: ResultWait, Wait: &Wait{Kind: WaitTime, WakeAt: wake, Reason: "test clock"}},
 			"2": {Result: ResultDone},
 		}})
+		engine.store.now = clock.Now
 		task := intakeTestTask(t, engine.store, "wait-time", false)
 		if err := engine.ScanOnce(context.Background()); err != nil {
 			t.Fatal(err)
@@ -105,6 +113,7 @@ func TestFiniteWaitWallReviewTransitions_P1_P3_P4(t *testing.T) {
 		if _, err := engine.store.WakeTime(context.Background(), task.ID, waiting.Version); !errors.Is(err, ErrStateConflict) {
 			t.Fatalf("early wake error = %v, want state conflict", err)
 		}
+		clock.Advance(2 * time.Hour)
 		scanEngineUntil(t, engine, task.ID, StateDone, 2)
 		if got := countRows(t, engine.store, `SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='woke'`, task.ID); got != 1 {
 			t.Fatalf("wake events = %d, want 1", got)

@@ -114,7 +114,7 @@ func (e *Engine) ScanOnce(ctx context.Context) error {
 	for index := range tasks {
 		task := tasks[index]
 		launchReason := ""
-		if task.State == StateWaiting && task.WaitKind == WaitTime && task.WakeAt != nil && !time.Now().UTC().Before(task.WakeAt.UTC()) {
+		if task.State == StateWaiting && task.WaitKind == WaitTime && task.WakeAt != nil && !e.store.now().UTC().Before(task.WakeAt.UTC()) {
 			updated, wakeErr := e.store.WakeTime(ctx, task.ID, task.Version)
 			if wakeErr != nil {
 				errs = append(errs, wakeErr)
