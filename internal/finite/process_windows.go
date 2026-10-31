@@ -261,7 +261,7 @@ func readWindowsCommandLine(pid int) ([]string, error) {
 	if commandLine.Length == 0 {
 		return nil, nil
 	}
-	if commandLine.Length > 128*1024 || commandLine.Length%2 != 0 || commandLine.Buffer == nil {
+	if commandLine.Length > 64*1024-2 || commandLine.Length%2 != 0 || commandLine.Buffer == nil {
 		return nil, fmt.Errorf("invalid Windows command-line length %d", commandLine.Length)
 	}
 	units := make([]uint16, int(commandLine.Length)/2)
