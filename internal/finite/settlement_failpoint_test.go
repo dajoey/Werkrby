@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -21,7 +22,7 @@ func TestFiniteSettlementFailpointsAtomicityAndReplay(t *testing.T) {
 	for _, point := range points {
 		t.Run(string(point), func(t *testing.T) {
 			s := newTestStore(t)
-			task := intakeTestTask(t, s, "settlement-"+string(point), false)
+			task := intakeTestTask(t, s, "settlement-"+strings.ReplaceAll(string(point), "_", "-"), false)
 			run := dispatchTestRun(t, s, task, PhaseImplementation)
 			fresh := int64(11)
 			usage := Usage{FreshInputTokens: &fresh, Source: "settlement-failpoint-test", CollectedAt: s.now()}
