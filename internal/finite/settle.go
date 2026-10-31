@@ -6,8 +6,58 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
+
+// SettlementFailpoint identifies one statement boundary in SettleRun.
+type SettlementFailpoint string
+
+const (
+	SettlementAfterRunResultsInsert      SettlementFailpoint = "after_run_results_insert"
+	SettlementAfterRunUpdate             SettlementFailpoint = "after_run_update"
+	SettlementAfterUsageInsert           SettlementFailpoint = "after_usage_insert"
+	SettlementAfterTaskUpdate            SettlementFailpoint = "after_task_update"
+	SettlementAfterSettlementEventInsert SettlementFailpoint = "after_settlement_event_insert"
+	SettlementAfterOutboxInsert          SettlementFailpoint = "after_outbox_insert"
+	SettlementBeforeCommit               SettlementFailpoint = "before_commit"
+	SettlementAfterCommit                SettlementFailpoint = "after_commit"
+)
+
+var settlementTestFailpoint struct {
+	sync.RWMutex
+	point SettlementFailpoint
+	hook  func() error
+}
+
+// registerSettlementFailpoint is package-private so only same-package tests can arm it.
+func registerSettlementFailpoint(point SettlementFailpoint, hook func() error) func() {
+	settlementTestFailpoint.Lock()
+	settlementTestFailpoint.point = point
+	settlementTestFailpoint.hook = hook
+	settlementTestFailpoint.Unlock()
+	return func() {
+		settlementTestFailpoint.Lock()
+		settlementTestFailpoint.point = ""
+		settlementTestFailpoint.hook = nil
+		settlementTestFailpoint.Unlock()
+	}
+}
+
+func runSettlementFailpoint(point SettlementFailpoint) error {
+	settlementTestFailpoint.RLock()
+	hook := settlementTestFailpoint.hook
+	if settlementTestFailpoint.point != point {
+		hook = nil
+	}
+	settlementTestFailpoint.RUnlock()
+	if hook != nil {
+		if err := hook(); err != nil {
+			return fmt.Errorf("finite: settlement failpoint %s: %w", point, err)
+		}
+	}
+	return nil
+}
 
 // SettleRun applies one terminal settlement and replays it idempotently.
 func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, error) {
@@ -110,6 +160,9 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 				run.ID, task.ID, run.Phase, result.Outcome, string(resultJSON)); err != nil {
 				return fmt.Errorf("finite: insert run result: %w", err)
 			}
+			if err := runSettlementFailpoint(SettlementAfterRunResultsInsert); err != nil {
+				return err
+			}
 		}
 		update, err := tx.ExecContext(ctx, `UPDATE runs SET ended_at=?,exit_code=?,outcome=?,error=? WHERE id=? AND ended_at IS NULL`,
 			stamp(now), req.ExitCode, outcome, nullString(runError), run.ID)
@@ -119,6 +172,9 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		if affected, _ := update.RowsAffected(); affected != 1 {
 			return fmt.Errorf("%w: run ended concurrently", ErrSettlementConflict)
 		}
+		if err := runSettlementFailpoint(SettlementAfterRunUpdate); err != nil {
+			return err
+		}
 		if req.Usage != nil {
 			usage := cloneUsage(*req.Usage)
 			if _, err := tx.ExecContext(ctx, `INSERT INTO run_usage(run_id,fresh_input_tokens,cache_read_tokens,cache_write_tokens,
@@ -126,6 +182,9 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 				run.ID, usage.FreshInputTokens, usage.CacheReadTokens, usage.CacheWriteTokens, usage.OutputTokens,
 				usage.ReasoningTokens, usage.APICalls, usage.ToolCalls, usage.Source, stamp(usage.CollectedAt)); err != nil {
 				return fmt.Errorf("finite: insert run usage: %w", err)
+			}
+			if err := runSettlementFailpoint(SettlementAfterUsageInsert); err != nil {
+				return err
 			}
 		}
 		accounting, err := derivedAccounting(ctx, tx, task.ID, run.Phase)
@@ -135,6 +194,9 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		next := settlementState(task, run, outcome, result, accounting)
 		newVersion := task.Version + 1
 		if err := updateSettlementTask(ctx, tx, task, next, newVersion, now, result, req.WallWakeAt, runError); err != nil {
+			return err
+		}
+		if err := runSettlementFailpoint(SettlementAfterTaskUpdate); err != nil {
 			return err
 		}
 		settled = task
@@ -151,14 +213,26 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 			next, newVersion, auditPayload, stamp(now)); err != nil {
 			return fmt.Errorf("finite: insert settlement event: %w", err)
 		}
+		if err := runSettlementFailpoint(SettlementAfterSettlementEventInsert); err != nil {
+			return err
+		}
 		if terminalState(next) {
 			if err := insertTerminalOutbox(ctx, tx, eventID, task.ID, run.ID, next, newVersion, now); err != nil {
 				return err
 			}
+			if err := runSettlementFailpoint(SettlementAfterOutboxInsert); err != nil {
+				return err
+			}
+		}
+		if err := runSettlementFailpoint(SettlementBeforeCommit); err != nil {
+			return err
 		}
 		return nil
 	})
 	if err != nil {
+		return Task{}, err
+	}
+	if err := runSettlementFailpoint(SettlementAfterCommit); err != nil {
 		return Task{}, err
 	}
 	return settled, nil
@@ -249,6 +323,9 @@ func settlementState(task Task, run Run, outcome RunOutcome, result *Result, acc
 	case ResultTodo, ResultRejected:
 		if capReached {
 			return StateFailed
+		}
+		if result.Outcome == ResultRejected {
+			return StateTodo
 		}
 		return phaseQueue(run.Phase)
 	default:
