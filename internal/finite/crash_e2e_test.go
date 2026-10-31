@@ -58,6 +58,7 @@ func TestFiniteEngineOwnerHelperProcess(t *testing.T) {
 		_ = os.WriteFile(ownerCase.MarkerPath, marker, 0o600)
 		os.Exit(86)
 	}
+	settlementRunID := int64(0)
 	var engine *Engine
 	engine, err = NewEngine(Config{Root: ownerCase.Root, WorkerDir: ownerCase.Worker}, EngineOptions{
 		Harness:    harness.HarnessConfig{Name: "finite-engine-fixture", Cwd: ownerCase.Worker, Env: []string{engineFixturePlanEnv + "=" + ownerCase.PlanPath}},
@@ -98,6 +99,7 @@ func TestFiniteEngineOwnerHelperProcess(t *testing.T) {
 		}
 	}
 	engine.opts.hooks.beforeSettlement = func(request SettlementRequest) {
+		settlementRunID = request.RunID
 		if ownerCase.Action == "stop_before_settlement" {
 			run, getErr := engine.store.GetRun(context.Background(), request.RunID)
 			if getErr != nil {
@@ -120,6 +122,17 @@ func TestFiniteEngineOwnerHelperProcess(t *testing.T) {
 		if ownerCase.Failpoint == "after_settlement_commit" {
 			crash(ownerCase.Failpoint, request.RunID, ProcessIdentity{})
 		}
+	}
+	for _, point := range r4StatementFailpoints() {
+		if ownerCase.Failpoint != string(point) {
+			continue
+		}
+		restore := registerSettlementFailpoint(point, func() error {
+			crash(string(point), settlementRunID, ProcessIdentity{})
+			return nil
+		})
+		defer restore()
+		break
 	}
 	if _, err := engine.store.IntakeBrief(context.Background(), ownerCase.BriefPath); err != nil {
 		t.Fatal(err)
