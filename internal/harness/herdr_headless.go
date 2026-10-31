@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/agent0ai/spynel/internal/core"
@@ -198,11 +197,9 @@ func (h *Herdr) sendHeadless(ctx context.Context, key, prompt, staffName string,
 	if !kimi && !agy && !hermes {
 		cmd.Stdin = strings.NewReader(prompt)
 	}
-	// Claude Code starts tool and MCP children that can inherit stdout. On cancel the whole process
-	// group is killed, and WaitDelay bounds Wait if a pipe is still held open anyway.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
-	cmd.WaitDelay = 10 * time.Second
+	// Claude Code starts tool and MCP children that can inherit stdout. Platform process
+	// configuration bounds Wait if a pipe is still held open after cancellation.
+	configureHeadlessProcess(cmd)
 	stderr := newTailBuffer(64 * 1024)
 	cmd.Stderr = stderr
 	stdout, err := cmd.StdoutPipe()
