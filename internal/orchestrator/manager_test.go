@@ -963,6 +963,16 @@ func TestTransientProviderErrorRetriesInPlace(t *testing.T) {
 		"transient then success": {errs: []error{transient}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
 		// An undelivered prompt is retried once in place on the same worker
 		"prompt_not_delivered then success": {errs: []error{errors.New("prompt_not_delivered: worker sj-t-a1-test never received prompt, please retry")}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
+		// A one-shot Hermes client that never reached its gateway never started the turn
+		// (live 2026-10-31T05:03:45Z, two reviews in a 7-dispatch burst): retried once in
+		// place, not handed to a recovery agent.
+		"hermes gateway unreachable then success": {errs: []error{errors.New("runner turn failed: Command helper: applied 4 secrets\nError: Gateway connection failed; no local fallback")}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
+		"hermes gateway draining then success":    {errs: []error{errors.New("runner turn failed: Gateway draining: not_ready")}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
+		// The dominant live shape of the same outage (2026-10-31T05:19:42Z, three
+		// dispatches in one gateway restart window, 50 occurrences in the observer
+		// log): the one-shot client's standard gateway-connect wrapper. The turn
+		// never started, so it is the same retry, not a strike.
+		"hermes gateway inaccessible then success": {errs: []error{errors.New("runner turn failed: Command helper: applied 4 secrets\nError: Gateway inaccessible: service_identity_unverified")}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
 		// A turn that produced its final response and then failed on the way
 		// back has already done its work: reconciliation owns it, not a retry.
 		"transient after a completed turn": {errs: []error{transient}, final: true, wantCalls: 1, wantState: "error", wantError: transient.Error()},
