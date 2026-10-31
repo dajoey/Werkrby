@@ -2,7 +2,10 @@
 
 package finite
 
-import "context"
+import (
+	"context"
+	"os/exec"
+)
 
 const processBoundarySupported = false
 
@@ -15,3 +18,11 @@ func inspectRun(context.Context, int64, string) (RunProcesses, error) {
 }
 
 func signalProcess(ProcessIdentity, bool) error { return ErrUnsupportedPlatform }
+
+func newSupervisorLaunch(*exec.Cmd, string) (supervisorLaunch, error) {
+	return nil, ErrUnsupportedPlatform
+}
+
+func openSupervisorContainment(string) (supervisorContainment, error) {
+	return nil, ErrUnsupportedPlatform
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 )
@@ -50,7 +51,8 @@ func (id ProcessIdentity) Equal(other ProcessIdentity) bool {
 }
 
 // RunProcesses is one complete run-boundary observation. Supervisor is nil
-// when only provider processes remain.
+// when only provider processes remain. Processes includes the supervisor and
+// every discovered provider process.
 type RunProcesses struct {
 	Liveness   Liveness
 	Supervisor *ProcessIdentity
@@ -81,6 +83,9 @@ func IdentifyProcess(pid int, runID int64, token string) (ProcessIdentity, error
 	if err := validateRunBinding(runID, token); err != nil {
 		return ProcessIdentity{}, err
 	}
+	if pid <= 0 {
+		return ProcessIdentity{}, fmt.Errorf("finite process PID must be positive")
+	}
 	return identifyProcess(pid, runID, token)
 }
 
@@ -90,11 +95,22 @@ func InspectRun(ctx context.Context, runID int64, token string) (RunProcesses, e
 	if err := validateRunBinding(runID, token); err != nil {
 		return RunProcesses{Liveness: LivenessUnknown}, err
 	}
-	return inspectRun(ctx, runID, token)
+	observation, err := inspectRun(ctx, runID, token)
+	if err != nil {
+		observation.Liveness = LivenessUnknown
+		return observation, errors.Join(ErrProcessUnknown, err)
+	}
+	if observation.Liveness == LivenessUnknown {
+		return observation, ErrProcessUnknown
+	}
+	return observation, nil
 }
 
 // AdoptRun accepts only an exact run/token/PID/start match.
 func AdoptRun(ctx context.Context, expected ProcessIdentity) (*AdoptedRun, error) {
+	if expected.Start == "" {
+		return nil, ErrProcessIdentityMismatch
+	}
 	observation, err := InspectRun(ctx, expected.RunID, expected.Token)
 	if err != nil {
 		return nil, err
@@ -132,15 +148,75 @@ func (a *AdoptedRun) Wait(ctx context.Context) error {
 	}
 }
 
-// StopSupervisor signals only the exact expected supervisor generation.
+// StopSupervisor requires an exact expected supervisor generation before any
+// signal. Termination still covers the provider boundary so no child escapes.
 func StopSupervisor(ctx context.Context, expected ProcessIdentity, grace time.Duration) (Liveness, error) {
-	return LivenessUnknown, ErrProcessUnknown
+	if expected.Start == "" {
+		return LivenessUnknown, ErrProcessIdentityMismatch
+	}
+	observation, err := InspectRun(ctx, expected.RunID, expected.Token)
+	if err != nil {
+		return LivenessUnknown, err
+	}
+	if observation.Liveness == LivenessAbsent {
+		return LivenessAbsent, nil
+	}
+	if observation.Supervisor == nil {
+		return LivenessUnknown, ErrDetachedProvider
+	}
+	if !observation.Supervisor.Equal(expected) {
+		return LivenessUnknown, ErrProcessIdentityMismatch
+	}
+	return stopObservedRun(ctx, expected.RunID, expected.Token, grace)
 }
 
 // StopRun terminates the exact run boundary and returns only on reliable
 // absence. It never trusts a stored PID without its start identity.
 func StopRun(ctx context.Context, runID int64, token string, grace time.Duration) (Liveness, error) {
-	return LivenessUnknown, ErrProcessUnknown
+	if !processBoundarySupported {
+		return LivenessUnknown, ErrUnsupportedPlatform
+	}
+	return stopObservedRun(ctx, runID, token, grace)
+}
+
+func stopObservedRun(ctx context.Context, runID int64, token string, grace time.Duration) (Liveness, error) {
+	if grace < 0 {
+		grace = 0
+	}
+	deadline := time.Now().Add(grace)
+	force := grace == 0
+	for {
+		observation, err := InspectRun(ctx, runID, token)
+		if err != nil {
+			return LivenessUnknown, err
+		}
+		if observation.Liveness == LivenessAbsent {
+			return LivenessAbsent, nil
+		}
+		if observation.Liveness != LivenessLive || len(observation.Processes) == 0 {
+			return LivenessUnknown, ErrProcessUnknown
+		}
+		ordered := observation.Processes
+		if observation.Supervisor != nil {
+			ordered = append([]ProcessIdentity{*observation.Supervisor}, ordered...)
+		}
+		seen := make(map[ProcessIdentity]struct{}, len(ordered))
+		for _, identity := range ordered {
+			if _, duplicate := seen[identity]; duplicate {
+				continue
+			}
+			seen[identity] = struct{}{}
+			if err := signalProcess(identity, force); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				return LivenessUnknown, errors.Join(ErrProcessUnknown, err)
+			}
+		}
+		if !force && !time.Now().Before(deadline) {
+			force = true
+		}
+		if err := waitForProcessPoll(ctx); err != nil {
+			return LivenessUnknown, errors.Join(ErrProcessUnknown, err)
+		}
+	}
 }
 
 func waitForProcessPoll(ctx context.Context) error {
