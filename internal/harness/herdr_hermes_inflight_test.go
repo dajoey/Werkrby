@@ -132,3 +132,65 @@ func TestHerdrHermesScreenWithoutReplyIsAnErrorNotTheRawPane(t *testing.T) {
 		t.Fatalf("Send returned no error for a turn with no reply")
 	}
 }
+
+// The ledger was readable when the wait began; a read that fails mid-wait (busy timeout, a
+// Hermes schema change) is a turn error, never a fall back to the screen's older reply.
+func TestHerdrHermesLedgerReadFailingMidWaitIsAnErrorNotTheScreen(t *testing.T) {
+	dir := t.TempDir()
+	hermesHome := filepath.Join(dir, "hermes-home")
+	t.Setenv("HERMES_HOME", hermesHome)
+	ledger := newHermesTestLedger(t, hermesChatLedger(hermesHome))
+	hermesEarlierChatTurn(ledger)
+	key := "chat:telegram:4242"
+	writeWarmHermesWorker(t, dir, key)
+	script := hermesFakeHerdr(t, dir)
+	writeHermesScreen(t, dir, hermesTestTurn("Earlier question", hermesTestBox("Older reply: the library fill-out resumes now."))+hermesTestChrome)
+	var late sync.WaitGroup
+	t.Cleanup(late.Wait)
+	startHermesSim(t, dir, func(n int, prompt string) {
+		late.Add(1)
+		go func() {
+			defer late.Done()
+			time.Sleep(300 * time.Millisecond)
+			ledger.add("local-chat", hermesTestRow{role: "user", content: prompt})
+			time.Sleep(300 * time.Millisecond)
+			if _, err := ledger.db.Exec(`ALTER TABLE messages RENAME TO messages_moved`); err != nil {
+				t.Error(err)
+			}
+		}()
+	})
+
+	got := runHermesTurn(t, dir, script, key, "", "Werkrby chat for telegram/4242.\n\nJoey: anything new?")
+
+	assertNoScreenInFinals(t, got)
+	if finals := got.finals(); len(finals) != 0 {
+		t.Fatalf("a turn whose ledger read failed mid-wait delivered %q", finals)
+	}
+	if got.err == nil || !strings.Contains(got.err.Error(), "runner turn failed") {
+		t.Fatalf("Send error = %v, want a runner turn failure", got.err)
+	}
+}
+
+// A prompt the ledger never recorded while the newest turn on screen ends in Hermes's error
+// panel: the panel's text is the turn error, so the quota and transient classifiers see it.
+func TestHerdrHermesPromptNeverInLedgerKeepsTheScreenErrorPanel(t *testing.T) {
+	dir := t.TempDir()
+	hermesHome := filepath.Join(dir, "hermes-home")
+	t.Setenv("HERMES_HOME", hermesHome)
+	ledger := newHermesTestLedger(t, hermesChatLedger(hermesHome))
+	hermesEarlierChatTurn(ledger)
+	key := "chat:telegram:4242"
+	writeWarmHermesWorker(t, dir, key)
+	script := hermesFakeHerdr(t, dir)
+	errorPanel := " ─ ☤ Hermes " + strings.Repeat("─", 104) + " \n\n Gateway draining: not_ready\n\n " + strings.Repeat("─", 116) + " \n"
+	writeHermesScreen(t, dir, hermesTestTurn("Earlier question", hermesTestBox("Older reply: the library fill-out resumes now."))+
+		hermesTestTurn("Werkrby chat for telegram/4242.", errorPanel)+hermesTestChrome)
+	startHermesSim(t, dir, nil)
+
+	got := runHermesTurn(t, dir, script, key, "", "Werkrby chat for telegram/4242.\n\nJoey: anything new?")
+
+	assertNoScreenInFinals(t, got)
+	if got.err == nil || !strings.Contains(got.err.Error(), "Gateway draining: not_ready") {
+		t.Fatalf("Send error = %v, want the screen panel's error text", got.err)
+	}
+}

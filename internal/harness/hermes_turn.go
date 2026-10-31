@@ -559,9 +559,16 @@ func (h *Herdr) judgeHermesTurn(ctx context.Context, target string, launchArgs [
 		if ctx.Err() != nil {
 			return hermesVerdict{err: ctx.Err()}
 		}
-		if err == nil && !turn.Delivered {
-			// Never delivered: the caller's new-pane re-send may still run; nothing on the
-			// screen is this turn's reply.
+		if err != nil {
+			// The ledger was readable when the wait began; the screen is no fallback now.
+			return hermesVerdict{ledger: true, delivered: turn.Delivered, err: hermesTurnFailed("hermes ledger read failed mid-turn: " + err.Error())}
+		}
+		if !turn.Delivered {
+			// Never delivered: an error panel the newest turn drew is the cause; otherwise the
+			// caller's new-pane re-send may still run. Nothing on the screen is this turn's reply.
+			if detail, ok := hermesScreenTurnError(h.readWorkerScreen(target)); ok {
+				return hermesVerdict{ledger: true, delivered: true, err: hermesTurnFailed(detail)}
+			}
 			return hermesVerdict{ledger: true}
 		}
 	}
