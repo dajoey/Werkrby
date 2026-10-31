@@ -10,7 +10,7 @@ import (
 var version = "dev"
 
 func main() {
-	if err := finite.Run(os.Args[1:], version); err != nil {
+	if err := finite.Execute(os.Args[1:], version); err != nil {
 		if exit, ok := err.(interface{ ExitCode() int }); ok {
 			os.Exit(exit.ExitCode())
 		}

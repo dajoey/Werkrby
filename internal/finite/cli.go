@@ -2,8 +2,8 @@ package finite
 
 import "fmt"
 
-// Run dispatches the experimental finite-task command.
-func Run(args []string, version string) error {
+// Execute dispatches the experimental finite-task command.
+func Execute(args []string, version string) error {
 	_ = version
 
 	if len(args) == 0 {
