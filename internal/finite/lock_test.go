@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -144,6 +145,32 @@ func TestFiniteWorkspaceLockDescriptorNotInherited(t *testing.T) {
 		children, _ := filepath.Glob(filepath.Join(root, "lock-child-started-*"))
 		return fileExists(filepath.Join(root, "lock-parent-ready")) && len(children) == 1
 	}, "lock parent and live child")
+	childPIDData, err := os.ReadFile(filepath.Join(root, "lock-parent-ready"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPID, err := strconv.Atoi(string(childPIDData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	childToken, err := NewProcessToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	childIdentity, err := IdentifyProcess(childPID, 1, childToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = signalProcess(childIdentity, true)
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			if _, err := IdentifyProcess(childPID, 1, childToken); errors.Is(err, os.ErrProcessDone) {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
 	contender, err := AcquireWorkspaceLock(root)
 	if err == nil {
 		_ = contender.Close()
@@ -177,5 +204,9 @@ func TestFiniteWorkspaceLockDescriptorNotInherited(t *testing.T) {
 	waitForFixture(t, func() bool {
 		exited, _ := filepath.Glob(filepath.Join(root, "lock-child-exited-*"))
 		return len(exited) == 1
-	}, "lock child shutdown")
+	}, "lock child shutdown marker")
+	waitForFixture(t, func() bool {
+		_, err := IdentifyProcess(childPID, 1, childToken)
+		return errors.Is(err, os.ErrProcessDone)
+	}, "lock child OS absence")
 }
