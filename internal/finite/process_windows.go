@@ -379,7 +379,13 @@ func readWindowsCommandLine(pid int) ([]string, error) {
 	}
 	commandLine := parameters.CommandLine
 	if commandLine.Length == 0 {
-		return nil, nil
+		event, waitErr := windows.WaitForSingleObject(process, 0)
+		if waitErr == nil && event == windows.WAIT_OBJECT_0 {
+			return nil, os.ErrProcessDone
+		}
+		// Early process initialization can expose an empty command line before
+		// the supervisor protocol has opened its job. That is never absence.
+		return nil, fmt.Errorf("live process command line is not initialized")
 	}
 	if commandLine.Length > 64*1024-2 || commandLine.Length%2 != 0 || commandLine.Buffer == nil {
 		return nil, fmt.Errorf("invalid Windows command-line length %d", commandLine.Length)
