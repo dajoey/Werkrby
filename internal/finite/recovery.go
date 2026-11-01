@@ -217,14 +217,14 @@ func (e *Engine) inspectRun(ctx context.Context, runID int64, token string) (Run
 	if e.opts.hooks.inspectRun != nil {
 		return e.opts.hooks.inspectRun(ctx, runID, token)
 	}
-	return InspectRun(ctx, runID, token)
+	return e.inspectRunProcesses(ctx, runID, token)
 }
 
 func (e *Engine) stopRun(ctx context.Context, runID int64, token string, grace time.Duration) (Liveness, error) {
 	if e.opts.hooks.stopRun != nil {
 		return e.opts.hooks.stopRun(ctx, runID, token, grace)
 	}
-	return StopRun(ctx, runID, token, grace)
+	return e.stopRunProcesses(ctx, runID, token, grace)
 }
 
 func readRecoveredResult(run Run) (*Result, error, bool) {
