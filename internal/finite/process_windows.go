@@ -45,9 +45,10 @@ func newSupervisorLaunch(command *exec.Cmd, token string) (supervisorLaunch, err
 	// No BREAKAWAY or SILENT_BREAKAWAY limit is enabled. The job also
 	// deliberately does not use KILL_ON_JOB_CLOSE: provider-only recovery after
 	// wrapper exit must remain observable instead of being hidden by job teardown.
+	// Go inherits only the explicitly configured stdio handles here. The owner
+	// lock remains non-inheritable through its own HANDLE_FLAG_INHERIT setting.
 	command.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags:    windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED,
-		NoInheritHandles: true,
+		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED,
 	}
 	return &windowsSupervisorLaunch{job: job}, nil
 }
