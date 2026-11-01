@@ -170,7 +170,9 @@ func (s *Store) IntakeBrief(ctx context.Context, sourcePath string) (task Task, 
 // between publication and the task commit is reused when its bytes are
 // identical and no task row exists; any other existing brief is refused.
 func (s *Store) publishBrief(ctx context.Context, id, briefPath string, data []byte) error {
-	createErr := fsx.AtomicCreateFile(briefPath, data, 0o600)
+	// 0444: the brief is the immutable intake copy; a worker's old habit of
+	// appending progress to its task doc must fail at the file system too.
+	createErr := fsx.AtomicCreateFile(briefPath, data, 0o444)
 	if createErr == nil {
 		return nil
 	}
@@ -190,6 +192,13 @@ func (s *Store) publishBrief(ctx context.Context, id, briefPath string, data []b
 	existing, err := os.ReadFile(briefPath)
 	if err != nil || !bytes.Equal(existing, data) {
 		return refused
+	}
+	// A brief left by a crashed intake may predate read-only publication;
+	// reuse keeps the same guarantee as a fresh publish.
+	if info.Mode().Perm() != 0o444 {
+		if err := os.Chmod(briefPath, 0o444); err != nil {
+			return fmt.Errorf("finite: publish immutable brief read-only: %w", err)
+		}
 	}
 	return nil
 }

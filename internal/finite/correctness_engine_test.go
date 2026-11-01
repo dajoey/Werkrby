@@ -59,28 +59,34 @@ func TestFiniteCorrectnessBriefHashFailsClosed(t *testing.T) {
 	if len(data) != originalLength {
 		t.Fatal("fixture changed brief length")
 	}
+	if err := os.Chmod(task.BriefPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(task.BriefPath, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	err = engine.ScanOnce(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "SHA-256") {
+	if err == nil || !strings.Contains(err.Error(), "sha256") || !strings.Contains(err.Error(), task.ID) {
 		t.Fatalf("same-size brief mutation was not rejected by SHA-256: %v", err)
 	}
 	current, getErr := engine.store.GetTask(context.Background(), task.ID)
 	if getErr != nil {
 		t.Fatal(getErr)
 	}
-	if current.State != StateTodo || current.Version != 0 {
-		t.Fatalf("brief mutation changed task state: %+v", current)
+	if current.State != StateFailed || current.Version != 1 {
+		t.Fatalf("brief mutation must fail the task once: %+v", current)
 	}
 	if got := countRows(t, engine.store, `SELECT COUNT(*) FROM runs`); got != 0 {
 		t.Fatalf("brief mutation created %d runs", got)
 	}
-	if got := countRows(t, engine.store, `SELECT COUNT(*) FROM task_events`); got != 0 {
-		t.Fatalf("brief mutation created %d events", got)
+	if got := countRows(t, engine.store, `SELECT COUNT(*) FROM task_events WHERE kind='admission_failed'`); got != 1 {
+		t.Fatalf("brief mutation recorded %d admission failures, want one", got)
 	}
 	if got := engineInvocationCount(t, engine); got != 0 {
 		t.Fatalf("brief mutation spawned %d providers", got)
+	}
+	if err := engine.ScanOnce(context.Background()); err != nil {
+		t.Fatalf("later scan retried the mutated brief: %v", err)
 	}
 	assertEngineInvariants(t, engine.store, task.ID)
 }

@@ -214,15 +214,13 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 	if decision.Action != AdmissionDispatch {
 		return nil
 	}
-	brief, err := os.ReadFile(task.BriefPath)
-	if err != nil {
-		return fmt.Errorf("finite: read immutable brief for dispatch: %w", err)
+	brief, readErr := os.ReadFile(task.BriefPath)
+	var digest string
+	if readErr == nil {
+		digest = fmt.Sprintf("%x", sha256.Sum256(brief))
 	}
-	if len(brief) == 0 || len(brief) > maxBriefBytes {
-		return fmt.Errorf("finite: immutable brief size changed outside intake")
-	}
-	if digest := fmt.Sprintf("%x", sha256.Sum256(brief)); digest != task.BriefSHA256 {
-		return fmt.Errorf("finite: immutable brief SHA-256 mismatch")
+	if readErr != nil || len(brief) == 0 || len(brief) > maxBriefBytes || digest != task.BriefSHA256 {
+		return e.failChangedBrief(ctx, task, readErr, digest)
 	}
 	parsedBrief, err := ParseBrief(brief)
 	if err != nil {
@@ -319,6 +317,26 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 		e.signalWake()
 	}
 	return err
+}
+
+// briefChangedReason is the terminal failure recorded when a committed brief
+// no longer matches the bytes hashed at intake.
+const briefChangedReason = "immutable brief changed after intake"
+
+// failChangedBrief settles a task whose immutable brief no longer matches the
+// hash recorded at intake. Refusing to dispatch would wedge the task in its
+// queue while every scan logs an anonymous error, so the task is failed once —
+// the bridge then moves its doc to failed/ — and the returned error names the
+// task so the serve log shows which work stopped.
+func (e *Engine) failChangedBrief(ctx context.Context, task Task, readErr error, digest string) error {
+	detail := fmt.Sprintf("sha256 %s, want %s", digest, task.BriefSHA256)
+	if readErr != nil {
+		detail = fmt.Sprintf("unreadable: %v", readErr)
+	}
+	if _, err := e.store.FailTask(ctx, task.ID, task.Version, briefChangedReason); err != nil {
+		return fmt.Errorf("finite: task %s: %s (%s): fail task: %w", task.ID, briefChangedReason, detail, err)
+	}
+	return fmt.Errorf("finite: task %s: %s (%s); task failed once", task.ID, briefChangedReason, detail)
 }
 
 func (e *Engine) watchSupervisor(runID int64, handle *SupervisorHandle) {
