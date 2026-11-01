@@ -213,6 +213,11 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 	if digest := fmt.Sprintf("%x", sha256.Sum256(brief)); digest != task.BriefSHA256 {
 		return fmt.Errorf("finite: immutable brief SHA-256 mismatch")
 	}
+	parsedBrief, err := ParseBrief(brief)
+	if err != nil {
+		return fmt.Errorf("finite: parse immutable brief for dispatch: %w", err)
+	}
+	runHarness := harnessForPhase(e.opts.Harness, parsedBrief, phase)
 	sessionKey := fmt.Sprintf("finite:%s:%s", task.ID, phase)
 	dynamic := fmt.Sprintf("TASK BRIEF\ntitle: %s\n\n%s", task.Title, brief)
 	history, err := e.store.TaskHistory(ctx, task.ID)
@@ -281,7 +286,7 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 		}
 		handle, startErr := StartSupervisor(launchCtx, SupervisorSpec{
 			RunID: run.ID, RunDir: run.RunDir, ProcessToken: token, Executable: e.opts.Executable,
-			SessionKey: sessionKey, Prompt: prompt.Text, Harness: e.opts.Harness,
+			SessionKey: sessionKey, Prompt: prompt.Text, Harness: runHarness,
 		})
 		if startErr != nil {
 			return startErr

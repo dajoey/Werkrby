@@ -14,6 +14,8 @@ type Brief struct {
 	MaxRuns         int
 	MaxFailures     int
 	MaxReviewCycles int
+	Staff           string
+	ReviewStaff     string
 	Body            string
 }
 

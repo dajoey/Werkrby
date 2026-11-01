@@ -30,6 +30,8 @@ type briefFrontMatter struct {
 	MaxRuns         *int   `yaml:"max_runs"`
 	MaxFailures     *int   `yaml:"max_failures"`
 	MaxReviewCycles *int   `yaml:"max_review_cycles"`
+	Staff           string `yaml:"staff"`
+	ReviewStaff     string `yaml:"review_staff"`
 }
 
 // ParseBrief decodes the strict Markdown intake representation.
@@ -77,7 +79,13 @@ func ParseBrief(data []byte) (Brief, error) {
 	if front.ReviewRequired == nil {
 		return Brief{}, fmt.Errorf("finite: review_required is required")
 	}
-	brief := Brief{ID: front.ID, Title: front.Title, Risk: front.Risk, ReviewRequired: *front.ReviewRequired, MaxRuns: 12, MaxFailures: 3, MaxReviewCycles: 3}
+	for _, staff := range []string{front.Staff, front.ReviewStaff} {
+		if staff != "" && !briefIDPattern.MatchString(staff) {
+			return Brief{}, fmt.Errorf("finite: invalid staff name %q", staff)
+		}
+	}
+	brief := Brief{ID: front.ID, Title: front.Title, Risk: front.Risk, ReviewRequired: *front.ReviewRequired, MaxRuns: 12, MaxFailures: 3, MaxReviewCycles: 3,
+		Staff: front.Staff, ReviewStaff: front.ReviewStaff}
 	if front.MaxRuns != nil {
 		brief.MaxRuns = *front.MaxRuns
 	}
