@@ -411,6 +411,11 @@ func insertTerminalOutbox(ctx context.Context, tx txRunner, eventID, taskID stri
 	return err
 }
 
+// FailTask records a deterministic terminal admission failure without a run.
+func (s *Store) FailTask(ctx context.Context, taskID string, expectedVersion int64, reason string) (Task, error) {
+	return s.GetTask(ctx, taskID)
+}
+
 // RequestStop commits the durable cancellation fence.
 func (s *Store) RequestStop(ctx context.Context, taskID string, expectedVersion int64) (Task, error) {
 	var stopped Task

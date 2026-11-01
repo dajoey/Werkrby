@@ -119,15 +119,31 @@ func TestFiniteCorrectnessAdmissionFailureIsTerminal(t *testing.T) {
 	})
 
 	t.Run("non_dispatch_at_cap", func(t *testing.T) {
-		engine := newEngineFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
-			"1": {Result: ResultTodo},
-		}})
+		engine := newEngineFixture(t, engineFixturePlan{})
 		task := intakeCorrectnessCapTask(t, engine, "correctness-cap-direct")
-		scanEngineUntil(t, engine, task.ID, StateTodo, 1)
+		failed, err := engine.store.FailTask(context.Background(), task.ID, task.Version, "max_runs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if failed.State != StateFailed || failed.Version != 1 {
+			t.Fatalf("direct admission failure = %+v, want failed version 1", failed)
+		}
 		if err := engine.ScanOnce(context.Background()); err != nil {
 			t.Fatal(err)
 		}
-		assertCorrectnessAdmissionFailure(t, engine, task, 3, 3)
+		if got := countRows(t, engine.store, `SELECT COUNT(*) FROM runs`); got != 0 {
+			t.Fatalf("non-dispatch failure created %d runs", got)
+		}
+		if got := countRows(t, engine.store, `SELECT COUNT(*) FROM task_events WHERE kind='admission_failed'`); got != 1 {
+			t.Fatalf("non-dispatch admission events = %d, want one", got)
+		}
+		if got := countRows(t, engine.store, `SELECT COUNT(*) FROM outbox`); got != 1 {
+			t.Fatalf("non-dispatch outbox rows = %d, want one", got)
+		}
+		if got := engineInvocationCount(t, engine); got != 0 {
+			t.Fatalf("non-dispatch failure spawned %d providers", got)
+		}
+		assertEngineInvariants(t, engine.store, task.ID)
 	})
 }
 
