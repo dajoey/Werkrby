@@ -554,3 +554,49 @@ func TestExternallyExecutedIsExactCaseSensitiveString(t *testing.T) {
 		t.Fatal("an unparseable document was treated as finite-executed")
 	}
 }
+
+// While the bridge's switch file exists, a task the old runner never started is the bridge's to
+// take: the old runner leaves it in todo/ however the timing falls. Started work, and everything
+// once the switch file is gone, behaves as before.
+func TestFreshTaskIsLeftToTheBridgeWhileItsSwitchFileExists(t *testing.T) {
+	cfg, _, manager := workflowTestManager(t)
+	base := finiteTaskBase(cfg)
+	todo := filepath.Join(base, "todo")
+	flag := filepath.Join(t.TempDir(), "bridge.on")
+	if err := os.WriteFile(flag, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager.runtimeConfigMu.Lock()
+	manager.runtimeConfig.Orchestrator.ExternalExecutorFlag = flag
+	manager.runtimeConfigMu.Unlock()
+
+	fresh := writeClaimFixture(t, todo, "tasks-fresh.md", "2026-10-03T14:00:00Z") // attempt: 0, as producers write it
+	started := writeClaimFixture(t, todo, "tasks-started.md", "2026-10-03T15:00:00Z")
+	doc, err := ReadDocument(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc.FrontMatter["attempt"] = 1
+	doc.FrontMatter["first_assigned_at"] = "2026-10-03T15:01:00Z"
+	if err := WriteDocument(started, doc); err != nil {
+		t.Fatal(err)
+	}
+	before := readFixtureBytes(t, fresh)
+
+	scanAndWait(t, manager)
+	scanAndWait(t, manager)
+
+	assertFiniteUntouched(t, fresh, before)
+	assertNoLeaseFor(t, manager, "tasks-fresh.md")
+	if _, err := os.Stat(filepath.Join(base, "working", "tasks-started.md")); err != nil {
+		t.Fatalf("already-started task was not claimed while the switch file exists: %v", err)
+	}
+
+	if err := os.Remove(flag); err != nil {
+		t.Fatal(err)
+	}
+	scanAndWait(t, manager)
+	if _, err := os.Stat(filepath.Join(base, "working", "tasks-fresh.md")); err != nil {
+		t.Fatalf("with the switch file gone the old runner did not claim the new task: %v", err)
+	}
+}

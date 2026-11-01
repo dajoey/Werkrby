@@ -650,7 +650,7 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 			m.reportUnparseableDocument(source, readErr)
 			continue
 		}
-		if externallyExecuted(document) {
+		if externallyExecuted(document) || handedToExternalExecutor(cfg, route, phase, document) {
 			continue
 		}
 		if !documentDue(document, time.Now(), phase) {

@@ -189,6 +189,10 @@ type Orchestrator struct {
 	SemanticHeartbeatMinutes     int    `yaml:"semantic_heartbeat_minutes"`
 	TaskNotifications            string `yaml:"task_notifications"`
 	MaxParallel                  int    `yaml:"max_parallel"`
+	// ExternalExecutorFlag, when set, names a file whose presence means a separate engine (the
+	// werkrby-finite bridge) takes every new task from todo/; the orchestrator then claims only work
+	// it has already started. Empty means off.
+	ExternalExecutorFlag string `yaml:"external_executor_flag,omitempty"`
 	// AdmissionMode: "off" (the default; empty means off) or "shadow", where every claim site also asks
 	// internal/admission and logs its verdict beside the claim outcome without changing it.
 	AdmissionMode string `yaml:"admission_mode,omitempty"`
