@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,6 +80,10 @@ const (
 
 var errHermesBoundaryUnknown = errors.New("hermes provider-turn liveness is unknown")
 
+// finiteHermesProfilePattern admits only profiles dedicated to finite runs:
+// wk-finite or wk-finite-<name>. Ordinary worker profiles never qualify.
+var finiteHermesProfilePattern = regexp.MustCompile(`^wk-finite(-[a-z0-9]+)*$`)
+
 type hermesBoundaryMetadata struct {
 	SchemaVersion int                 `json:"schema_version"`
 	RunID         int64               `json:"run_id"`
@@ -119,8 +124,8 @@ func validateHermesBoundarySpec(spec RunBoundarySpec) error {
 }
 
 func validateDisposableHermesHome(home, profile string) error {
-	if profile != "wk-finite-test" && profile != "wk-finite-wall" {
-		return fmt.Errorf("finite Hermes profile %q is not disposable test staffing", profile)
+	if !finiteHermesProfilePattern.MatchString(profile) {
+		return fmt.Errorf("finite Hermes profile %q is outside the wk-finite namespace", profile)
 	}
 	if home == "" || !filepath.IsAbs(home) {
 		return fmt.Errorf("finite Hermes requires an explicit absolute HERMES_HOME")
