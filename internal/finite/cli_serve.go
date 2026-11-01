@@ -111,6 +111,7 @@ func runFiniteServeWithDeps(ctx context.Context, options serveOptions, deps serv
 		Harness: options.Harness, Seats: seats, Executable: executable,
 		PollInterval: options.PollInterval, StopGrace: options.StopGrace, MaxOpenRuns: options.MaxOpenRuns,
 		Domains: options.Domains, OnError: report,
+		RosterSeats: strings.TrimSpace(options.RosterPath) != "",
 	})
 	if err != nil {
 		_ = listener.Close()
@@ -215,6 +216,8 @@ type cliRosterSeat struct {
 	Name       string     `yaml:"name"`
 	Available  bool       `yaml:"available"`
 	QuotaReset *time.Time `yaml:"quota_reset,omitempty"`
+	Fallback   string     `yaml:"fallback,omitempty"`
+	Pool       string     `yaml:"pool,omitempty"`
 }
 
 func cliSeatProvider(options serveOptions) (func(context.Context) ([]Seat, error), error) {
@@ -303,7 +306,8 @@ func loadCLIRoster(path string) ([]Seat, error) {
 			return nil, fmt.Errorf("duplicate seat %q", configured.Name)
 		}
 		seen[configured.Name] = struct{}{}
-		seats = append(seats, Seat{Name: configured.Name, Available: configured.Available, QuotaReset: configured.QuotaReset})
+		seats = append(seats, Seat{Name: configured.Name, Available: configured.Available,
+			QuotaReset: configured.QuotaReset, Fallback: configured.Fallback, Pool: configured.Pool})
 	}
 	return seats, nil
 }

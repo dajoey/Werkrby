@@ -128,7 +128,7 @@ func TestFiniteCompiledServeNamesTaskWhenBriefChanges(t *testing.T) {
 	writeBriefRoster(false)
 	_, ownerOutput, ownerDone := startCLIHelperProcess(t, []string{
 		"serve", "--root", root, "--worker", worker, "--harness", "finite-engine-fixture",
-		"--roster", rosterPath, "--poll-interval", "5ms", "--stop-grace", "25ms",
+		"--roster", rosterPath, "--model", "@fake-seat", "--poll-interval", "5ms", "--stop-grace", "25ms",
 	}, engineFixturePlanEnv+"="+planPath)
 	waitForCLIProcessFile(t, ownerDone, filepath.Join(root, "control.json"), "compiled serve readiness")
 

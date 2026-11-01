@@ -309,7 +309,7 @@ func TestFiniteCLICompiledFakeProviderWorkflow(t *testing.T) {
 	waitForCLIProcessFile(t, receiverDone, receiverPath, "compiled receiver readiness")
 	_, ownerOutput, ownerDone := startCLIHelperProcess(t, []string{
 		"serve", "--root", root, "--worker", worker, "--harness", "finite-engine-fixture",
-		"--roster", rosterPath, "--receiver-config", receiverPath,
+		"--roster", rosterPath, "--model", "@fake-seat", "--receiver-config", receiverPath,
 		"--poll-interval", "5ms", "--stop-grace", "25ms",
 	}, engineFixturePlanEnv+"="+planPath)
 	controlPath := filepath.Join(root, "control.json")

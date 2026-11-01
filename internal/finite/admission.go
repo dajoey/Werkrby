@@ -29,6 +29,9 @@ func Admit(in AdmissionInput) AdmissionDecision {
 	if in.Accounting.ReviewCycles >= task.MaxReviewCycles {
 		return AdmissionDecision{Action: AdmissionFail, Reason: "max_review_cycles"}
 	}
+	if in.RosterSeats {
+		return admitRoster(in)
+	}
 	seats := append([]Seat(nil), in.Seats...)
 	sort.SliceStable(seats, func(i, j int) bool { return seats[i].Name < seats[j].Name })
 	var earliest *time.Time
@@ -40,6 +43,50 @@ func Admit(in AdmissionInput) AdmissionDecision {
 			value := seat.QuotaReset.UTC()
 			earliest = &value
 		}
+	}
+	return AdmissionDecision{Action: AdmissionWait, Reason: "no_available_seat", WakeAt: earliest}
+}
+
+// maxFallbackHops bounds the fallback walk, mirroring the legacy roster chain
+// limit: the start seat plus at most eight fallback links.
+const maxFallbackHops = 8
+
+// admitRoster walks the task's own chain — start seat, then its fallback, and
+// so on — and dispatches the first seat that is available and not walled by
+// the task's own quota wall. A start seat missing from the roster is a routing
+// error the task must fail on once, never a silent run on an unrelated seat.
+func admitRoster(in AdmissionInput) AdmissionDecision {
+	byName := make(map[string]Seat, len(in.Seats))
+	for _, seat := range in.Seats {
+		byName[seat.Name] = seat
+	}
+	current, found := byName[in.StartSeat]
+	if !found {
+		return AdmissionDecision{Action: AdmissionFail, Reason: "staff_not_in_roster"}
+	}
+	visited := make(map[string]struct{}, maxFallbackHops+1)
+	var earliest *time.Time
+	for hops := 0; ; hops++ {
+		if _, seen := visited[current.Name]; seen {
+			break // cycle: the chain repeats without a runnable seat
+		}
+		visited[current.Name] = struct{}{}
+		_, walled := in.WalledPools[current.Pool]
+		if current.Available && current.Name != "" && !walled {
+			return AdmissionDecision{Action: AdmissionDispatch, Seat: current.Name}
+		}
+		if current.QuotaReset != nil && (earliest == nil || current.QuotaReset.Before(*earliest)) {
+			value := current.QuotaReset.UTC()
+			earliest = &value
+		}
+		if hops >= maxFallbackHops {
+			break
+		}
+		next, linked := byName[current.Fallback]
+		if current.Fallback == "" || !linked {
+			break // chain end: no seat of the chain can run
+		}
+		current = next
 	}
 	return AdmissionDecision{Action: AdmissionWait, Reason: "no_available_seat", WakeAt: earliest}
 }

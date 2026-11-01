@@ -1,0 +1,415 @@
+package finite
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// The quota-fallback feature: a run that ends in a provider quota wall moves
+// the task's next run onto the first available seat of its staff's fallback
+// chain right away, instead of sleeping to the provider reset while a fallback
+// seat could run the work.
+
+func writeFallbackBrief(t *testing.T, id string, reviewRequired bool, staff, reviewStaff string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), id+".md")
+	data := fmt.Sprintf("---\nid: %s\ntitle: Fallback task %s\nrisk: low\nreview_required: %t\nstaff: %s\nreview_staff: %s\n---\n\nImplement one finite objective.\n",
+		id, id, reviewRequired, staff, reviewStaff)
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write brief: %v", err)
+	}
+	return path
+}
+
+// newEngineFallbackFixture builds the fixture engine with roster-backed seats
+// the test can rewrite between scans.
+func newEngineFallbackFixture(t *testing.T, plan engineFixturePlan, seats *[]Seat) *Engine {
+	t.Helper()
+	engine := newEngineFixture(t, plan)
+	engine.opts.RosterSeats = true
+	engine.opts.Seats = func(context.Context) ([]Seat, error) {
+		return append([]Seat(nil), (*seats)...), nil
+	}
+	return engine
+}
+
+// supervisorHarnessModel reads the harness model the supervisor was launched
+// with, so a test can prove which seat the walk chose.
+func supervisorHarnessModel(t *testing.T, run Run) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(run.RunDir, "supervisor.json"))
+	if err != nil {
+		t.Fatalf("read supervisor request for run %d: %v", run.ID, err)
+	}
+	var request struct {
+		Harness struct {
+			Model string `json:"model"`
+		} `json:"harness"`
+	}
+	if err := json.Unmarshal(data, &request); err != nil {
+		t.Fatalf("decode supervisor request for run %d: %v", run.ID, err)
+	}
+	return request.Harness.Model
+}
+
+func fallbackWokeEvents(t *testing.T, engine *Engine, taskID string) int {
+	t.Helper()
+	rows, err := engine.store.db.Query(`SELECT payload_json FROM task_events WHERE task_id=? AND kind='woke'`, taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(payload, `"fallback"`) {
+			count++
+		}
+	}
+	return count
+}
+
+func TestFiniteQuotaFallbackWallContinuesOnFallbackSeat(t *testing.T) {
+	clock := newEngineTestClock()
+	wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	seats := &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "zai", Fallback: "seat-b"},
+		{Name: "seat-b", Available: false, Pool: "venice"}, // closed until the wall settles
+	}
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {NoResult: true, Wall: true, WakeAt: wake},
+		"2": {Result: ResultDone},
+	}}, seats)
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	task, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "fallback-continue", false, "seat-a", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waiting := scanEngineUntil(t, engine, task.ID, StateWaiting, 1)
+	if waiting.WakeAt == nil {
+		t.Fatalf("wall wait = %+v, want a wake deadline", waiting)
+	}
+	wallReset := *waiting.WakeAt
+	first, _ := engine.store.GetRun(ctx, 1)
+	if first.Seat != "seat-a" || first.Outcome != RunWall {
+		t.Fatalf("first run = %+v, want seat-a walled", first)
+	}
+	if model := supervisorHarnessModel(t, first); model != "@seat-a" {
+		t.Fatalf("first run harness model = %q, want @seat-a", model)
+	}
+	if got := fallbackWokeEvents(t, engine, task.ID); got != 0 {
+		t.Fatalf("fallback wake events = %d, want none while the fallback is closed", got)
+	}
+	// The fallback seat opens: before the provider reset, the next run starts.
+	(*seats)[1].Available = true
+	scanEngineUntil(t, engine, task.ID, StateDone, 2)
+	run, _ := engine.store.GetRun(ctx, 2)
+	if run.Seat != "seat-b" {
+		t.Fatalf("second run seat = %q, want the fallback seat-b", run.Seat)
+	}
+	if run.LaunchReason != "wake" {
+		t.Fatalf("second run launch reason = %q, want wake", run.LaunchReason)
+	}
+	if model := supervisorHarnessModel(t, run); model != "@seat-b" {
+		t.Fatalf("second run harness model = %q, want @seat-b", model)
+	}
+	if !run.CreatedAt.Before(wallReset) {
+		t.Fatalf("second run started at %s, before the wall reset %s", run.CreatedAt, wallReset)
+	}
+	if got := fallbackWokeEvents(t, engine, task.ID); got != 1 {
+		t.Fatalf("fallback wake events = %d, want exactly one", got)
+	}
+	projection, err := os.ReadFile(task.ProjectionPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(projection), "| 1 | implementation | seat-a | wall |") ||
+		!strings.Contains(string(projection), "| 2 | implementation | seat-b | ok |") {
+		t.Fatalf("projection lacks the Seat column:\n%s", projection)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+func TestFiniteQuotaFallbackAllSeatsWalledWaitsForReset(t *testing.T) {
+	clock := newEngineTestClock()
+	wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {NoResult: true, Wall: true, WakeAt: wake},
+		"2": {Result: ResultDone},
+	}}, &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "zai", Fallback: "seat-b"},
+		{Name: "seat-b", Available: true, Pool: "zai"},
+	})
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	task, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "fallback-walled", false, "seat-a", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waiting := scanEngineUntil(t, engine, task.ID, StateWaiting, 1)
+	wallReset := *waiting.WakeAt
+	for i := 0; i < 3; i++ {
+		if err := engine.ScanOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, _ := engine.store.GetTask(ctx, task.ID)
+	runs, _ := engine.store.ListRuns(ctx, task.ID)
+	if current.State != StateWaiting || len(runs) != 1 {
+		t.Fatalf("all-walled task = %s with %d runs, want waiting with one", current.State, len(runs))
+	}
+	if current.WakeAt == nil || !current.WakeAt.Equal(wallReset) {
+		t.Fatalf("all-walled wake = %+v, want the wall reset %s", current.WakeAt, wallReset)
+	}
+	if got := fallbackWokeEvents(t, engine, task.ID); got != 0 {
+		t.Fatalf("fallback wake events = %d, want none while every chain seat is walled", got)
+	}
+	// After the wait lifts, the next run starts from the brief's own staff.
+	clock.Advance(2 * time.Hour)
+	scanEngineUntil(t, engine, task.ID, StateDone, 2)
+	run, _ := engine.store.GetRun(ctx, 2)
+	if run.Seat != "seat-a" || run.LaunchReason != "wake" {
+		t.Fatalf("post-reset run = %+v, want seat-a with launch reason wake", run)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+func TestFiniteQuotaFallbackReviewWalksFromReviewStaff(t *testing.T) {
+	clock := newEngineTestClock()
+	wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {Result: ResultDone},
+		"2": {NoResult: true, Wall: true, WakeAt: wake},
+		"3": {Result: ResultAccepted},
+	}}, &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "venice"},
+		{Name: "seat-r", Available: true, Pool: "zai", Fallback: "seat-rb"},
+		{Name: "seat-rb", Available: true, Pool: "venice"},
+	})
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	task, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "fallback-review", true, "seat-a", "seat-r"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanEngineUntil(t, engine, task.ID, StateDone, 3)
+	review, _ := engine.store.GetRun(ctx, 2)
+	if review.Phase != PhaseReview || review.Seat != "seat-r" {
+		t.Fatalf("review run = %+v, want review phase on the brief's review staff seat-r", review)
+	}
+	if model := supervisorHarnessModel(t, review); model != "@seat-r" {
+		t.Fatalf("review harness model = %q, want @seat-r", model)
+	}
+	final, _ := engine.store.GetRun(ctx, 3)
+	if final.Phase != PhaseReview || final.Seat != "seat-rb" || final.LaunchReason != "wake" {
+		t.Fatalf("post-wall review run = %+v, want review on seat-rb with launch reason wake", final)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+func TestFiniteQuotaFallbackWallHopsCountTowardMaxRuns(t *testing.T) {
+	clock := newEngineTestClock()
+	wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {NoResult: true, Wall: true, WakeAt: wake},
+		"2": {NoResult: true, Wall: true, WakeAt: wake},
+	}}, &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "zai", Fallback: "seat-b"},
+		{Name: "seat-b", Available: true, Pool: "venice"},
+	})
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	task, err := engine.store.IntakeBrief(ctx, writeCappedBrief(t, "fallback-cap", 2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The capped brief carries no staff; the walk starts from the engine default.
+	engine.opts.Harness.Model = "@seat-a"
+	failed := scanEngineUntil(t, engine, task.ID, StateFailed, 2)
+	if failed.State != StateFailed {
+		t.Fatalf("capped fallback task = %+v, want failed", failed)
+	}
+	runs, _ := engine.store.ListRuns(ctx, task.ID)
+	if len(runs) != 2 || runs[0].Seat != "seat-a" || runs[1].Seat != "seat-b" {
+		t.Fatalf("capped fallback runs = %+v, want one run per seat", runs)
+	}
+	accounting, _ := engine.store.DerivedAccounting(ctx, task.ID, PhaseImplementation)
+	if accounting.Runs != 2 || accounting.Attempts != 0 {
+		t.Fatalf("capped fallback accounting = %+v, want two uncharged runs", accounting)
+	}
+	assertFailureReason(t, engine.store, task.ID, "max_runs")
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+func TestFiniteQuotaFallbackEarlyWakeRespectsMaxOpen(t *testing.T) {
+	clock := newEngineTestClock()
+	wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	seats := &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "zai", Fallback: "seat-b"},
+		{Name: "seat-b", Available: false, Pool: "venice"}, // closed until the cap probe
+	}
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {NoResult: true, Wall: true, WakeAt: wake},
+		"2": {Block: true},
+		"3": {Result: ResultDone},
+	}}, seats)
+	engine.store.now = clock.Now
+	engine.opts.MaxOpenRuns = 1
+	ctx := context.Background()
+	wallTask, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "fallback-maxopen", false, "seat-a", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	scanEngineUntil(t, engine, wallTask.ID, StateWaiting, 1)
+	// A second task now holds the single open-run slot with a blocked run.
+	holdTask, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "fallback-maxopen-hold", false, "seat-a", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanEngineUntil(t, engine, holdTask.ID, StateWorking, 1)
+	// The fallback seat opens, but the open-run cap is full: no early wake.
+	(*seats)[1].Available = true
+	for i := 0; i < 3; i++ {
+		if err := engine.ScanOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runs, _ := engine.store.ListRuns(ctx, wallTask.ID)
+	if len(runs) != 1 {
+		t.Fatalf("wall task runs = %d, want no early wake while max-open is full", len(runs))
+	}
+	if got := fallbackWokeEvents(t, engine, wallTask.ID); got != 0 {
+		t.Fatalf("fallback wake events = %d, want none while max-open is full", got)
+	}
+	// Releasing the blocked run frees the slot and the early wake fires.
+	hold, _ := engine.store.GetRun(ctx, 2)
+	if err := os.WriteFile(filepath.Join(hold.RunDir, "release"), []byte("go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scanEngineUntil(t, engine, holdTask.ID, StateDone, 1)
+	scanEngineUntil(t, engine, wallTask.ID, StateDone, 2)
+	run, _ := engine.store.GetRun(ctx, 3)
+	if run.Seat != "seat-b" || run.LaunchReason != "wake" {
+		t.Fatalf("post-release wall task run = %+v, want seat-b with launch reason wake", run)
+	}
+	assertEngineInvariants(t, engine.store, wallTask.ID)
+}
+
+func TestFiniteQuotaFallbackClosedBalanceSeatNeverDispatched(t *testing.T) {
+	clock := newEngineTestClock()
+	wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {NoResult: true, Wall: true, WakeAt: wake},
+		"2": {Result: ResultDone},
+	}}, &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "zai", Fallback: "seat-bal"},
+		{Name: "seat-bal", Available: false, Pool: "zai_balance"},
+	})
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	task, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "fallback-balance", false, "seat-a", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waiting := scanEngineUntil(t, engine, task.ID, StateWaiting, 1)
+	for i := 0; i < 3; i++ {
+		if err := engine.ScanOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, _ := engine.store.GetTask(ctx, task.ID)
+	runs, _ := engine.store.ListRuns(ctx, task.ID)
+	if current.State != StateWaiting || waiting.WakeAt == nil || len(runs) != 1 {
+		t.Fatalf("closed-balance task = %s with %d runs, want waiting with one run", current.State, len(runs))
+	}
+	if got := fallbackWokeEvents(t, engine, task.ID); got != 0 {
+		t.Fatalf("fallback wake events = %d, want none while the balance seat reads closed", got)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+func TestFiniteCLIRosterAcceptsFallbackAndPoolKeys(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "availability.yaml")
+	reset := time.Date(2026, 11, 1, 3, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	roster := "seats:\n" +
+		"  - name: seat-a\n" +
+		"    available: true\n" +
+		"    fallback: seat-b\n" +
+		"    pool: zai\n" +
+		"  - name: seat-b\n" +
+		"    available: false\n" +
+		"    quota_reset: " + reset + "\n" +
+		"    pool: zai_balance\n"
+	if err := os.WriteFile(path, []byte(roster), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seats, err := loadCLIRoster(path)
+	if err != nil {
+		t.Fatalf("load roster with fallback and pool keys: %v", err)
+	}
+	if len(seats) != 2 {
+		t.Fatalf("roster seats = %+v", seats)
+	}
+	if seats[0].Fallback != "seat-b" || seats[0].Pool != "zai" || !seats[0].Available {
+		t.Fatalf("seat-a = %+v, want its fallback, pool and availability", seats[0])
+	}
+	if seats[1].Available || seats[1].QuotaReset == nil || !seats[1].QuotaReset.Equal(reset2(t, reset)) || seats[1].Pool != "zai_balance" {
+		t.Fatalf("seat-b = %+v, want unavailable with its reset and pool", seats[1])
+	}
+	unknown := filepath.Join(base, "unknown.yaml")
+	if err := os.WriteFile(unknown, []byte("seats:\n  - name: seat-a\n    available: true\n    surprise: yes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCLIRoster(unknown); err == nil || !strings.Contains(err.Error(), "field surprise not found") {
+		t.Fatalf("unknown roster key error = %v, want the strict decoder to refuse it", err)
+	}
+}
+
+func reset2(t *testing.T, value string) time.Time {
+	t.Helper()
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+
+func TestFiniteProjectionRunsTableShowsSeat(t *testing.T) {
+	task := Task{ID: "task-seat-column", Title: "Seat column", State: StateDone, Risk: "low",
+		Version: 2, CreatedAt: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 11, 1, 12, 1, 0, 0, time.UTC)}
+	ended := time.Date(2026, 11, 1, 12, 0, 30, 0, time.UTC)
+	runs := []Run{{
+		ID: 1, TaskID: task.ID, Phase: PhaseImplementation, Seat: "seat-a", SessionKey: "finite:t",
+		LaunchReason: "initial", RunDir: "/tmp/none", CreatedAt: task.CreatedAt, EndedAt: &ended, Outcome: RunOK,
+	}}
+	out := RenderProjection(task, runs)
+	if !strings.Contains(out, "| Run | Phase | Seat | Execution | Created | Ended |") {
+		t.Fatalf("projection runs header lacks the Seat column:\n%s", out)
+	}
+	if !strings.Contains(out, "| 1 | implementation | seat-a | ok |") {
+		t.Fatalf("projection runs row lacks the seat:\n%s", out)
+	}
+}

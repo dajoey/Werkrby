@@ -44,7 +44,7 @@ func RenderProjection(task Task, runs []Run) string {
 		out.WriteString("No provider runs.\n")
 		return out.String()
 	}
-	out.WriteString("| Run | Phase | Execution | Created | Ended |\n| ---: | --- | --- | --- | --- |\n")
+	out.WriteString("| Run | Phase | Seat | Execution | Created | Ended |\n| ---: | --- | --- | --- | --- | --- |\n")
 	ordered := append([]Run(nil), runs...)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].ID < ordered[j].ID })
 	for _, run := range ordered {
@@ -56,7 +56,7 @@ func RenderProjection(task Task, runs []Run) string {
 		if run.EndedAt != nil {
 			ended = stamp(*run.EndedAt)
 		}
-		fmt.Fprintf(&out, "| %d | %s | %s | %s | %s |\n", run.ID, run.Phase, outcome, stamp(run.CreatedAt), ended)
+		fmt.Fprintf(&out, "| %d | %s | %s | %s | %s | %s |\n", run.ID, run.Phase, run.Seat, outcome, stamp(run.CreatedAt), ended)
 	}
 	return out.String()
 }

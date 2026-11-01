@@ -14,18 +14,22 @@ func TestBriefStaffSelectsTheHarnessSeatPerPhase(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := harness.HarnessConfig{Name: "herdr", Model: "@finite"}
-	if got := harnessForPhase(base, brief, PhaseImplementation); got.Model != "@finite-ops" || got.Name != "herdr" {
+	if got := harnessForPhase(base, brief, PhaseImplementation, ""); got.Model != "@finite-ops" || got.Name != "herdr" {
 		t.Fatalf("implementation harness = %+v", got)
 	}
-	if got := harnessForPhase(base, brief, PhaseReview); got.Model != "@finite-thinker" {
+	if got := harnessForPhase(base, brief, PhaseReview, ""); got.Model != "@finite-thinker" {
 		t.Fatalf("review harness = %+v", got)
 	}
 	plain, err := ParseBrief([]byte("---\nid: t2\ntitle: x\nrisk: low\nreview_required: false\n---\nbody\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := harnessForPhase(base, plain, PhaseReview); got.Model != "@finite" {
+	if got := harnessForPhase(base, plain, PhaseReview, ""); got.Model != "@finite" {
 		t.Fatalf("default harness = %+v", got)
+	}
+	// Roster mode: the seat the fallback walk chose overrides both staff pins.
+	if got := harnessForPhase(base, brief, PhaseReview, "finite-media-bal"); got.Model != "@finite-media-bal" {
+		t.Fatalf("walked-seat harness = %+v", got)
 	}
 	if base.Model != "@finite" {
 		t.Fatal("the engine's base harness was modified")

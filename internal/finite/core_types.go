@@ -46,6 +46,13 @@ type Seat struct {
 	Name       string
 	Available  bool
 	QuotaReset *time.Time
+	// Fallback names the next seat of the chain when this one cannot run
+	// (roster mode only); empty ends the chain.
+	Fallback string
+	// Pool labels the metered plan a seat spends, so a quota wall can bench
+	// every seat of the same pool. Empty means unmetered. The engine never
+	// maps providers to plans; the availability roster carries the label.
+	Pool string
 }
 
 // AdmissionAction is the pure admission result vocabulary.
@@ -63,6 +70,15 @@ type AdmissionInput struct {
 	Phase      Phase
 	Accounting Accounting
 	Seats      []Seat
+	// RosterSeats reports that Seats came from a fallback roster; admission
+	// then walks the chain from StartSeat instead of taking any seat.
+	RosterSeats bool
+	// StartSeat is the walk origin: the brief's staff (review staff in review),
+	// else the engine default seat.
+	StartSeat string
+	// WalledPools are the plan pools this task's own quota-wall runs still
+	// wall; a seat of such a pool is unavailable even if the roster disagrees.
+	WalledPools map[string]struct{}
 }
 
 // AdmissionDecision selects a seat or explains why no run may start.

@@ -4,9 +4,133 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 )
+
+func TestFiniteAdmissionFallbackWalk(t *testing.T) {
+	reset := time.Date(2026, 11, 1, 1, 0, 0, 0, time.UTC)
+	later := time.Date(2026, 11, 1, 2, 0, 0, 0, time.UTC)
+	task := Task{ID: "task-walk", State: StateTodo, MaxRuns: 12, MaxFailures: 3, MaxReviewCycles: 3}
+	base := AdmissionInput{Task: task, Phase: PhaseImplementation, RosterSeats: true, StartSeat: "seat-a"}
+
+	t.Run("available_start_seat_is_chosen_not_the_sort_first_outsider", func(t *testing.T) {
+		in := base
+		in.Seats = []Seat{
+			{Name: "seat-a", Available: true, Fallback: "seat-b"},
+			{Name: "seat-b", Available: true},
+			{Name: "aaa-outsider", Available: true},
+		}
+		decision := Admit(in)
+		if decision.Action != AdmissionDispatch || decision.Seat != "seat-a" {
+			t.Fatalf("walk admission = %+v, want dispatch on the start seat", decision)
+		}
+	})
+
+	t.Run("fallback_and_two_hop_chain_are_chosen", func(t *testing.T) {
+		in := base
+		in.Seats = []Seat{
+			{Name: "seat-a", Available: false, QuotaReset: &reset, Fallback: "seat-b"},
+			{Name: "seat-b", Available: true, Fallback: "seat-c"},
+			{Name: "seat-c", Available: true},
+			{Name: "aaa-outsider", Available: true},
+		}
+		if decision := Admit(in); decision.Action != AdmissionDispatch || decision.Seat != "seat-b" {
+			t.Fatalf("one-hop admission = %+v, want seat-b", decision)
+		}
+		in.Seats[1].Available = false
+		in.Seats[1].QuotaReset = &later
+		if decision := Admit(in); decision.Action != AdmissionDispatch || decision.Seat != "seat-c" {
+			t.Fatalf("two-hop admission = %+v, want seat-c", decision)
+		}
+	})
+
+	t.Run("exhausted_chain_waits_and_never_leaves_it", func(t *testing.T) {
+		in := base
+		in.Seats = []Seat{
+			{Name: "seat-a", Available: false, QuotaReset: &later, Fallback: "seat-b"},
+			{Name: "seat-b", Available: false, QuotaReset: &reset},
+			{Name: "aaa-outsider", Available: true},
+		}
+		decision := Admit(in)
+		if decision.Action != AdmissionWait || decision.Seat != "" {
+			t.Fatalf("exhausted chain admission = %+v, want a wait on no seat", decision)
+		}
+		if decision.WakeAt == nil || !decision.WakeAt.Equal(reset) {
+			t.Fatalf("exhausted chain wake = %+v, want the earliest chain reset", decision)
+		}
+	})
+
+	t.Run("cycle_and_over_long_chain_stop_and_wait", func(t *testing.T) {
+		in := base
+		in.Seats = []Seat{
+			{Name: "seat-a", Available: false, Fallback: "seat-b"},
+			{Name: "seat-b", Available: false, Fallback: "seat-a"},
+		}
+		decision := Admit(in)
+		if decision.Action != AdmissionWait {
+			t.Fatalf("cyclic chain admission = %+v, want a wait", decision)
+		}
+		chain := []Seat{{Name: "seat-a", Available: false, Fallback: "seat-01"}}
+		for hop := 1; hop <= 10; hop++ {
+			chain = append(chain, Seat{Name: fmt.Sprintf("seat-%02d", hop),
+				Available: hop == 9, Fallback: fmt.Sprintf("seat-%02d", hop+1)})
+		}
+		chain[10].Fallback = ""
+		in.Seats = chain
+		decision = Admit(in)
+		if decision.Action != AdmissionWait {
+			t.Fatalf("over-long chain admission = %+v, want the walk to stop at 8 hops", decision)
+		}
+		exact := append([]Seat(nil), chain[:9]...) // exactly 9 seats: 8 hops reach seat-08
+		exact[8].Available = true
+		in.Seats = exact
+		if decision = Admit(in); decision.Action != AdmissionDispatch || decision.Seat != "seat-08" {
+			t.Fatalf("eight-hop chain admission = %+v, want dispatch on the ninth seat", decision)
+		}
+	})
+
+	t.Run("start_seat_missing_from_roster_fails_the_task", func(t *testing.T) {
+		in := base
+		in.StartSeat = "seat-ghost"
+		in.Seats = []Seat{{Name: "seat-a", Available: true}}
+		decision := Admit(in)
+		if decision.Action != AdmissionFail || decision.Reason != "staff_not_in_roster" {
+			t.Fatalf("missing start seat admission = %+v, want staff_not_in_roster failure", decision)
+		}
+	})
+
+	t.Run("slot_list_behaviour_is_unchanged", func(t *testing.T) {
+		in := base
+		in.RosterSeats = false
+		in.StartSeat = "seat-a" // not in the slot list
+		in.Seats = []Seat{
+			{Name: "slot-a", Available: false, QuotaReset: &reset},
+			{Name: "slot-b", Available: true},
+		}
+		decision := Admit(in)
+		if decision.Action != AdmissionDispatch || decision.Seat != "slot-b" {
+			t.Fatalf("slot admission = %+v, want the sorted first available slot", decision)
+		}
+	})
+
+	t.Run("walled_pool_benches_even_a_roster_available_seat", func(t *testing.T) {
+		in := base
+		in.WalledPools = map[string]struct{}{"zai": {}}
+		in.Seats = []Seat{
+			{Name: "seat-a", Available: true, Pool: "zai", Fallback: "seat-b"},
+			{Name: "seat-b", Available: true, Pool: "zai"},
+		}
+		if decision := Admit(in); decision.Action != AdmissionWait {
+			t.Fatalf("same-pool fallback admission = %+v, want a wait", decision)
+		}
+		in.Seats[1].Pool = "venice"
+		if decision := Admit(in); decision.Action != AdmissionDispatch || decision.Seat != "seat-b" {
+			t.Fatalf("cross-pool fallback admission = %+v, want dispatch on seat-b", decision)
+		}
+	})
+}
 
 func TestFiniteAdmissionWaitCancelAndVersionFences(t *testing.T) {
 	reset := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)

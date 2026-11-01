@@ -207,6 +207,12 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 			"request_sha256": fingerprint, "execution_outcome": outcome,
 			"result_outcome": resultOutcome(result), "error": runError,
 		}
+		if outcome == RunWall {
+			// The fallback walk reads the walled seat and the wall deadline
+			// from this payload; no schema column carries them.
+			audit["seat"] = run.Seat
+			audit["wall_wake_at"] = req.WallWakeAt.UTC().Format(time.RFC3339Nano)
+		}
 		if failureReason != "" {
 			audit["failure_reason"] = failureReason
 		}
@@ -583,6 +589,96 @@ func (s *Store) RequestStop(ctx context.Context, taskID string, expectedVersion 
 // WakeTime performs a due time-only, task-only wait transition.
 func (s *Store) WakeTime(ctx context.Context, taskID string, expectedVersion int64) (Task, error) {
 	return s.completeWait(ctx, taskID, expectedVersion, "", false)
+}
+
+// WakeFallback completes an undischarged quota-wall time wait early because a
+// fallback seat can run the work now. Like WakeTime it is task-only and
+// version-fenced; unlike it the deadline has not passed, so the store itself
+// demands the wall evidence: the task's latest settled run must be a wall.
+func (s *Store) WakeFallback(ctx context.Context, taskID string, expectedVersion int64) (Task, error) {
+	var completed Task
+	err := s.withImmediateTx(ctx, func(tx txRunner) error {
+		task, err := getTaskTx(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if task.Version != expectedVersion {
+			return fmt.Errorf("%w: fallback wake", ErrVersionConflict)
+		}
+		if task.State != StateWaiting || task.CancelRequested || task.WaitKind != WaitTime || task.WakeAt == nil {
+			return fmt.Errorf("%w: task is not completing a quota-wall wait", ErrStateConflict)
+		}
+		if !s.now().UTC().Before(task.WakeAt.UTC()) {
+			return fmt.Errorf("%w: quota-wall wait is already due", ErrStateConflict)
+		}
+		var outcome RunOutcome
+		if err := tx.QueryRowContext(ctx,
+			`SELECT outcome FROM runs WHERE task_id=? AND ended_at IS NOT NULL ORDER BY id DESC LIMIT 1`, taskID).Scan(&outcome); err != nil || outcome != RunWall {
+			return fmt.Errorf("%w: latest run is not a quota wall", ErrStateConflict)
+		}
+		now := s.now().UTC()
+		next := task.ResumeState
+		newVersion := task.Version + 1
+		update, err := tx.ExecContext(ctx, `UPDATE tasks SET state=?,version=?,updated_at=?,resume_state=NULL,wait_kind=NULL,
+			wake_at=NULL,waiting_for=NULL,joey_ask_json=NULL WHERE id=? AND version=? AND state='waiting'`,
+			next, newVersion, stamp(now), task.ID, task.Version)
+		if err != nil {
+			return err
+		}
+		if affected, _ := update.RowsAffected(); affected != 1 {
+			return fmt.Errorf("%w: fallback wake update", ErrVersionConflict)
+		}
+		payload, _ := json.Marshal(map[string]any{"reason": "fallback"})
+		eventID := fmt.Sprintf("task:%s:v%d:woke", task.ID, newVersion)
+		if err := insertTaskEvent(ctx, tx, eventID, task.ID, nil, "woke", task.State, next, newVersion, payload, stamp(now)); err != nil {
+			return err
+		}
+		completed = task
+		completed.State = next
+		completed.Version = newVersion
+		completed.UpdatedAt = now
+		completed.ResumeState = ""
+		completed.WaitKind = ""
+		completed.WakeAt = nil
+		completed.WaitingFor = ""
+		completed.JoeyAskJSON = ""
+		return nil
+	})
+	return completed, err
+}
+
+// wallDeadlinesBySeat derives, from SQLite alone, when each seat's latest
+// quota wall on this task lifts: seat -> that run's wall_wake_at. The settled
+// event payload written at settlement carries both facts.
+func (s *Store) wallDeadlinesBySeat(ctx context.Context, taskID string) (map[string]time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT r.seat, e.payload_json FROM task_events e
+		JOIN runs r ON r.id = e.run_id
+		WHERE e.task_id=? AND e.kind='settled' AND r.outcome='wall' AND r.seat <> ''`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	deadlines := make(map[string]time.Time)
+	for rows.Next() {
+		var seat, payload string
+		if err := rows.Scan(&seat, &payload); err != nil {
+			return nil, err
+		}
+		var audit struct {
+			WallWakeAt string `json:"wall_wake_at"`
+		}
+		if json.Unmarshal([]byte(payload), &audit) != nil || audit.WallWakeAt == "" {
+			continue
+		}
+		deadline, err := time.Parse(time.RFC3339Nano, audit.WallWakeAt)
+		if err != nil {
+			continue
+		}
+		if prior, exists := deadlines[seat]; !exists || deadline.After(prior) {
+			deadlines[seat] = deadline
+		}
+	}
+	return deadlines, rows.Err()
 }
 
 // AnswerJoey performs a matching-answer, task-only wait transition.
