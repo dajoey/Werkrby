@@ -79,6 +79,13 @@ func openSupervisorContainment(token string) (supervisorContainment, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open supervisor job containment: %w", err)
 	}
+	// Provider descendants inherit only this query-right handle. Their live
+	// handle keeps the named recovery object observable after the supervisor
+	// and owner exit; the last provider exit makes reliable absence possible.
+	if err := windows.SetHandleInformation(job, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+		_ = windows.CloseHandle(job)
+		return nil, fmt.Errorf("make supervisor job containment inheritable: %w", err)
+	}
 	return &windowsSupervisorContainment{job: job}, nil
 }
 
