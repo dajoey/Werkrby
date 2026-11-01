@@ -61,6 +61,7 @@ func runSettlementFailpoint(point SettlementFailpoint) error {
 
 // SettleRun applies one terminal settlement and replays it idempotently.
 func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, error) {
+	req = canonicalSettlementRequest(req)
 	fingerprint, err := settlementFingerprint(req)
 	if err != nil {
 		return Task{}, err
@@ -110,12 +111,10 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 				resultInvalid = true
 			} else {
 				if result.Wait != nil && result.Wait.Kind == WaitJoey {
-					ask, askErr := decodeJoeyAsk(result.Wait.Ask)
-					if askErr != nil {
+					// A valid ask is already canonical; see canonicalSettlementRequest.
+					if _, askErr := decodeJoeyAsk(result.Wait.Ask); askErr != nil {
 						result = nil
 						resultInvalid = true
-					} else {
-						result.Wait.Ask, _ = json.Marshal(ask)
 					}
 				}
 				if result != nil {
@@ -240,6 +239,30 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		return Task{}, err
 	}
 	return settled, nil
+}
+
+// canonicalSettlementRequest returns req with a valid Joey ask in canonical
+// JSON form. The result and wait are copied so the caller's request is never
+// rewritten, and the fingerprint is taken over this form so a replay whose ask
+// differs only in key order or spacing matches the settled request.
+func canonicalSettlementRequest(req SettlementRequest) SettlementRequest {
+	if req.Result == nil || req.Result.Wait == nil || req.Result.Wait.Kind != WaitJoey {
+		return req
+	}
+	ask, err := decodeJoeyAsk(req.Result.Wait.Ask)
+	if err != nil {
+		return req
+	}
+	canonical, err := json.Marshal(ask)
+	if err != nil {
+		return req
+	}
+	result := *req.Result
+	wait := *result.Wait
+	wait.Ask = canonical
+	result.Wait = &wait
+	req.Result = &result
+	return req
 }
 
 func settlementFingerprint(req SettlementRequest) (string, error) {
