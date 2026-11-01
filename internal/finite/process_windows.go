@@ -120,9 +120,14 @@ func openSupervisorContainment(token string) (supervisorContainment, error) {
 		_ = windows.CloseHandle(job)
 		return nil, err
 	}
-	// Provider descendants inherit only this query-right handle. Their live
-	// handle keeps the named recovery object observable after the supervisor
-	// and owner exit; the last provider exit makes reliable absence possible.
+	// Mark the handle inheritable for spawn paths that list it in
+	// SysProcAttr.AdditionalInheritedHandles: Go children inherit only stdio
+	// plus that list (syscall/exec_windows.go), so this mark alone carries no
+	// handle into a provider. What contains descendants is inherited job
+	// membership, and the object stays observable because the owner holds its
+	// handle until the job reports no members (windowsSupervisorLaunch.Close).
+	// Handing this handle to the provider spawn itself is the deferred
+	// follow-up (harness spawn change).
 	if err := windows.SetHandleInformation(job, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
 		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("make supervisor job containment inheritable: %w", err)
