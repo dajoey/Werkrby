@@ -106,7 +106,6 @@ type PromptRequest struct {
 	Domains            []string
 	Dynamic            string
 	RunDir             string
-	ProcessToken       string
 	PreviousBundleHash string
 	ResetContext       bool
 	UncertainContext   bool

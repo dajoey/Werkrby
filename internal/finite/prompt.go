@@ -57,9 +57,6 @@ func BuildPrompt(req PromptRequest) (Prompt, error) {
 	if req.RunDir != "" {
 		dynamic += "run_dir: " + req.RunDir + "\nresult_path: " + filepath.Join(req.RunDir, "result.json") + "\n"
 	}
-	if req.ProcessToken != "" {
-		dynamic += "process_token: " + req.ProcessToken + "\n"
-	}
 	dynamic += "\n" + req.Dynamic
 	full := req.PreviousBundleHash == "" || req.PreviousBundleHash != hash || req.ResetContext || req.UncertainContext
 	text := dynamic
