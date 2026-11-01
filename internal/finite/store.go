@@ -50,8 +50,10 @@ func OpenStore(cfg Config) (*Store, error) {
 	if err := os.MkdirAll(cfg.Root, 0o700); err != nil {
 		return nil, fmt.Errorf("finite: create state root: %w", err)
 	}
-	dsn := "file:" + filepath.ToSlash(cfg.DatabasePath()) + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode(wal)&_pragma=synchronous(full)"
-	db, err := sql.Open("sqlite3", dsn)
+	if err := validateFiniteWAL(cfg.DatabasePath() + "-wal"); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite3", storeSQLiteDSN(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("finite: open SQLite: %w", err)
 	}
@@ -104,6 +106,9 @@ func OpenStore(cfg Config) (*Store, error) {
 	if !strings.EqualFold(journal, "wal") || synchronous != 2 || foreignKeys != 1 {
 		return closeOnError(fmt.Errorf("finite: SQLite durability prerequisites were not enabled"))
 	}
+	if err := s.CheckInvariants(context.Background()); err != nil {
+		return closeOnError(fmt.Errorf("finite: validate SQLite on open: %w", err))
+	}
 	return s, nil
 }
 
@@ -123,10 +128,13 @@ func (s *Store) withImmediateTx(ctx context.Context, fn func(tx txRunner) error)
 	if err := fn(tx); err != nil {
 		return err
 	}
+	if err := runStoreTransactionFault(storeTransactionBeforeCommit); err != nil {
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("finite: commit transaction: %w", err)
 	}
-	return nil
+	return runStoreTransactionFault(storeTransactionAfterCommit)
 }
 
 const taskSelect = `SELECT id,title,state,risk,review_required,cancel_requested,max_runs,max_failures,max_review_cycles,

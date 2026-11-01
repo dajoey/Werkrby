@@ -209,6 +209,55 @@ func (f *outboxProcessFixture) requireDeliveredOnce(t *testing.T, scenario strin
 }
 
 func TestFiniteOutboxACKLoss_D1_D2(t *testing.T) {
+	t.Run("D1/owner_crash_after_commit_before_first_send", func(t *testing.T) {
+		fixture := newOutboxProcessFixture(t, "outbox-d1-owner-crash")
+		receiver := startReceiverProcess(t, fixture.root, fixture.token, ReceiverFaultNone)
+		fixture.useEndpoint(receiver.endpoint)
+		ownerCase := outboxCrashCase{
+			Root: fixture.store.cfg.Root, Worker: fixture.store.cfg.WorkerDir,
+			Endpoint: receiver.endpoint, Token: fixture.token, MarkerPath: filepath.Join(t.TempDir(), "outbox-crash.json"),
+		}
+		runOutboxCrashBeforeSend(t, ownerCase)
+		state := fixture.outboxState(t)
+		if state.SendCount != 0 || state.DeliveredAt != nil {
+			t.Fatalf("pre-send crash changed outbox state: %+v", state)
+		}
+		effects, err := ReadReceiverDeliveries(fixture.root)
+		if err != nil || len(effects) != 0 {
+			t.Fatalf("pre-send crash transmitted effects: %+v, %v", effects, err)
+		}
+		markerData, err := os.ReadFile(ownerCase.MarkerPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var marker outboxCrashMarker
+		if err := json.Unmarshal(markerData, &marker); err != nil || marker.DeliveryID != fixture.entry.DeliveryID || marker.Payload != fixture.entry.PayloadJSON {
+			t.Fatalf("before-send identity/bytes changed: %s, err=%v", markerData, err)
+		}
+		processed, err := fixture.processor.ProcessOnce(context.Background())
+		if processed != 1 || err != nil {
+			t.Fatalf("post-crash delivery = (%d, %v)", processed, err)
+		}
+		if len(fixture.transport.deliveries) != 1 || fixture.transport.deliveries[0].ID != fixture.entry.DeliveryID || !bytes.Equal(fixture.transport.deliveries[0].Payload, []byte(fixture.entry.PayloadJSON)) {
+			t.Fatalf("restart changed stable delivery ID or payload bytes: %+v", fixture.transport.deliveries)
+		}
+		fixture.requireOneEffect(t)
+		state = fixture.outboxState(t)
+		if state.SendCount != 1 || state.DeliveredAt == nil {
+			t.Fatalf("post-restart outbox state = %+v", state)
+		}
+		if got := countRows(t, fixture.store, `SELECT COUNT(*) FROM runs`); got != 1 {
+			t.Fatalf("outbox restart created provider runs: %d", got)
+		}
+		if got := countRows(t, fixture.store, `SELECT COUNT(*) FROM task_events`); got != 2 {
+			t.Fatalf("outbox restart created workflow events: %d", got)
+		}
+		if err := fixture.store.CheckInvariants(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("D1 owner_crash receiver_pid=%d delivery_id=%s transmissions=1 visible_effects=1 provider_runs=1", receiver.pid, fixture.entry.DeliveryID)
+	})
+
 	t.Run("D1/receiver_unavailable", func(t *testing.T) {
 		fixture := newOutboxProcessFixture(t, "outbox-d1")
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -319,4 +368,96 @@ func TestFiniteOutboxACKLoss_D1_D2(t *testing.T) {
 		}
 		fixture.requireDeliveredOnce(t, "D2/receiver_crash_after_effect", restarted.pid)
 	})
+}
+
+const outboxCrashConfigEnv = "WERKRBY_FINITE_OUTBOX_CRASH_CONFIG"
+
+type outboxCrashCase struct {
+	Root       string
+	Worker     string
+	Endpoint   string
+	Token      string
+	MarkerPath string
+}
+
+type outboxCrashMarker struct {
+	OwnerPID   int    `json:"owner_pid"`
+	DeliveryID string `json:"delivery_id"`
+	Payload    string `json:"payload"`
+}
+
+func TestFiniteOutboxCrashHelperProcess(t *testing.T) {
+	path := os.Getenv(outboxCrashConfigEnv)
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ownerCase outboxCrashCase
+	if err := json.Unmarshal(data, &ownerCase); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := AcquireWorkspaceLock(ownerCase.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	s, err := OpenStore(Config{Root: ownerCase.Root, WorkerDir: ownerCase.Worker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	transport := &HTTPDeliveryTransport{Endpoint: ownerCase.Endpoint, Token: ownerCase.Token, Client: &http.Client{Timeout: 2 * time.Second}}
+	processor := NewOutboxProcessor(s, transport)
+	processor.RetryDelay = 0
+	processor.beforeSend = func(delivery Delivery) {
+		marker, _ := json.Marshal(outboxCrashMarker{OwnerPID: os.Getpid(), DeliveryID: delivery.ID, Payload: string(delivery.Payload)})
+		_ = os.WriteFile(ownerCase.MarkerPath, marker, 0o600)
+		os.Exit(86)
+	}
+	if processed, err := processor.ProcessOnce(context.Background()); processed != 1 || err != nil {
+		t.Fatalf("outbox owner process = (%d, %v)", processed, err)
+	}
+}
+
+func runOutboxCrashBeforeSend(t *testing.T, ownerCase outboxCrashCase) {
+	t.Helper()
+	configPath := filepath.Join(t.TempDir(), "outbox-crash-config.json")
+	writeEngineJSONFile(t, configPath, ownerCase)
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	logPath := filepath.Join(t.TempDir(), "outbox-owner.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(executable, "-test.run=^TestFiniteOutboxCrashHelperProcess$")
+	command.Env = append(os.Environ(), outboxCrashConfigEnv+"="+configPath)
+	command.Stdout = logFile
+	command.Stderr = logFile
+	if err := command.Start(); err != nil {
+		_ = logFile.Close()
+		t.Fatal(err)
+	}
+	ownerPID := command.Process.Pid
+	err = command.Wait()
+	_ = logFile.Close()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 86 {
+		output, _ := os.ReadFile(logPath)
+		t.Fatalf("outbox owner %d did not crash before send: err=%v output=%s", ownerPID, err, output)
+	}
+	markerData, err := os.ReadFile(ownerCase.MarkerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var marker outboxCrashMarker
+	if err := json.Unmarshal(markerData, &marker); err != nil || marker.OwnerPID != ownerPID {
+		t.Fatalf("invalid outbox crash marker: %s, err=%v", markerData, err)
+	}
+	t.Logf("outbox owner_pid=%d failpoint=before_first_send send_count=0", ownerPID)
 }

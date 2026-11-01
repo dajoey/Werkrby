@@ -71,5 +71,5 @@ func (s *Store) ProjectTask(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
-	return atomicWriteFile(task.ProjectionPath, []byte(RenderProjection(task, runs)), 0o600)
+	return writeProjectionWithFaults(task.ProjectionPath, []byte(RenderProjection(task, runs)), 0o600)
 }

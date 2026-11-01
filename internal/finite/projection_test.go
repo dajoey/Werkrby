@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-func TestFiniteProjectionRecovery_R5(t *testing.T) {
+func TestFiniteProjectionRecovery_R5InProcess(t *testing.T) {
 	s := newTestStore(t)
 	task := intakeTestTask(t, s, "task-projection", false)
 	run := dispatchTestRun(t, s, task, PhaseImplementation)
