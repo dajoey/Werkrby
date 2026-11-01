@@ -7,10 +7,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -38,6 +40,9 @@ func TestMain(m *testing.M) {
 		case "finite-lock-child":
 			os.Exit(runFiniteLockChild())
 		case "finite-sleeper":
+			os.Exit(runFiniteSleeper())
+		case "finite-term-ignoring-sleeper":
+			signal.Ignore(syscall.SIGTERM)
 			os.Exit(runFiniteSleeper())
 		}
 	}
@@ -171,6 +176,22 @@ func (h *finiteFixtureHarness) Send(ctx context.Context, key, prompt string, emi
 		return "", false, err
 	}
 	behavior := os.Getenv(fixtureBehaviorEnv)
+	if behavior == "group-child" {
+		// An unmarked provider child inherits the supervisor's process group
+		// and ignores SIGTERM, as a real provider tool may.
+		executable, err := os.Executable()
+		if err != nil {
+			return "", false, err
+		}
+		command := exec.Command(executable, "finite-term-ignoring-sleeper")
+		command.Env = mergeEnvironment(os.Environ(), h.cfg.Env)
+		if err := command.Start(); err != nil {
+			return "", false, err
+		}
+		if err := waitForReleaseFile(ctx, os.Getenv(fixtureReleaseEnv)); err != nil {
+			return "", false, err
+		}
+	}
 	if behavior == "block" || behavior == "orphan" {
 		executable, err := os.Executable()
 		if err != nil {

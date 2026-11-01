@@ -42,7 +42,7 @@ func configureFiniteHermesOwner(engine *Engine, provider harness.HarnessConfig) 
 		return
 	}
 	engine.opts.hooks.inspectRun = func(ctx context.Context, runID int64, token string) (RunProcesses, error) {
-		processes, processErr := InspectRun(ctx, runID, token)
+		processes, processErr := engine.inspectRunProcesses(ctx, runID, token)
 		run, runErr := engine.store.GetRun(ctx, runID)
 		if runErr != nil {
 			return RunProcesses{Liveness: LivenessUnknown}, runErr
@@ -57,7 +57,7 @@ func configureFiniteHermesOwner(engine *Engine, provider harness.HarnessConfig) 
 		return processes, nil
 	}
 	engine.opts.hooks.stopRun = func(ctx context.Context, runID int64, token string, grace time.Duration) (Liveness, error) {
-		processState, processErr := StopRun(ctx, runID, token, grace)
+		processState, processErr := engine.stopRunProcesses(ctx, runID, token, grace)
 		run, runErr := engine.store.GetRun(ctx, runID)
 		if runErr != nil {
 			return LivenessUnknown, runErr
