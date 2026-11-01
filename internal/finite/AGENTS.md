@@ -3,7 +3,7 @@
 ## Purpose
 
 - Own the flat, isolated runtime behind the separate, unpackaged experimental `werkrby-finite` command.
-- Keep the experiment limited to human-originated finite tasks in disposable test state; ordinary `werkrby` workflows and state remain unchanged.
+- Keep the engine limited to human-originated finite tasks in its own dedicated state root; ordinary `werkrby` workflows and state remain unchanged.
 
 ## Local Contracts
 
