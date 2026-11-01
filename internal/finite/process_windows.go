@@ -30,6 +30,13 @@ const (
 var (
 	openJobObjectW  = windows.NewLazySystemDLL("kernel32.dll").NewProc("OpenJobObjectW")
 	isProcessInJobW = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
+
+	// supervisorConsoleStops receives the console stop events the supervisor
+	// role must survive. Registration — not signal.Ignore — is what keeps a
+	// Windows process alive through them: the runtime console handler lets the
+	// OS default (process termination) apply when no watcher wants the signal,
+	// and Ignore removes the watcher (signal_disable).
+	supervisorConsoleStops chan os.Signal
 )
 
 type windowsSupervisorLaunch struct {
@@ -96,11 +103,18 @@ func (l *windowsSupervisorLaunch) Close() error {
 
 func openSupervisorContainment(token string) (supervisorContainment, error) {
 	// The supervisor role survives the graceful console stop aimed at its own
-	// process group (Ctrl-C and Ctrl-Break both arrive as Interrupt for Go
-	// processes) so the provider can drain and completion.json is still
-	// written before any termination. A provider that opts in re-arms
-	// delivery with signal.Notify afterwards.
-	signal.Ignore(os.Interrupt)
+	// process group so the provider can drain and completion.json is still
+	// written before any termination. The runtime maps Ctrl-C and Ctrl-Break
+	// both to Interrupt; keeping a Notify armed swallows them, while Ignore
+	// would disable the watcher and let the console stop terminate this
+	// process. A provider that opts in re-arms delivery with its own
+	// signal.Notify afterwards.
+	supervisorConsoleStops = make(chan os.Signal, 1)
+	signal.Notify(supervisorConsoleStops, os.Interrupt)
+	go func(stops chan os.Signal) {
+		for range stops {
+		}
+	}(supervisorConsoleStops)
 	assignment, err := openOrCreateWindowsJob(finiteJobObjectName(token), jobObjectQuery|jobObjectAssignProcess)
 	if err != nil {
 		return nil, fmt.Errorf("open supervisor job containment: %w", err)
@@ -598,7 +612,7 @@ func signalProcess(identity ProcessIdentity, force bool) error {
 // gracefulWindowsStop sends one console Ctrl-Break to the run's process
 // group. The supervisor is the group leader (CREATE_NEW_PROCESS_GROUP); the
 // group event reaches every provider sharing the group and console. The
-// supervisor ignores SIGBREAK (openSupervisorContainment) so the provider can
+// supervisor swallows the stop (openSupervisorContainment) so the provider can
 // drain and completion.json is still written before any termination.
 func gracefulWindowsStop(identity ProcessIdentity) error {
 	args, err := readWindowsCommandLine(identity.PID)
