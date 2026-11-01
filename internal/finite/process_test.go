@@ -212,6 +212,13 @@ func (h *finiteFixtureHarness) recordCall(kind string) error {
 }
 
 func runFiniteFakeProvider() int {
+	// A provider admitted beyond its supervisor's lifetime explicitly holds
+	// the query-only containment handle. Linux uses argv markers instead.
+	containment, err := openSupervisorContainment(os.Getenv(finiteRunTokenEnv))
+	if err != nil {
+		return 1
+	}
+	defer containment.Close()
 	if path := os.Getenv(fixtureStartedEnv); path != "" {
 		if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 			return 1
