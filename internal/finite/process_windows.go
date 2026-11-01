@@ -81,7 +81,7 @@ func (l *windowsSupervisorLaunch) Close() error {
 }
 
 func openSupervisorContainment(token string) (supervisorContainment, error) {
-	assignment, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery|jobObjectAssignProcess)
+	assignment, err := openOrCreateWindowsJob(finiteJobObjectName(token), jobObjectQuery|jobObjectAssignProcess)
 	if err != nil {
 		return nil, fmt.Errorf("open supervisor job containment: %w", err)
 	}
@@ -89,12 +89,16 @@ func openSupervisorContainment(token string) (supervisorContainment, error) {
 		_ = windows.CloseHandle(assignment)
 		return nil, fmt.Errorf("join supervisor job containment: %w", err)
 	}
-	if err := windows.CloseHandle(assignment); err != nil {
-		return nil, err
-	}
+	// Keep the assignment handle open until the query handle exists so a
+	// direct child never loses the named job between these two operations.
 	job, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery)
 	if err != nil {
+		_ = windows.CloseHandle(assignment)
 		return nil, fmt.Errorf("open supervisor job containment: %w", err)
+	}
+	if err := windows.CloseHandle(assignment); err != nil {
+		_ = windows.CloseHandle(job)
+		return nil, err
 	}
 	// Provider descendants inherit only this query-right handle. Their live
 	// handle keeps the named recovery object observable after the supervisor
@@ -104,6 +108,20 @@ func openSupervisorContainment(token string) (supervisorContainment, error) {
 		return nil, fmt.Errorf("make supervisor job containment inheritable: %w", err)
 	}
 	return &windowsSupervisorContainment{job: job}, nil
+}
+
+func openOrCreateWindowsJob(name string, access uint32) (windows.Handle, error) {
+	job, err := openWindowsJob(name, access)
+	if !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
+		return job, err
+	}
+	namePointer, err := windows.UTF16PtrFromString(name)
+	if err != nil {
+		return 0, err
+	}
+	// CreateJobObject is idempotent for an existing name: concurrent wrappers
+	// still share one job and duplicate-wrapper discovery remains authoritative.
+	return windows.CreateJobObject(nil, namePointer)
 }
 
 func ensureWindowsProcessInJob(job windows.Handle) error {
