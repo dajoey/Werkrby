@@ -26,6 +26,8 @@
 - Acquire the finite-owned nonblocking `owner.lock` before database creation or mutation, control publication, projection, outbox activity, or supervisor spawn. Exactly one owner may write; a lock loser writes and spawns nothing, and there is no election or secondary writer.
 - Never let supervisors inherit the owner-lock descriptor. Keep the lock path stable within the explicit state root and separate from ordinary Werkrby election records.
 - Support dispatch only on Linux and Windows. On every other platform, report process liveness as unknown and fail closed before dispatch rather than treating a process as absent.
+- On Linux a run's OS boundary is the recorded supervisor's process group (pgid = supervisor PID): a surviving member keeps the run live after the supervisor dies, and stops signal the whole group. Only processes whose executable is the finite binary are read as supervisors or providers; unrelated processes and other state roots' runs never decide this run's liveness.
+- Real providers use a dedicated Hermes home carrying the `.finite-hermes-disposable` marker and a `wk-finite` or `wk-finite-<name>` profile; ordinary worker profiles and the default home are refused.
 
 ### Supervisor and recovery
 
