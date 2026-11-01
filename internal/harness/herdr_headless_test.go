@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -738,5 +739,223 @@ func TestHerdrHeadlessAgyPlanModeIsNotFullAccess(t *testing.T) {
 	got := strings.ReplaceAll(string(argv), "\n", " ")
 	if strings.Contains(got, "--dangerously-skip-permissions") || !strings.Contains(got, "--mode plan") {
 		t.Fatalf("argv = %q, want --mode plan and no skip-permissions", got)
+	}
+}
+
+// hermesTurnOK is a fake hermes one-shot run: it records its argv and cwd, writes the --usage-file
+// report of a completed turn, and prints only the final reply.
+const hermesTurnOK = `printf '%s\n' "$@" >> "$(dirname "$0")/argv"
+pwd > "$(dirname "$0")/cwd"
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--usage-file" ]; then
+    printf '%s' '{"session_id":"local-abc123456789","completed":true,"failed":false,"turn_exit_reason":"text_response(finish_reason=stop)","failure":null}' > "$a"
+  fi
+  prev="$a"
+done
+echo 'DONE: handed to review'
+`
+
+// hermesHeadlessFixture is a workspace whose roster has one headless hermes seat, a fake hermes
+// one-shot client, and a fake gateway-turn stop script; a turn that reaches a pane path fails
+// instead of passing by accident.
+func hermesHeadlessFixture(t *testing.T, fakeHermes string) (*Herdr, string) {
+	t.Helper()
+	root := t.TempDir()
+	t.Setenv("AGENT_ACTIVITY_DIR", filepath.Join(root, "activity"))
+	state := filepath.Join(root, roster.StateDirName)
+	if err := os.MkdirAll(state, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	body := "staff:\n  pilot:\n    runner: hermes\n    headless: true\n    args: [\"-p\", \"wk-pilot\", \"--model\", \"zai/glm-5.3-flash\", \"--reasoning\", \"high\"]\n  pane: {runner: hermes}\n"
+	if err := os.WriteFile(roster.Path(state), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(root, "fake-hermes")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\n"+fakeHermes), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stop := filepath.Join(root, "fake-stop")
+	if err := os.WriteFile(stop, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$(dirname \"$0\")/stop-argv\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	h, err := NewHerdr(HarnessConfig{Command: filepath.Join(root, "no-such-herdr"), Cwd: root, Sandbox: "danger-full-access", ApprovalPolicy: "never"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.headlessHermesCommand = script
+	h.headlessHermesStopScript = stop
+	h.headlessHermesStopPython = "/bin/sh"
+	return h, root
+}
+
+func TestHerdrHeadlessHermesStaffRunsHermesOneshot(t *testing.T) {
+	h, root := hermesHeadlessFixture(t, hermesTurnOK)
+	var log eventLog
+	thread, steered, err := h.SendWithModel(context.Background(), headlessKey, "do the task", "@pilot", log.emit)
+	if err != nil || steered || thread != "local-abc123456789" {
+		t.Fatalf("SendWithModel = %q, %v, %v; want local-abc123456789, false, nil", thread, steered, err)
+	}
+	argv, _ := os.ReadFile(filepath.Join(root, "argv"))
+	got := strings.Split(strings.TrimSpace(string(argv)), "\n")
+	if len(got) != 10 || got[0] != "-z" || got[1] != "do the task" || got[2] != "--usage-file" {
+		t.Fatalf("argv = %q, want -z <prompt> --usage-file <path> and the seat args", got)
+	}
+	usageDir := filepath.Join(root, roster.StateDirName, "runtime", "hermes-usage")
+	if !strings.HasPrefix(got[3], usageDir) {
+		t.Fatalf("usage file %q, want one under %s", got[3], usageDir)
+	}
+	want := []string{"-p", "wk-pilot", "--model", "zai/glm-5.3-flash", "--reasoning", "high"}
+	if strings.Join(got[4:], " ") != strings.Join(want, " ") {
+		t.Fatalf("seat args = %q, want %q", got[4:], want)
+	}
+	if cwd, _ := os.ReadFile(filepath.Join(root, "cwd")); strings.TrimSpace(string(cwd)) != root {
+		t.Fatalf("cwd = %q, want %q", cwd, root)
+	}
+	done := log.done()
+	if len(done) != 1 || done[0].Kind != core.EventFinal || done[0].FinalText == nil || *done[0].FinalText != "DONE: handed to review" || done[0].ThreadID != "local-abc123456789" {
+		t.Fatalf("done events = %+v, want one final with the reply text", done)
+	}
+	// The report is kept under its final per-run name, not the temp name it was written to.
+	entries, err := os.ReadDir(usageDir)
+	if err != nil || len(entries) != 1 || !strings.HasSuffix(entries[0].Name(), "-usage.json") || strings.HasPrefix(entries[0].Name(), "turn-") {
+		t.Fatalf("usage dir = %v, %v; want one <pid>-usage.json report", entries, err)
+	}
+	if h.ThreadID(headlessKey) != "local-abc123456789" || h.IsActive(headlessKey) {
+		t.Fatalf("session %q active %v; want remembered and the turn cleared", h.ThreadID(headlessKey), h.IsActive(headlessKey))
+	}
+}
+
+// The live wall wording (2026-10-28, zai one-shot): the client exits 2 and the usage report written
+// even on failure carries the provider text the quota handling reads.
+func TestHerdrHeadlessHermesQuotaWallFailsTheTurn(t *testing.T) {
+	h, _ := hermesHeadlessFixture(t, `prev=""
+for a in "$@"; do
+  if [ "$prev" = "--usage-file" ]; then
+    printf '%s' '{"session_id":"local-abc123456789","completed":false,"failed":true,"failure":"HTTP 429: Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-31 02:53:12"}' > "$a"
+  fi
+  prev="$a"
+done
+echo 'Z.AI / GLM rate-limited every one of 3 attempts — it looks temporarily unavailable.'
+exit 2
+`)
+	var log eventLog
+	_, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@pilot", log.emit)
+	if err == nil || !strings.Contains(err.Error(), "runner turn failed: HTTP 429: Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-10-31 02:53:12") {
+		t.Fatalf("err = %v, want the provider wall text as a runner turn failure", err)
+	}
+	done := log.done()
+	if len(done) != 1 || done[0].Kind != core.EventError || !strings.Contains(done[0].Text, "Weekly/Monthly Limit Exhausted") {
+		t.Fatalf("done events = %+v, want one error event carrying the provider text", done)
+	}
+}
+
+func TestHerdrHeadlessHermesFollowUpResumesItsSession(t *testing.T) {
+	h, root := hermesHeadlessFixture(t, hermesTurnOK)
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "first", "@pilot", nil); err != nil {
+		t.Fatal(err)
+	}
+	argv, _ := os.ReadFile(filepath.Join(root, "argv"))
+	if strings.Contains(string(argv), "--resume") {
+		t.Fatalf("argv = %q, resumed a session no report has named yet", argv)
+	}
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "second", "@pilot", nil); err != nil {
+		t.Fatal(err)
+	}
+	argv, _ = os.ReadFile(filepath.Join(root, "argv"))
+	got := strings.Split(strings.TrimSpace(string(argv)), "\n")
+	if len(got) != 22 { // two invocations of 10, the second carrying --resume <id>
+		t.Fatalf("argv = %q, want two recorded invocations", got)
+	}
+	want := []string{"-z", "second", "--resume", "local-abc123456789", "--usage-file"}
+	if strings.Join(got[10:15], " ") != strings.Join(want, " ") {
+		t.Fatalf("second invocation = %q, want %q", got[10:15], want)
+	}
+}
+
+// A remembered session the profile no longer has fails the resume before any run (live: exit 1,
+// `Error: No session found matching`, no report); the session is forgotten so the next turn starts
+// fresh instead of failing the same way every time.
+func TestHerdrHeadlessHermesStaleResumeIsForgotten(t *testing.T) {
+	h, _ := hermesHeadlessFixture(t, `if [ -f "$(dirname "$0")/second" ]; then
+  echo "Error: No session found matching 'local-abc123456789'. Use 'hermes sessions list' to see available sessions." >&2
+  exit 1
+fi
+touch "$(dirname "$0")/second"
+`+hermesTurnOK)
+	if _, _, err := h.SendWithModel(context.Background(), headlessKey, "first", "@pilot", nil); err != nil {
+		t.Fatal(err)
+	}
+	if h.ThreadID(headlessKey) != "local-abc123456789" {
+		t.Fatalf("session = %q, want it remembered after the first turn", h.ThreadID(headlessKey))
+	}
+	_, _, err := h.SendWithModel(context.Background(), headlessKey, "second", "@pilot", nil)
+	if err == nil || !strings.Contains(err.Error(), "No session found matching") {
+		t.Fatalf("err = %v, want the stale-resume failure", err)
+	}
+	if h.ThreadID(headlessKey) != "" {
+		t.Fatalf("session = %q, want the stale id forgotten", h.ThreadID(headlessKey))
+	}
+}
+
+// The known one-shot gap (2026-10-26): a cut client ends only the client, while the profile's
+// gateway keeps the detached turn running. An interrupt kills the client's process group and stops
+// the gateway turn before the turn is reported over.
+func TestHerdrHeadlessHermesInterruptStopsTheGatewayTurn(t *testing.T) {
+	h, root := hermesHeadlessFixture(t, `exec sleep 30
+`)
+	errc := make(chan error, 1)
+	go func() {
+		_, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@pilot", nil)
+		errc <- err
+	}()
+	deadline := time.Now().Add(5 * time.Second)
+	for !h.IsActive(headlessKey) {
+		if time.Now().After(deadline) {
+			t.Fatal("headless turn never became active")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if ok, err := h.Interrupt(context.Background(), headlessKey); !ok || err != nil {
+		t.Fatalf("Interrupt = %v, %v", ok, err)
+	}
+	select {
+	case err := <-errc:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("interrupted headless turn did not return")
+	}
+	stopArgv, err := os.ReadFile(filepath.Join(root, "stop-argv"))
+	if err != nil {
+		t.Fatalf("gateway-turn stop did not run before the turn returned: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(stopArgv)), "\n")
+	if len(got) != 8 || got[0] != "--profile" || got[1] != "wk-pilot" || got[2] != "--cwd" || got[3] != root || got[6] != "--settle" || got[7] != "240" {
+		t.Fatalf("stop argv = %q, want --profile wk-pilot --cwd <root> --since <epoch> --settle 240", got)
+	}
+	if _, err := strconv.ParseInt(got[5], 10, 64); err != nil {
+		t.Fatalf("--since = %q, want an epoch seconds value", got[5])
+	}
+}
+
+func TestHerdrHeadlessHermesExitZeroWithoutReportFails(t *testing.T) {
+	h, _ := hermesHeadlessFixture(t, `echo 'DONE: handed to review'
+`)
+	var log eventLog
+	_, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@pilot", log.emit)
+	if err == nil || !strings.Contains(err.Error(), "hermes -z ended without a usage report") {
+		t.Fatalf("err = %v, want the missing-report failure, not a pass on unreadable stdout", err)
+	}
+}
+
+func TestHermesProfileArg(t *testing.T) {
+	got := hermesProfileArg([]string{"-p", "wk-notify", "--model", "zai/glm-5.3-flash"})
+	if got != "wk-notify" {
+		t.Fatalf("hermesProfileArg = %q, want wk-notify", got)
+	}
+	if hermesProfileArg([]string{"--reasoning", "high"}) != "" {
+		t.Fatal("hermesProfileArg = a value, want \"\" without a -p arg")
 	}
 }

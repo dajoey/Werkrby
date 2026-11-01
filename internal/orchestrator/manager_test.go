@@ -14,6 +14,7 @@ import (
 	"github.com/agent0ai/spynel/internal/config"
 	"github.com/agent0ai/spynel/internal/core"
 	"github.com/agent0ai/spynel/internal/extensions"
+	"github.com/agent0ai/spynel/internal/harness"
 	"github.com/agent0ai/spynel/internal/workspace"
 )
 
@@ -31,6 +32,8 @@ type fakeHarness struct {
 	// a send error: an error for a refused turn, a final for a turn that
 	// completed and then failed on the way back.
 	sendErrFinal bool
+	// claimed is the claimed document each Send's context named (harness.ClaimedDocument).
+	claimed []string
 }
 
 func newFakeRecipient() *fakeHarness {
@@ -52,9 +55,10 @@ func (f *fakeHarness) Interrupt(_ context.Context, key string) (bool, error) {
 	f.active[key] = false
 	return true, nil
 }
-func (f *fakeHarness) Send(_ context.Context, key, prompt string, emit core.Emit) (string, bool, error) {
+func (f *fakeHarness) Send(ctx context.Context, key, prompt string, emit core.Emit) (string, bool, error) {
 	f.mu.Lock()
 	f.calls++
+	f.claimed = append(f.claimed, harness.ClaimedDocument(ctx))
 	f.keys = append(f.keys, key)
 	f.prompts = append(f.prompts, prompt)
 	var sendErr error
@@ -959,6 +963,19 @@ func TestTransientProviderErrorRetriesInPlace(t *testing.T) {
 		"transient then success": {errs: []error{transient}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
 		// An undelivered prompt is retried once in place on the same worker
 		"prompt_not_delivered then success": {errs: []error{errors.New("prompt_not_delivered: worker sj-t-a1-test never received prompt, please retry")}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
+		// A draining gateway refuses before any prompt is sent: retried once in place,
+		// not handed to a recovery agent.
+		"hermes gateway draining then success": {errs: []error{errors.New("runner turn failed: Gateway draining: not_ready")}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
+		// Hermes rewrites any socket error during the turn (a 30 s prompt.submit timeout in a
+		// dispatch burst, live 2026-10-31T05:03:45Z) to this text while the gateway may still
+		// run the turn: never retried blind in place.
+		"hermes gateway connection failed": {errs: []error{errors.New("runner turn failed: Command helper: applied 4 secrets\nError: Gateway connection failed; no local fallback")}, wantCalls: 1, wantState: "error", wantError: "Gateway connection failed"},
+		"hermes gateway disconnected":      {errs: []error{errors.New("runner turn failed: Gateway disconnected; turn outcome is unknown. Resume the printed session ID to see it.")}, wantCalls: 1, wantState: "error", wantError: "Gateway disconnected"},
+		// The dominant live shape of the same outage (2026-10-31T05:19:42Z, three
+		// dispatches in one gateway restart window, 50 occurrences in the observer
+		// log): the one-shot client's standard gateway-connect wrapper. The turn
+		// never started, so it is the same retry, not a strike.
+		"hermes gateway inaccessible then success": {errs: []error{errors.New("runner turn failed: Command helper: applied 4 secrets\nError: Gateway inaccessible: service_identity_unverified")}, wantCalls: 2, wantState: "awaiting_transition", wantError: ""},
 		// A turn that produced its final response and then failed on the way
 		// back has already done its work: reconciliation owns it, not a retry.
 		"transient after a completed turn": {errs: []error{transient}, final: true, wantCalls: 1, wantState: "error", wantError: transient.Error()},
@@ -1054,6 +1071,37 @@ func waitDispatchDiagnostics(t *testing.T, diagDir string) {
 			t.Fatalf("no dispatch-error diagnostics file appeared under %s", diagDir)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// TestDispatchErrorAutopsyWriteIsJoinedByWait pins the dispatch-error autopsy
+// write to the tracked dispatch goroutine: after manager.Wait() the err-*.json
+// file exists with no polling. The former detached-goroutine form failed this
+// (the write landed whenever the scheduler got to it) and, worse, could land
+// after a test's t.TempDir RemoveAll had started and fail the run with
+// "TempDir RemoveAll cleanup: ... directory not empty".
+func TestDispatchErrorAutopsyWriteIsJoinedByWait(t *testing.T) {
+	root := t.TempDir()
+	if err := workspace.Init(root, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(config.PathForRoot(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Create(cfg, "tasks", "autopsy join fixture", ""); err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakeRecipient()
+	fake.sendErrs = []error{errors.New("boom: fixture dispatch error")}
+	manager := New(cfg, fake, extensions.Runner{})
+	if err := manager.ScanOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	manager.Wait()
+	matches, _ := filepath.Glob(filepath.Join(cfg.StatePath("diagnostics"), "err-*.json"))
+	if len(matches) != 1 {
+		t.Fatalf("diagnostics autopsy files after Wait = %d, want exactly 1 written before Wait returned", len(matches))
 	}
 }
 

@@ -25,4 +25,8 @@ func appendTaskReviewModeInstruction(prompt, mode string) string {
 	return strings.TrimRight(prompt, "\r\n") + "\n\n" + TaskReviewModeInstruction(mode)
 }
 
+// externalExecutorHeartbeatInstruction keeps the heartbeat agent off documents another engine
+// executes; the framework cannot fence an agent's own file edits, so this rule is prompt text.
+const externalExecutorHeartbeatInstruction = "Framework-owned executor rule: a task whose front matter says `executor: finite` is run by the separate werkrby-finite engine, not by this orchestrator. Leave it alone in every status folder: never edit, move, repair, recover, wake, remind about, or notify about it, and never treat its missing lease as a stall."
+
 const waitingReminderHeartbeatInstruction = "Framework-owned stale-wait rule: agents do the work; the framework only triggers this audit and provides the ordinary recent-authorized notification primitive. Inspect bounded waiting-task progress, judge whether inactivity is considerable and a reminder is useful, avoid unnecessary repetition by reading prior progress, then either call `werkrby notify --recent-authorized --message TEXT` and append the successful send to that task's Progress log, or append a concise skip/CLI-failure result when a durable record is useful. Never create reminder queues, timers, thresholds, eligibility rules, identity links, correlation tokens, acknowledgement state, deduplication state, restart contingencies, or other reminder orchestration."

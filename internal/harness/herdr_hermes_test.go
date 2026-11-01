@@ -3,8 +3,86 @@ package harness
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+// Screen pieces in the shapes Hermes draws (hermes_cli/cli_stream_mixin.py and
+// cli_chat_turn_mixin.py): each submitted message sits between two 40-wide accent rules,
+// a streamed reply is a ╭─ ☤ Hermes ─╮ box, an error reply is a corner-less Rich panel,
+// and the status bar plus composer close the screen.
+var (
+	hermesTestTurnRule = strings.Repeat("─", 40)
+	hermesTestWideRule = strings.Repeat("─", 120)
+	hermesTestChrome   = " ☤ z-ai-glm-5-3-flash │ ~56.1K/1.3M │ [░░░░░░░░░░] ~4% │ ◎ 67.6% │ ◷ 40.2s │ ↑ 115 t/s.. ─ Werkrby chat\n" +
+		hermesTestWideRule + "\n❯ \n" + hermesTestWideRule + "\n"
+)
+
+func hermesTestBox(body string) string {
+	return "\n╭─ ☤ Hermes " + strings.Repeat("─", 106) + "╮\n" + body + "\n╰" + strings.Repeat("─", 118) + "╯\n"
+}
+
+func hermesTestTurn(prompt string, output ...string) string {
+	return "\n" + hermesTestTurnRule + "\n● " + prompt + "\n" + hermesTestTurnRule + "\n\n" + strings.Join(output, "")
+}
+
+func TestCleanHerdrTerminalOutputHermesWarmPaneReturnsNewestReply(t *testing.T) {
+	// A warm chat pane keeps the earlier turn's reply box on screen above the new one.
+	screen := hermesTestTurn("What is on my plate today?", hermesTestBox("Older reply: three tasks are open.")) +
+		hermesTestTurn("And the dentist?",
+			"┌─ Reasoning "+strings.Repeat("─", 105)+"┐\nThe card wakes in January.\n└"+strings.Repeat("─", 118)+"┘\n",
+			hermesTestBox("Newer reply: the dentist card wakes on January 14.")) +
+		hermesTestChrome
+	got := cleanHerdrTerminalOutput(screen)
+	if want := "Newer reply: the dentist card wakes on January 14."; got != want {
+		t.Fatalf("cleanHerdrTerminalOutput(warm pane) = %q, want %q", got, want)
+	}
+}
+
+func TestCleanHerdrTerminalOutputHermesTurnAnswerIsLastBox(t *testing.T) {
+	// One turn draws a box before a tool call and another for the answer.
+	screen := hermesTestTurn("Check the disk.",
+		hermesTestBox("Let me look at the disk first."),
+		"  ┊ 💻 $         df -h /  0.4s\n",
+		hermesTestBox("The root disk is 41% full.")) +
+		hermesTestChrome
+	got := cleanHerdrTerminalOutput(screen)
+	if want := "The root disk is 41% full."; got != want {
+		t.Fatalf("cleanHerdrTerminalOutput(two boxes in one turn) = %q, want %q", got, want)
+	}
+}
+
+func TestCleanHerdrTerminalOutputHermesSingleReplyWithChrome(t *testing.T) {
+	screen := hermesTestTurn("Reply with the single word DONE.", hermesTestBox("DONE")) + hermesTestChrome
+	if got := cleanHerdrTerminalOutput(screen); got != "DONE" {
+		t.Fatalf("cleanHerdrTerminalOutput(single reply) = %q, want %q", got, "DONE")
+	}
+}
+
+func TestCleanHerdrTerminalOutputHermesTurnWithoutBoxNeverServesOlderReply(t *testing.T) {
+	// The newest turn failed: Hermes drew its error as a corner-less panel, not a reply box.
+	errorPanel := " ─ ☤ Hermes " + strings.Repeat("─", 104) + " \n\n API call failed after 3 retries: HTTP 402 insufficient credits\n\n " +
+		strings.Repeat("─", 116) + " \n"
+	screen := hermesTestTurn("What is on my plate today?", hermesTestBox("Older reply: three tasks are open.")) +
+		hermesTestTurn("And the dentist?", errorPanel) +
+		hermesTestChrome
+	got := cleanHerdrTerminalOutput(screen)
+	if strings.Contains(got, "Older reply") {
+		t.Fatalf("cleanHerdrTerminalOutput served the previous turn's reply for a turn that drew no reply box:\n%s", got)
+	}
+	if !strings.Contains(got, "HTTP 402 insufficient credits") {
+		t.Fatalf("cleanHerdrTerminalOutput dropped the newest turn's own output:\n%s", got)
+	}
+}
+
+func TestCleanHerdrTerminalOutputHermesTurnRuleInsideReplyIsNotATurn(t *testing.T) {
+	// A reply that itself prints a 40-wide rule is still one reply.
+	body := "Summary first.\n" + hermesTestTurnRule + "\nDetails second."
+	screen := hermesTestTurn("Summarize.", hermesTestBox(body)) + hermesTestChrome
+	if got := cleanHerdrTerminalOutput(screen); got != body {
+		t.Fatalf("cleanHerdrTerminalOutput(rule inside reply) = %q, want %q", got, body)
+	}
+}
 
 func TestHermesComposerDetectionStartupFixtures(t *testing.T) {
 	testDir := filepath.Join("testdata", "hermes-startup")

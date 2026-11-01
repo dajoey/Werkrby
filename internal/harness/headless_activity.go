@@ -292,3 +292,16 @@ func headlessTaskID(key string) string {
 	}
 	return ""
 }
+
+// paneTaskEnvArgs are the herdr spawn flags that give a dynamically spawned pane worker the task id
+// in its environment: the pane shell hands it to the runner launched in that pane, and a Hermes CLI
+// client forwards it to the gateway session through the profile's terminal.client_env_passthrough,
+// which puts it in that session's tool subprocesses (~/ops/tiller_directive.py reads it there to
+// link work-Claude bridge sends back to the requesting task). Nil for a key without a task, matching
+// the headless path, which sets the same variable only when headlessTaskID finds one.
+func paneTaskEnvArgs(key string) []string {
+	if taskID := headlessTaskID(key); taskID != "" {
+		return []string{"--env", "WERKRBY_TASK_ID=" + taskID}
+	}
+	return nil
+}

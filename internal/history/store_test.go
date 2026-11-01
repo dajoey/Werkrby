@@ -3,6 +3,7 @@ package history
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -115,26 +116,61 @@ func TestSourceIdentityDeduplicationStrictlyScansLongHistory(t *testing.T) {
 	}
 }
 
-func TestSourceIdentityDeduplicationFailsClosedOnCorruptHistory(t *testing.T) {
+func TestSourceIdentityDeduplicationSkipsCorruptAndTornLines(t *testing.T) {
 	store := New(t.TempDir())
-	if _, err := store.Append("whatsapp", "person", Entry{Role: "user", SourceMessageID: "whatsapp:old", Content: "original"}); err != nil {
+	if _, err := store.Append("cli", "local", Entry{Role: "user", SourceMessageID: "cli:old", Content: "original"}); err != nil {
 		t.Fatal(err)
 	}
-	file, err := os.OpenFile(store.Path("whatsapp", "person"), os.O_APPEND|os.O_WRONLY, 0o600)
+	if _, err := store.Append("cli", "local", Entry{Role: "assistant", Content: "reply"}); err != nil {
+		t.Fatal(err)
+	}
+	path := store.Path("cli", "local")
+	// A torn ENOSPC append leaves a partial JSON line with no closing brace
+	// and no trailing newline, exactly what the 2026-10-27 disk-full window
+	// left in cli/local.jsonl and what bricked every CLI command.
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := file.WriteString("{corrupt}\n"); err != nil {
+	if _, err := file.WriteString(`{"at":"2026-10-27T11:46:00Z","role":"user","source_message_id":"cli:torn","content":"tor`); err != nil {
 		_ = file.Close()
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	for _, sourceID := range []string{"whatsapp:old", "whatsapp:new"} {
-		if found, err := store.HasUserSourceID("whatsapp", "person", sourceID); err == nil || found {
-			t.Fatalf("corrupt duplicate check did not fail closed: source=%s found=%t err=%v", sourceID, found, err)
-		}
+	if found, err := store.HasUserSourceID("cli", "local", "cli:old"); err != nil || !found {
+		t.Fatalf("parseable identity before the torn line = %t, %v", found, err)
+	}
+	if found, err := store.HasUserSourceID("cli", "local", "cli:torn"); err != nil || found {
+		t.Fatalf("a torn identity is unreadable and must never match = %t, %v", found, err)
+	}
+	if found, err := store.HasUserSourceID("cli", "local", "cli:absent"); err != nil || found {
+		t.Fatalf("absent identity = %t, %v", found, err)
+	}
+	// The next append after a torn tail starts its own line, so the new record
+	// stays parseable and the torn fragment stays isolated.
+	if _, err := store.Append("cli", "local", Entry{Role: "user", SourceMessageID: "cli:after", Content: "next request"}); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := store.HasUserSourceID("cli", "local", "cli:after"); err != nil || !found {
+		t.Fatalf("identity appended after a torn tail = %t, %v", found, err)
+	}
+	// A corrupt line with a trailing newline is skipped the same way and is
+	// never reinterpreted as an admission record.
+	file, err = os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("{\"corrupt}\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := store.HasUserSourceID("cli", "local", "cli:old"); err != nil || !found {
+		t.Fatalf("parseable identity after a corrupt line = %t, %v", found, err)
 	}
 }
 
@@ -344,5 +380,115 @@ func TestOversizeMultibyteContentStaysValidUTF8(t *testing.T) {
 	entries, _, err := store.Entries("tui", "local")
 	if err != nil || len(entries) != 1 || !utf8.ValidString(entries[0].Content) {
 		t.Fatalf("multibyte oversize entry unreadable or invalid: %d, %v", len(entries), err)
+	}
+}
+
+func TestRecoveryTailReadsOnlyTheRetainedTail(t *testing.T) {
+	store := New(t.TempDir())
+	now := time.Now().UTC()
+	for index := 0; index < 10; index++ {
+		if _, err := store.Append("cli", "oversize", Entry{At: now.Add(time.Duration(index) * time.Second), Role: "assistant", Content: fmt.Sprintf("filler %d", index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, truncated, _, err := store.RecoveryTail("cli", "oversize", 4)
+	if err != nil || !truncated || len(entries) != 4 {
+		t.Fatalf("oversize tail = %d entries, truncated=%t, err=%v; want 4, true, nil", len(entries), truncated, err)
+	}
+	if entries[0].Content != "filler 6" || entries[3].Content != "filler 9" {
+		t.Fatalf("tail entries are not the newest four in order: %q..%q", entries[0].Content, entries[3].Content)
+	}
+	exact, truncated, _, err := store.RecoveryTail("cli", "oversize", 10)
+	if err != nil || truncated || len(exact) != 10 {
+		t.Fatalf("exact-fit tail = %d entries, truncated=%t, err=%v; want 10, false, nil", len(exact), truncated, err)
+	}
+}
+
+func TestRecoveryTailIgnoresCorruptionBeyondTheRetainedTail(t *testing.T) {
+	store := New(t.TempDir())
+	path := store.Path("cli", "partial")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{\"role\":\"corrupt\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	for index := 0; index < 10; index++ {
+		if _, err := store.Append("cli", "partial", Entry{At: now.Add(time.Duration(index) * time.Second), Role: "assistant", Content: fmt.Sprintf("filler %d", index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entries, truncated, _, err := store.RecoveryTail("cli", "partial", 4)
+	if err != nil || !truncated || len(entries) != 4 || entries[3].Content != "filler 9" {
+		t.Fatalf("tail beyond a corrupt prefix = %d entries, truncated=%t, err=%v; want 4, true, nil (the prefix must never be scanned)", len(entries), truncated, err)
+	}
+}
+
+func TestRecoveryTailStillFailsClosedOnCorruptTail(t *testing.T) {
+	store := New(t.TempDir())
+	now := time.Now().UTC()
+	for index := 0; index < 10; index++ {
+		if _, err := store.Append("cli", "torn", Entry{At: now.Add(time.Duration(index) * time.Second), Role: "assistant", Content: fmt.Sprintf("filler %d", index)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file, err := os.OpenFile(store.Path("cli", "torn"), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("{\"role\":\"assistant\",\"content\":\"torn\"\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.RecoveryTail("cli", "torn", 4); err == nil {
+		t.Fatalf("corrupt newest tail did not fail closed")
+	}
+}
+
+// A short write (ENOSPC) or a crash mid-write leaves a final line with no
+// newline. The next append must not be written onto that fragment.
+func TestBughuntTornTailSwallowsNextAppend(t *testing.T) {
+	for name, tail := range map[string]string{
+		"torn fragment":              `{"role":"user","source_message_id":"whatsapp:to`,
+		"complete entry, no newline": `{"role":"user","content":"unterminated","source_message_id":"whatsapp:unterminated"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := New(t.TempDir())
+			if _, err := store.Append("whatsapp", "person", Entry{Role: "user", SourceMessageID: "whatsapp:old", Content: "original"}); err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.OpenFile(store.Path("whatsapp", "person"), os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := file.WriteString(tail); err != nil {
+				_ = file.Close()
+				t.Fatal(err)
+			}
+			if err := file.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Append("whatsapp", "person", Entry{Role: "user", SourceMessageID: "whatsapp:new", Content: "after the tear"}); err != nil {
+				t.Fatal(err)
+			}
+			entries, _, err := store.Entries("whatsapp", "person")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) < 2 || entries[0].Content != "original" || entries[len(entries)-1].Content != "after the tear" {
+				t.Fatalf("append after a torn tail lost or merged a message: %+v", entries)
+			}
+			for _, sourceID := range []string{"whatsapp:old", "whatsapp:new"} {
+				if found, err := store.HasUserSourceID("whatsapp", "person", sourceID); err != nil || !found {
+					t.Fatalf("source check after torn tail: source=%s found=%t err=%v", sourceID, found, err)
+				}
+			}
+			if _, err := store.ReserveRetrigger("whatsapp", "person", []string{"whatsapp:old"}, time.Time{}, time.Now().Add(time.Hour), 10); err != nil && strings.Contains(err.Error(), "corrupt correlation") {
+				t.Fatalf("ReserveRetrigger still sees corrupt data: %v", err)
+			}
+		})
 	}
 }

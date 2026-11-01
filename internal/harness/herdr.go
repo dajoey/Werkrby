@@ -47,8 +47,82 @@ type Herdr struct {
 	headlessKimiCommand string
 	// headlessAgyCommand is the agy executable for `headless: true` agy staff (default: agyExecutable).
 	headlessAgyCommand string
+	// headlessHermesCommand is the Hermes executable for `headless: true` hermes staff (default:
+	// hermesExecutable).
+	headlessHermesCommand string
+	// headlessHermesStopScript is the gateway-turn stop script a cut hermes turn runs (default:
+	// hermesSessionStopScript); headlessHermesStopPython is the interpreter it runs under
+	// (default: the Hermes venv python when present, else python3). Tests replace both.
+	headlessHermesStopScript string
+	headlessHermesStopPython string
 
 	cliChatIdleThreshold time.Duration
+
+	// hermesHome overrides the Hermes home whose profile ledgers judge hermes turns (tests);
+	// empty means HERMES_HOME, else ~/.hermes.
+	hermesHome string
+	// hermesLedgerSettle bounds the re-reads of a delivered Hermes turn whose answer row has not
+	// landed yet; zero means defaultHermesLedgerSettle, negative means no re-read.
+	hermesLedgerSettle time.Duration
+	// hermesFailureGrace bounds the one re-read for a delivered turn's ending (a failed-turn
+	// boundary row, or a late answer) after the settle expired; zero means
+	// defaultHermesFailureGrace, negative means no re-read.
+	hermesFailureGrace time.Duration
+	// hermesDeliveryWait bounds the wait for a prompt's user row after herdr reported the turn
+	// finished with the readable ledger still missing it (zero means defaultHermesDeliveryWait);
+	// hermesInflightBudget bounds the wait for that late turn's ending (zero means
+	// defaultHermesInflightBudget).
+	hermesDeliveryWait   time.Duration
+	hermesInflightBudget time.Duration
+	// hermesStallBound bounds the in-flight wait when this turn writes no new ledger row (zero
+	// means defaultHermesStallBound): a turn the gateway dropped ends as unresolved inside the
+	// bound instead of holding the pane lock for the whole in-flight budget.
+	hermesStallBound time.Duration
+	// hermesWaitStatusEvery is how often the in-flight wait reports status (zero means
+	// defaultHermesWaitStatusEvery), so chat activity and the job lease stay live.
+	hermesWaitStatusEvery time.Duration
+	// hermesBlockedWait bounds how long a turn waits on a Hermes worker pane herdr reports blocked
+	// (zero means defaultHermesBlockedWait); hermesBlockedPoll is the re-read interval (zero means
+	// defaultHermesBlockedPoll).
+	hermesBlockedWait time.Duration
+	hermesBlockedPoll time.Duration
+
+	// submitted is the last prompt herdr accepted for each worker and when it was sent, so a turn
+	// that finds the worker still running that prompt's turn can judge it from the ledger. A
+	// successful turn forgets its worker. Guarded by mu.
+	submitted map[string]hermesSubmitted
+}
+
+// hermesSubmitted is a prompt herdr accepted for a worker, and when it was sent.
+type hermesSubmitted struct {
+	prompt string
+	since  time.Time
+}
+
+// maxRememberedSubmissions bounds Herdr.submitted: past it the oldest entry is dropped.
+const maxRememberedSubmissions = 64
+
+const (
+	// defaultHermesBlockedWait is how long a turn waits on a blocked Hermes worker pane before it
+	// errors: the prompt watcher (cron, every minute) answers a pane blocked on two consecutive
+	// runs, so a pane it can clear clears well inside this.
+	defaultHermesBlockedWait = 5 * time.Minute
+	defaultHermesBlockedPoll = 5 * time.Second
+)
+
+// HermesBlockedCode marks the error a Hermes turn returns when its worker pane stayed blocked on a
+// prompt past the wait. It is a harness condition, not a task failure; the orchestrator matches
+// this code and does not count the error toward a lease's recovery fail-out.
+const HermesBlockedCode = "hermes_blocked"
+
+// hermesBlockedError is a Hermes worker pane still blocked when the wait ran out.
+type hermesBlockedError struct {
+	target string
+	waited time.Duration
+}
+
+func (e *hermesBlockedError) Error() string {
+	return fmt.Sprintf("herdr agent %s blocked: %s: the hermes worker pane stayed blocked on a prompt for %s", e.target, HermesBlockedCode, e.waited.Round(time.Second))
 }
 
 type herdrTurn struct {
@@ -61,6 +135,12 @@ type herdrTurn struct {
 	done      chan struct{}
 	// headless marks a `claude -p` turn (sendHeadless): there is no pane to type into or close.
 	headless bool
+	// notSent: the prompt was never typed, because the worker's earlier turn moved the claimed
+	// document out of its folder while this turn waited on the blocked pane. earlier is that
+	// turn's prompt when this process sent it, so the ledger can judge it.
+	notSent       bool
+	movedDocument string
+	earlier       *hermesSubmitted
 }
 
 type herdrAgentItem struct {
@@ -202,16 +282,14 @@ func (h *Herdr) ReadyEvents() <-chan struct{} {
 }
 
 func (h *Herdr) Models(_ context.Context) ([]Model, error) {
+	// The picker offers only hermes. Every other runner herdr can start is retired on this
+	// fleet and a bare non-hermes launch is refused (TestHerdrLaunchRefusesEveryBareKindButHermes),
+	// so listing them only offered picker choices that failed at launch. Roster staff pins
+	// ("@name") remain the one way to run another runner; they are edited in roster.yaml and
+	// never chosen here.
 	allEfforts := []string{"low", "medium", "high"}
 	return []Model{
-		{ID: "opencode", DisplayName: "OpenCode", Description: "Dedicated OpenCode worker in Herdr pane (default)", Default: true, Efforts: allEfforts},
-		{ID: "claude", DisplayName: "Claude Code", Description: "Dedicated Claude Code worker in Herdr pane", Efforts: allEfforts},
-		{ID: "codex", DisplayName: "Codex", Description: "Dedicated Codex worker in Herdr pane", Efforts: allEfforts},
-		{ID: "kimi", DisplayName: "Kimi", Description: "Dedicated Kimi CLI worker in Herdr pane", Efforts: allEfforts},
-		{ID: "hermes", DisplayName: "Hermes", Description: "Dedicated Hermes worker in Herdr pane", Efforts: allEfforts},
-		{ID: "agy", DisplayName: "Antigravity", Description: "Dedicated Antigravity CLI worker in Herdr pane", Efforts: allEfforts},
-		{ID: "pi", DisplayName: "Pi", Description: "Dedicated Pi worker in Herdr pane", Efforts: allEfforts},
-		{ID: "cursor", DisplayName: "Cursor", Description: "Dedicated Cursor worker in Herdr pane", Efforts: allEfforts},
+		{ID: "hermes", DisplayName: "Hermes", Description: "Dedicated Hermes worker in Herdr pane (default)", Default: true, Efforts: allEfforts},
 	}, nil
 }
 
@@ -523,10 +601,7 @@ func WorkerNameForKey(key string) string {
 }
 
 func workerNameAndLabel(key, model string) (workerName string, tabLabel string) {
-	model = strings.TrimSpace(model)
-	if model == "" || model == "default" {
-		model = "opencode"
-	}
+	model = herdrRunnerModel(model)
 
 	cleanKey := strings.TrimSpace(key)
 
@@ -535,7 +610,7 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 		if cleanKey == "orchestrator:semantic-heartbeat" || cleanKey == "heartbeat" {
 			modelTag := sanitizeTag(model)
 			if modelTag == "" {
-				modelTag = "opencode"
+				modelTag = defaultHerdrRunner
 			}
 			workerName = fitHerdrWorkerName("wk-hb-", modelTag, modelTag)
 			tabLabel = fmt.Sprintf("Heartbeat (%s)", model)
@@ -641,19 +716,10 @@ func workerNameAndLabel(key, model string) (workerName string, tabLabel string) 
 }
 
 func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd string) (target string, paneID string, tabID string, isDynamic bool, threadID string, err error) {
-	model = strings.TrimSpace(model)
-	if model == "" || model == "default" {
-		model = "opencode"
-	}
-
 	// Roster staff ("@name") expand to a runner kind plus launch arguments.
-	var agentArgs []string
-	if strings.HasPrefix(model, roster.StaffPrefix) {
-		kind, args, expandErr := roster.Expand(filepath.Join(cwd, roster.StateDirName), model)
-		if expandErr != nil {
-			return "", "", "", false, "", expandErr
-		}
-		model, agentArgs = kind, args
+	model, agentArgs, expandErr := herdrLaunch(cwd, key, model)
+	if expandErr != nil {
+		return "", "", "", false, "", expandErr
 	}
 
 	// 1. Direct explicit pane target (e.g. "w8:p2")
@@ -720,6 +786,7 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 
 	// 3. Spawn a dedicated worker in a full-width dedicated tab
 	tabArgs := []string{"tab", "create", "--label", tabLabel, "--cwd", absCwd, "--no-focus"}
+	tabArgs = append(tabArgs, paneTaskEnvArgs(key)...)
 	if workspaceID != "" {
 		tabArgs = append(tabArgs, "--workspace", workspaceID)
 	}
@@ -739,6 +806,7 @@ func (h *Herdr) resolveTarget(ctx context.Context, key string, model string, cwd
 	// Fallback to pane split if tab creation failed
 	if newPaneID == "" {
 		splitArgs := []string{"pane", "split", "--direction", "right", "--ratio", "0.5", "--cwd", absCwd, "--no-focus"}
+		splitArgs = append(splitArgs, paneTaskEnvArgs(key)...)
 		if callerPane != "" {
 			splitArgs = append(splitArgs, "--pane", callerPane)
 		}
@@ -844,6 +912,11 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 	h.mu.Unlock()
 
 	var turnSuccess bool
+	// turnUndelivered marks the prompt_not_delivered failure: no runner session
+	// ever received the prompt, so there is no leftover session to fence and
+	// the pane is kept for the in-place retry (pinned by
+	// TestHerdrUndeliveredPromptMustNotCountAsFinishedTurn).
+	var turnUndelivered bool
 	cleanKey := strings.TrimSpace(key)
 	defer func() {
 		cancel()
@@ -851,8 +924,26 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 		delete(h.active, key)
 		h.mu.Unlock()
 		close(turn.done)
-		if turnSuccess && isOrchestratorKey(cleanKey) {
+		if turnSuccess {
+			// The worker is idle after a completed turn, so no later turn needs this one's prompt.
+			h.forgetSubmitted(target)
+		}
+		if !isOrchestratorKey(cleanKey) {
+			return
+		}
+		if turnSuccess {
 			go h.cleanupCompletedTab(key, tabID, paneID, target)
+			return
+		}
+		// A failed pane-backed orchestrator turn must not leave its session
+		// working: herdr's prompt wait can end (error, timeout, no final
+		// reply) while the runner keeps processing the prompt in the pane,
+		// and that leftover session then edits the same document the next
+		// attempt's session edits (2026-10-26 double dispatch,
+		// tasks-20261026-werkrby-double-dispatch-01). Stop the worker so the
+		// claim cannot carry a second live session after its turn ended.
+		if !turn.headless && !turnUndelivered {
+			go h.stopWorkerAfterFailedTurn(key, tabID, paneID, target)
 		}
 	}()
 
@@ -884,28 +975,6 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 		}
 	}()
 
-	// Execute prompt with --wait
-	// Default timeout 15 minutes (900000 ms)
-	// promptStart bounds the transcript read below to THIS turn: without it the
-	// reader returns the newest assistant text anywhere in the file, so a turn
-	// that errored replays the previous answer as if it were fresh.
-	promptStart := time.Now()
-	promptCmd := exec.CommandContext(turnContext, h.config.Command, "agent", "prompt", target, prompt, "--wait", "--timeout", "900000")
-	turn.cmd = promptCmd
-	promptOut, promptErr := promptCmd.CombinedOutput()
-
-	// If prompt stalled due to agent input loop not ready, retry once after a short delay
-	if promptErr != nil && strings.Contains(string(promptOut), "agent_prompt_stalled") {
-		time.Sleep(2000 * time.Millisecond)
-		promptCmd = exec.CommandContext(turnContext, h.config.Command, "agent", "prompt", target, prompt, "--wait", "--timeout", "900000")
-		turn.cmd = promptCmd
-		promptOut, promptErr = promptCmd.CombinedOutput()
-	}
-
-	// herdr's --wait gives up after 15 minutes even while the agent is still
-	// working. Treating that as a failure closed the worker tab mid-task and sent
-	// a recovery agent to redo the work (8 times 2026-09-15..17, spyjo-observer).
-	// Keep waiting while herdr still reports the agent working, up to a ceiling.
 	runner := func(ctx context.Context, args ...string) ([]byte, error) {
 		cmd := exec.CommandContext(ctx, h.config.Command, args...)
 		turn.cmd = cmd
@@ -916,19 +985,15 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 			emit(core.Event{Kind: core.EventStatus, Text: text})
 		}
 	}
+	// The runner kind decides, before the send, whether a blocked pane is waited on (hermes) and
+	// which profile ledger judges the turn afterwards.
+	runnerKind, launchArgs := h.runnerLaunch(cfg, key)
 
-	if promptErr != nil && isHerdrWaitTimeout(string(promptOut)) {
-		promptOut, promptErr = extendHerdrWait(turnContext, target, promptOut, promptErr, herdrWaitCeiling, runner, status)
-	}
-
-	// Idle stability check: herdr screen detection can momentarily classify an
-	// in-flight agent frame as idle mid-turn. If prompt --wait (or wait extension)
-	// exited ok, verify that the idle reading is stable by checking agent status
-	// repeatedly over a short window before closing the tab. If any check reports
-	// working, re-enter extendHerdrWait to keep waiting.
-	if promptErr == nil {
-		promptErr = h.checkIdleStability(turnContext, target, runner, status)
-	}
+	// promptStart bounds the transcript read below to THIS turn: without it the
+	// reader returns the newest assistant text anywhere in the file, so a turn
+	// that errored replays the previous answer as if it were fresh.
+	promptStart := time.Now()
+	promptOut, promptErr := h.promptWorker(turnContext, turn, target, prompt, runnerKind == "hermes", runner, status)
 
 	close(streamDone)
 
@@ -975,11 +1040,34 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 		}
 	}
 
+	// A Hermes turn runs in the root gateway, so herdr never reports a session for it and there
+	// is no transcript: the launch profile's ledger proves delivery and holds the answer.
+	isHermes := agentKind == "hermes" || runnerKind == "hermes"
+	var hermes hermesVerdict
+	if turn.notSent {
+		// This prompt was never typed: the worker's earlier turn moved the claimed document while
+		// this turn waited on its blocked pane, so that document's transition owns the outcome.
+		finalText = h.earlierTurnReport(turnContext, target, launchArgs, turn)
+		if turnContext.Err() != nil {
+			return threadID, false, turnContext.Err()
+		}
+	} else if isHermes && promptErr == nil && finalText == "" {
+		hermes = h.judgeHermesTurn(turnContext, target, launchArgs, prompt, promptStart, status)
+		if turnContext.Err() != nil {
+			return threadID, false, turnContext.Err()
+		}
+		if hermes.err != nil {
+			return threadID, false, hermes.err
+		}
+		finalText = hermes.final
+	}
+
 	// Guard against undelivered prompt on newly spawned pane:
 	// If prompt --wait returned ok on a pane spawned for this turn, but there is
 	// still no agent session and no new transcript, the prompt was typed into a
-	// terminal that the worker was not yet reading.
-	if promptErr == nil && turn.isDynamic && !hasRealSession && finalText == "" {
+	// terminal that the worker was not yet reading. A Hermes turn the ledger or
+	// screen shows was delivered is never re-sent.
+	if promptErr == nil && !turn.notSent && turn.isDynamic && !hasRealSession && finalText == "" && !hermes.delivered {
 		if emit != nil {
 			emit(core.Event{
 				Kind:      core.EventStatus,
@@ -999,24 +1087,7 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 		}
 
 		rePromptStart := time.Now()
-		promptCmd = exec.CommandContext(turnContext, h.config.Command, "agent", "prompt", target, prompt, "--wait", "--timeout", "900000")
-		turn.cmd = promptCmd
-		promptOut, promptErr = promptCmd.CombinedOutput()
-
-		if promptErr != nil && strings.Contains(string(promptOut), "agent_prompt_stalled") {
-			time.Sleep(2000 * time.Millisecond)
-			promptCmd = exec.CommandContext(turnContext, h.config.Command, "agent", "prompt", target, prompt, "--wait", "--timeout", "900000")
-			turn.cmd = promptCmd
-			promptOut, promptErr = promptCmd.CombinedOutput()
-		}
-
-		if promptErr != nil && isHerdrWaitTimeout(string(promptOut)) {
-			promptOut, promptErr = extendHerdrWait(turnContext, target, promptOut, promptErr, herdrWaitCeiling, runner, status)
-		}
-
-		if promptErr == nil {
-			promptErr = h.checkIdleStability(turnContext, target, runner, status)
-		}
+		promptOut, promptErr = h.promptWorker(turnContext, turn, target, prompt, runnerKind == "hermes", runner, status)
 
 		getCmd = exec.Command(h.config.Command, "agent", "get", target)
 		if getOut, getErr = getCmd.Output(); getErr == nil {
@@ -1043,9 +1114,20 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 				}
 			}
 		}
+		if isHermes && promptErr == nil && finalText == "" {
+			hermes = h.judgeHermesTurn(turnContext, target, launchArgs, prompt, rePromptStart, status)
+			if turnContext.Err() != nil {
+				return threadID, false, turnContext.Err()
+			}
+			if hermes.err != nil {
+				return threadID, false, hermes.err
+			}
+			finalText = hermes.final
+		}
 
 		// If that also yields nothing, return an error that Werkrby retries in place, never EventFinal.
-		if promptErr != nil || (!hasRealSession && finalText == "") {
+		if promptErr != nil || (!hasRealSession && finalText == "" && !hermes.delivered) {
+			turnUndelivered = true
 			notDeliveredErr := fmt.Errorf("prompt_not_delivered: worker %s never received prompt, please retry", target)
 			if emit != nil {
 				emit(core.Event{
@@ -1065,18 +1147,35 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 	}
 	h.rememberSession(key, threadID)
 
+	if finalText == "" && isHermes && hermes.ledger && promptErr == nil {
+		// The readable ledger judged this turn and holds no answer for it: the prompt never
+		// reached Hermes, so the screen holds only earlier turns. Never scrape a reply from it.
+		return threadID, false, hermesTurnFailed(HermesPromptNotInLedger)
+	}
 	if finalText == "" {
 		finalOut, _ := exec.Command(h.config.Command, "agent", "read", target, "--source", "recent-unwrapped", "--lines", "250").Output()
 		raw := strings.TrimSpace(string(finalOut))
-		if raw == "" {
-			raw = strings.TrimSpace(string(promptOut))
+		probe := raw
+		if probe == "" {
+			// The prompt command's output is the typing receipt: error evidence only, never
+			// cleaned into a reply (2026-10-31: a receipt reached a chat as the reply).
+			probe = strings.TrimSpace(string(promptOut))
 		}
-		if strings.Contains(raw, "monthly spending limit") || strings.Contains(raw, "spending limit") {
-			return threadID, false, fmt.Errorf("provider spending limit reached: %s", raw)
+		if strings.Contains(probe, "monthly spending limit") || strings.Contains(probe, "spending limit") {
+			return threadID, false, fmt.Errorf("provider spending limit reached: %s", probe)
 		}
 		finalText = cleanHerdrTerminalOutput(raw)
-		if finalText == "" {
-			finalText = raw
+		if finalText != "" && isHermes && hermesBoxPattern.MatchString(raw) && !hermesScreenHoldsThisTurn(raw, prompt) {
+			// A warm pane keeps earlier turns' reply boxes, and herdr can go idle before this
+			// turn's rule is drawn: a screen box without this turn's prompt preview above it
+			// belongs to an earlier turn, never this one.
+			return threadID, false, fmt.Errorf("runner turn failed: the worker screen holds no reply for this turn")
+		}
+		if finalText == "" && promptErr == nil {
+			// Cleaning strips chrome, prompt echoes and earlier turns; nothing left means the
+			// screen holds no reply. The raw pane is never a reply (2026-10-31: 250 lines of
+			// scrollback reached Joey's Telegram).
+			return threadID, false, fmt.Errorf("runner turn failed: the worker screen shows no reply for this turn")
 		}
 	}
 
@@ -1086,7 +1185,8 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 		if errMsg == "" {
 			errMsg = promptErr.Error()
 		}
-		if agentStatus == "blocked" || strings.Contains(errMsg, "agent_blocked") {
+		var stuck *hermesBlockedError
+		if errors.As(promptErr, &stuck) || agentStatus == "blocked" || strings.Contains(errMsg, "agent_blocked") {
 			readOut, _ := exec.Command(h.config.Command, "agent", "read", target, "--source", "recent-unwrapped", "--lines", "30").Output()
 			blockedDetail := strings.TrimSpace(string(readOut))
 			if blockedDetail == "" {
@@ -1099,6 +1199,9 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 					ThreadID:  threadID,
 					Execution: &core.ExecutionStatus{State: "blocked", Detail: blockedDetail},
 				})
+			}
+			if stuck != nil {
+				return threadID, false, stuck
 			}
 			return threadID, false, fmt.Errorf("herdr agent %s blocked: %s", target, errMsg)
 		}
@@ -1148,6 +1251,7 @@ var (
 	}
 	herdrThoughtPattern   = regexp.MustCompile(`(?s)(?:^|\n)\s*Thought:\s*[^\n]+\n+(.*?)(?:\n\s*\n\s*([^\s].*)|$)`)
 	hermesBoxPattern      = regexp.MustCompile(`(?s)╭─\s*[⚕☤]\s*Hermes[^\n]*\n(.*?)\n╰[─]+╯`)
+	hermesTurnRule        = regexp.MustCompile(`(?m)^─{40}[ \t\r]*$`)
 	hermesReasoningBox    = regexp.MustCompile(`(?s)┌─\s*Reasoning[^\n]*\n.*?└[─]+┘\n*`)
 	kimiInputBoxPattern   = regexp.MustCompile(`(?s)╭[─]+╮\s*\n\s*│\s*>\s*\n\s*╰[─]+╯`)
 	agyInputBoxPattern    = regexp.MustCompile(`(?s)(?:╭─+╮\s*\n\s*│\s*Message (?:Antigravity|agy|SpyJo|Werkrby)[^\n]*\n\s*╰─+╯|─{5,}\s*\n[ \t]*>[^\n]*\n[ \t]*─{5,}(?:\s*\n[^\n]*\? for shortcuts[^\n]*)?)`)
@@ -1157,9 +1261,17 @@ var (
 // cleanHerdrTerminalOutput strips prompt echoes, terminal footers, and internal thought blocks
 // from raw terminal screen dumps across OpenCode, Kimi, and Hermes agents.
 func cleanHerdrTerminalOutput(text string) string {
-	// 0. If Hermes formatted response box is present, extract directly
-	if m := hermesBoxPattern.FindStringSubmatch(text); len(m) >= 2 && strings.TrimSpace(m[1]) != "" {
-		return strings.TrimSpace(m[1])
+	// 0. Hermes: the reply is the LAST response box. A warm pane keeps earlier turns' boxes on
+	// screen, and one turn can draw a box before a tool call and another for the answer.
+	// Hermes rules off every submitted message with a 40-wide rule; one after the last box
+	// means the newest turn drew no box, so clean only that turn and never serve an older reply.
+	if boxes := hermesBoxPattern.FindAllStringSubmatchIndex(text, -1); len(boxes) > 0 {
+		last := boxes[len(boxes)-1]
+		if rules := hermesTurnRule.FindAllStringIndex(text[last[1]:], -1); len(rules) > 0 {
+			text = hermesDropPromptPreview(text[last[1]+rules[len(rules)-1][1]:])
+		} else if body := strings.TrimSpace(text[last[2]:last[3]]); body != "" {
+			return body
+		}
 	}
 
 	// Strip Hermes reasoning boxes if present
@@ -1206,7 +1318,223 @@ func cleanHerdrTerminalOutput(text string) string {
 	return strings.TrimSpace(text)
 }
 
-func (h *Herdr) checkIdleStability(turnContext context.Context, target string, runner herdrRunner, status func(string)) error {
+// promptWorker submits prompt to target with --wait and follows the turn to its end: a stalled
+// submission is retried once after a short delay, a wait that herdr gives up on while the agent
+// still works is extended (herdr's --wait stops after 15 minutes; treating that as a failure
+// closed the worker tab mid-task and sent a recovery agent to redo the work), and an idle reading
+// must hold (checkIdleStability). For a hermes worker a pane blocked on a prompt is waited on, not
+// failed: herdr rejects a submission to an already blocked agent before any input is sent, so the
+// prompt is submitted again once the pane clears, and a pane still blocked after the wait returns
+// a *hermesBlockedError.
+//
+// A resubmission is typed only into a pane that holds idle with the claimed document still in its
+// folder. A pane that clears into working has resumed the turn it was blocked in, and a Hermes
+// worker queues a prompt typed into a busy pane (busy_input_mode: queue) and runs it as a second
+// full turn after that one, so the in-flight turn is followed to its end first. When that turn,
+// or any earlier one, moved the claimed document (ClaimedDocument) out of its folder, the prompt
+// is not typed at all: turn.notSent is set and sendInternal judges the earlier turn instead.
+func (h *Herdr) promptWorker(ctx context.Context, turn *herdrTurn, target, prompt string, hermes bool, runner herdrRunner, status func(string)) ([]byte, error) {
+	submit := func() ([]byte, error) {
+		since := time.Now()
+		cmd := exec.CommandContext(ctx, h.config.Command, "agent", "prompt", target, prompt, "--wait", "--timeout", "900000")
+		turn.cmd = cmd
+		out, err := cmd.CombinedOutput()
+		if err != nil && strings.Contains(string(out), "agent_prompt_stalled") {
+			time.Sleep(2000 * time.Millisecond)
+			cmd = exec.CommandContext(ctx, h.config.Command, "agent", "prompt", target, prompt, "--wait", "--timeout", "900000")
+			turn.cmd = cmd
+			out, err = cmd.CombinedOutput()
+		}
+		if hermes && (err == nil || !strings.Contains(string(out), "agent_blocked")) {
+			h.rememberSubmitted(target, prompt, since)
+		}
+		return out, err
+	}
+	out, err := submit()
+	if hermes && err != nil && strings.Contains(string(out), "agent_blocked") {
+		// One wait, from the first rejection, covers every resubmission, so a pane that clears and
+		// blocks again before the prompt lands cannot keep the turn here past the bound. Time spent
+		// following a resumed (working) turn to its end is not blocked time and moves the bound out
+		// by as much; an idle pane's settle reads count toward it.
+		first := time.Now()
+		deadline := first.Add(h.hermesBlockedBound())
+	resubmit:
+		for err != nil && strings.Contains(string(out), "agent_blocked") {
+			if !time.Now().Before(deadline) {
+				return out, &hermesBlockedError{target: target, waited: time.Since(first)}
+			}
+			state, waitErr := h.waitHermesUnblocked(ctx, target, deadline, runner, status)
+			if waitErr != nil {
+				return out, waitErr
+			}
+			switch state {
+			case "":
+				break resubmit // herdr could not report the agent: the rejection stands, as before
+			case "idle", "done", "working":
+				// Type only into a pane whose idle reading holds; checkIdleStability follows a
+				// resumed turn to its end on the way.
+				settling := time.Now()
+				if state == "working" {
+					status(fmt.Sprintf("Herdr: hermes worker %s resumed its earlier turn; following it to its end before typing this prompt", target))
+				}
+				if settleErr := h.checkIdleStability(ctx, target, true, runner, status); settleErr != nil {
+					return out, settleErr
+				}
+				if state == "working" {
+					deadline = deadline.Add(time.Since(settling))
+				}
+			default:
+				// A status this harness does not know is no evidence the pane takes input: re-read it
+				// after one poll.
+				select {
+				case <-ctx.Done():
+					return out, ctx.Err()
+				case <-time.After(min(h.hermesBlockedPollEvery(), max(time.Until(deadline), 0))):
+				}
+				continue
+			}
+			if path, moved := claimedDocumentMoved(ctx); moved {
+				status(fmt.Sprintf("Herdr: hermes worker %s's earlier turn moved %s out of its claimed folder; this prompt is not sent", target, path))
+				turn.notSent = true
+				turn.movedDocument = path
+				turn.earlier = h.lastSubmitted(target)
+				return nil, nil
+			}
+			out, err = submit()
+		}
+	}
+	if err != nil && isHerdrWaitTimeout(string(out)) {
+		out, err = extendHerdrWait(ctx, target, out, err, herdrWaitCeiling, runner, status)
+	}
+	if err == nil {
+		err = h.checkIdleStability(ctx, target, hermes, runner, status)
+	}
+	return out, err
+}
+
+// claimedDocumentMoved reports whether the claimed document ctx names (WithClaimedDocument) is gone
+// from its path: the worker's turn moved it to its next folder. A ctx that names none, or a path
+// that cannot be read for another reason, is not a move.
+func claimedDocumentMoved(ctx context.Context) (string, bool) {
+	path := ClaimedDocument(ctx)
+	if path == "" {
+		return "", false
+	}
+	_, err := os.Stat(path)
+	return path, os.IsNotExist(err)
+}
+
+// rememberSubmitted records the prompt herdr accepted for target.
+func (h *Herdr) rememberSubmitted(target, prompt string, since time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.submitted == nil {
+		h.submitted = map[string]hermesSubmitted{}
+	}
+	if _, ok := h.submitted[target]; !ok && len(h.submitted) >= maxRememberedSubmissions {
+		oldest := ""
+		for name, entry := range h.submitted {
+			if oldest == "" || entry.since.Before(h.submitted[oldest].since) {
+				oldest = name
+			}
+		}
+		delete(h.submitted, oldest)
+	}
+	h.submitted[target] = hermesSubmitted{prompt: prompt, since: since}
+}
+
+// lastSubmitted is the last prompt herdr accepted for target in this process, or nil.
+func (h *Herdr) lastSubmitted(target string) *hermesSubmitted {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	entry, ok := h.submitted[target]
+	if !ok {
+		return nil
+	}
+	return &entry
+}
+
+func (h *Herdr) forgetSubmitted(target string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	delete(h.submitted, target)
+}
+
+func (h *Herdr) hermesBlockedPollEvery() time.Duration {
+	if h.hermesBlockedPoll > 0 {
+		return h.hermesBlockedPoll
+	}
+	return defaultHermesBlockedPoll
+}
+
+// earlierTurnReport is the final text of a turn whose prompt was never typed (turn.notSent): the
+// earlier turn's answer as its profile ledger records it, when this process sent that turn's
+// prompt, else a note that this prompt was not sent. A failed earlier turn is reported in the
+// note, not returned as this turn's error: the document it moved already settled the outcome.
+func (h *Herdr) earlierTurnReport(ctx context.Context, target string, launchArgs []string, turn *herdrTurn) string {
+	note := fmt.Sprintf("Werkrby did not send this prompt: the worker's earlier turn moved %s out of its claimed folder while the worker's pane was blocked.", turn.movedDocument)
+	if turn.earlier == nil {
+		return note
+	}
+	verdict := h.judgeHermesTurn(ctx, target, launchArgs, turn.earlier.prompt, turn.earlier.since, nil)
+	switch {
+	case verdict.final != "":
+		return verdict.final
+	case verdict.err != nil:
+		return note + " That turn ended with an error: " + verdict.err.Error()
+	}
+	return note
+}
+
+func (h *Herdr) hermesBlockedBound() time.Duration {
+	if h.hermesBlockedWait > 0 {
+		return h.hermesBlockedWait
+	}
+	return defaultHermesBlockedWait
+}
+
+// waitHermesUnblocked re-reads a hermes worker herdr reports blocked until it shows another state
+// or deadline passes. It returns the state the worker left blocked for ("" when herdr could not
+// report one, which the caller treats as before), the context's error when the turn is cancelled,
+// or a *hermesBlockedError once deadline passes with the pane still blocked.
+func (h *Herdr) waitHermesUnblocked(ctx context.Context, target string, deadline time.Time, run herdrRunner, status func(string)) (string, error) {
+	poll := h.hermesBlockedPollEvery()
+	started := time.Now()
+	status(fmt.Sprintf("Herdr: hermes worker %s is blocked on a prompt; waiting up to %s for it to clear", target, time.Until(deadline).Round(time.Second)))
+	for {
+		getOut, getErr := run(ctx, "agent", "get", target)
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
+		if getErr != nil {
+			return "", nil
+		}
+		var resp herdrAgentGetResponse
+		if json.Unmarshal(getOut, &resp) != nil {
+			return "", nil
+		}
+		if state := resp.Result.Agent.AgentStatus; state != "blocked" {
+			status(fmt.Sprintf("Herdr: hermes worker %s cleared its prompt after %s (%s)", target, time.Since(started).Round(time.Second), state))
+			return state, nil
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return "blocked", &hermesBlockedError{target: target, waited: time.Since(started)}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(min(poll, remaining)):
+		}
+	}
+}
+
+// checkIdleStability re-reads the agent after its prompt wait ended: herdr screen detection can
+// momentarily classify an in-flight agent frame as idle mid-turn, so an idle reading must hold for
+// several consecutive checks, and any check that reports working re-enters extendHerdrWait. A
+// blocked agent is an agent_blocked error, except for a hermes worker, which is waited on
+// (waitHermesUnblocked) for up to the blocked-pane bound per blocked episode.
+func (h *Herdr) checkIdleStability(turnContext context.Context, target string, hermes bool, runner herdrRunner, status func(string)) error {
 	stabilityCount := h.idleStabilityCount
 	if stabilityCount <= 0 {
 		stabilityCount = 3
@@ -1250,7 +1578,17 @@ func (h *Herdr) checkIdleStability(turnContext context.Context, target string, r
 				return promptErr
 			}
 		case "blocked":
-			return errors.New("agent_blocked")
+			if !hermes {
+				return errors.New("agent_blocked")
+			}
+			consecutiveIdle = 0
+			state, err := h.waitHermesUnblocked(turnContext, target, time.Now().Add(h.hermesBlockedBound()), runner, status)
+			if err != nil {
+				return err
+			}
+			if state == "" {
+				return nil // herdr could not report the agent: the same as a failed read above
+			}
 		default:
 			// Unknown status (a future herdr value): neither evidence of idle
 			// nor of work. Do not count it and do not busy-loop; wait one
@@ -1842,6 +2180,81 @@ func (h *Herdr) rosterModelForKey(key string, cfg HarnessConfig) string {
 	return staffing.Model(assigned)
 }
 
+const (
+	// defaultHerdrRunner is the runner an empty or "default" model starts. Every Werkrby seat
+	// runs Hermes.
+	defaultHerdrRunner = "hermes"
+	// defaultHermesProfile is the profile a hermes launch that names none runs: the Werkrby code
+	// worker. Without it Hermes runs the root profile, which is the front-of-house persona.
+	defaultHermesProfile = "wk-code"
+)
+
+// herdrRunnerModel is model with an empty or "default" value replaced by the default runner.
+func herdrRunnerModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" || model == "default" {
+		return defaultHerdrRunner
+	}
+	return model
+}
+
+// herdrLaunch is the runner kind and launch arguments a harness model starts in a worker pane
+// under the workspace cwd: an empty or "default" model is the default runner, roster staff
+// ("@name") expand to their runner and args, and a hermes launch whose args carry no -p,
+// --profile or --profile= gets the session key's worker profile in front (wk-chat for chat
+// turns, wk-notify for notification and heartbeat turns, wk-code otherwise). Every other bare
+// runner name (a retired one, or one herdr supports such as codex or cursor) is refused: only
+// roster staff may name another runner. resolveTarget
+// launches what this returns and runnerLaunch reads the turn's ledger from it, so the two
+// cannot name different profiles.
+func herdrLaunch(cwd, key, model string) (string, []string, error) {
+	requested := herdrRunnerModel(model)
+	switch {
+	case strings.HasPrefix(requested, roster.StaffPrefix):
+	case strings.Contains(requested, ":"):
+		// A direct pane address ("w8:p2") launches nothing: resolveTarget prompts that pane.
+		return requested, nil, nil
+	case strings.EqualFold(requested, defaultHerdrRunner):
+		requested = defaultHerdrRunner
+	default:
+		return "", nil, fmt.Errorf("runner %q is not hermes or roster staff; Werkrby launches Hermes workers only (roster staff or a hermes model)", requested)
+	}
+	kind, args, err := roster.Expand(filepath.Join(cwd, roster.StateDirName), requested)
+	if err != nil {
+		return "", nil, err
+	}
+	if kind == "hermes" {
+		if _, explicit, _ := hermesLaunchProfile(args); !explicit {
+			args = append([]string{"-p", defaultHermesProfileForKey(key)}, args...)
+		}
+	}
+	return kind, args, nil
+}
+
+// defaultHermesProfileForKey is the profile a hermes launch that names none runs for a
+// session key: the role's own worker profile for chat, notification and heartbeat turns,
+// the code worker for everything else.
+func defaultHermesProfileForKey(key string) string {
+	switch rosterRoleForKey(key) {
+	case "chat":
+		return "wk-chat"
+	case "notification", "heartbeat":
+		return "wk-notify"
+	default:
+		return defaultHermesProfile
+	}
+}
+
+// runnerLaunch is the runner kind and launch arguments cfg.Model starts, as resolveTarget
+// launches them; a staff entry that no longer expands reports neither.
+func (h *Herdr) runnerLaunch(cfg HarnessConfig, key string) (string, []string) {
+	kind, args, err := herdrLaunch(cfg.Cwd, key, cfg.Model)
+	if err != nil {
+		return "", nil
+	}
+	return kind, args
+}
+
 func isOrchestratorKey(key string) bool {
 	return strings.HasPrefix(key, "orchestrator:") || key == "heartbeat" || strings.HasPrefix(key, "test-")
 }
@@ -1884,6 +2297,17 @@ func (h *Herdr) isTabFocused(tabID string) bool {
 // owns the worker and runs its own cleanup when it ends.
 func (h *Herdr) cleanupCompletedTab(key, tabID, paneID, agentName string) {
 	h.teardownWorker(key, tabID, paneID, agentName, false)
+}
+
+// stopWorkerAfterFailedTurn fences a worker whose orchestrator turn failed:
+// interrupt the runner (ctrl+c stops an in-flight turn) and tear the worker
+// down. teardownWorker's key-lock discipline keeps this from touching a newer
+// turn that already claimed the worker.
+func (h *Herdr) stopWorkerAfterFailedTurn(key, tabID, paneID, agentName string) {
+	if agentName != "" {
+		_ = exec.Command(h.config.Command, "agent", "send-keys", agentName, "ctrl+c").Run()
+	}
+	h.teardownWorker(key, tabID, paneID, agentName, true)
 }
 
 func (h *Herdr) teardownWorker(key, tabID, paneID, agentName string, force bool) {

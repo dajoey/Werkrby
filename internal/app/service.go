@@ -108,6 +108,12 @@ type Service struct {
 
 const jobCancellationGrace = 30 * time.Second
 
+// jobCancellationPollInterval is the cadence of a cancelled job's settle poll. A cancelled job
+// is ended by the poll only when the harness has been inactive across one full interval: the
+// terminal event a provider delivers right after going idle settles the job synchronously, and
+// one interval of confirmed inactivity cannot land inside that settle.
+const jobCancellationPollInterval = 200 * time.Millisecond
+
 func New(cfg config.Config, target harness.Harness) *Service {
 	return NewWithRuntime(cfg, target, NewRuntime())
 }
@@ -1078,6 +1084,12 @@ func (s *Service) handleCommand(ctx context.Context, message core.Message, emit 
 	}
 }
 
+// finishCancelledJobAfterGrace retires a cancelled job: normally its provider's terminal event
+// settles it synchronously, so the poll is only the backstop for a provider that never delivers
+// one. The poll ends the job when the deadline passes, or when the harness has stayed inactive
+// across one full interval — a single inactive reading is not enough, because the harness goes
+// inactive a moment before its terminal event is recorded, and ending the job inside that
+// moment archives it without the event's output.
 func (s *Service) finishCancelledJobAfterGrace(job Job) {
 	grace := s.jobCancellationGrace
 	if grace <= 0 {
@@ -1085,8 +1097,9 @@ func (s *Service) finishCancelledJobAfterGrace(job Job) {
 	}
 	deadline := time.Now().Add(grace)
 	go func() {
+		idle := false
 		for {
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(jobCancellationPollInterval)
 			current, ok := s.Runtime.Job(job.ID)
 			if !ok || current.StableID != job.StableID {
 				return
@@ -1094,11 +1107,13 @@ func (s *Service) finishCancelledJobAfterGrace(job Job) {
 			if executionStateIsLive(current.Execution) && current.Execution != JobCancelling {
 				return
 			}
-			if !s.Harness.IsActive(job.SessionKey) || time.Now().After(deadline) {
+			active := s.Harness.IsActive(job.SessionKey)
+			if time.Now().After(deadline) || (idle && !active) {
 				s.stopJobChatActivity(job.ID)
 				s.Runtime.EndJob(job.ID)
 				return
 			}
+			idle = !active
 		}
 	}()
 }
