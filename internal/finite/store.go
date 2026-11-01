@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
@@ -26,6 +27,8 @@ type Store struct {
 	db  *sql.DB
 	cfg Config
 	now func() time.Time
+
+	intakeMu sync.Mutex
 }
 
 type txRunner interface {
