@@ -354,14 +354,32 @@ esac
 		cancel()
 		select {
 		case <-sendDone:
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 		}
 	}()
+	// Under host load the setup before the wait loop can take far longer than
+	// its nominal 1.6s. Start the measured window when the loop has started
+	// reading status, not at a fixed offset from Send.
+	loopStarted := time.Now().Add(30 * time.Second)
+	for {
+		if data, _ := os.ReadFile(eventsFile); strings.Contains(string(data), "agent-get") {
+			break
+		}
+		if time.Now().After(loopStarted) {
+			t.Fatal("the wait loop never started reading agent status")
+		}
+		select {
+		case <-sendDone:
+			data, _ := os.ReadFile(eventsFile)
+			t.Fatalf("h.Send returned before cancellation on unknown status; events:\n%s", string(data))
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 	select {
 	case <-sendDone:
 		data, _ := os.ReadFile(eventsFile)
 		t.Fatalf("h.Send returned before cancellation on unknown status; events:\n%s", string(data))
-	case <-time.After(4 * time.Second):
+	case <-time.After(2400 * time.Millisecond):
 	}
 
 	// Snapshot before cancellation: once Send returns, failed-turn cleanup may
@@ -382,7 +400,7 @@ esac
 	cancel()
 	select {
 	case <-sendDone:
-	case <-time.After(5 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("h.Send did not return after cancellation")
 	}
 }

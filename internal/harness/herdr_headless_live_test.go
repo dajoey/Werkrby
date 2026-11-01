@@ -122,12 +122,23 @@ func TestHerdrHeadlessHermesClientExitIsNotProviderTurnAbsence(t *testing.T) {
 		_, _, err := f.h.SendWithModel(f.context(), headlessKey, f.prompt, "@pilot", nil)
 		returned <- err
 	}()
-	select {
-	case err := <-returned:
-		t.Fatalf("client exit was treated as provider-turn absence: %v", err)
-	case <-time.After(200 * time.Millisecond):
+	// The boundary publishes its metadata asynchronously; under -race and host
+	// load that can take well over a fixed sleep. Poll for the exact live
+	// admission, failing only if the turn returns first or the deadline passes.
+	var observation HermesBoundaryObservation
+	var err error
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		select {
+		case err := <-returned:
+			t.Fatalf("client exit was treated as provider-turn absence: %v", err)
+		case <-time.After(25 * time.Millisecond):
+		}
+		observation, err = InspectHermesRunBoundary(context.Background(), f.spec)
+		if err == nil && observation.Liveness == BoundaryLive || time.Now().After(deadline) {
+			break
+		}
 	}
-	observation, err := InspectHermesRunBoundary(context.Background(), f.spec)
 	if err != nil || observation.Liveness != BoundaryLive || observation.Identity == nil || observation.Identity.AdmissionID != boundaryTestAdmission {
 		f.settle(t, "terminal", "completed")
 		t.Fatalf("live provider observation = %+v, %v; want the exact live admission", observation, err)
