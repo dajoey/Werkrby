@@ -60,3 +60,38 @@ func TestFinitePromptBundleDelta(t *testing.T) {
 		})
 	}
 }
+
+// A real provider works in the worker directory, not the run directory, and a
+// Hermes gateway runs tools in its own environment, so the prompt itself must
+// name the absolute result path. The per-run process token makes the provider
+// admission text unique across state roots whose run IDs restart at 1.
+func TestFinitePromptNamesResultPathAndRunToken(t *testing.T) {
+	req := PromptRequest{
+		TaskID: "task-path", RunID: 1, Phase: PhaseImplementation,
+		Dynamic: "Do the thing.", RunDir: "/state/runs/1", ProcessToken: "tok-abc",
+	}
+	got, err := BuildPrompt(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"result_path: /state/runs/1/result.json", "run_dir: /state/runs/1", "process_token: tok-abc", `"schema_version": 1`} {
+		if !strings.Contains(got.Text, want) {
+			t.Errorf("prompt lacks %q:\n%s", want, got.Text)
+		}
+	}
+	other := req
+	other.ProcessToken = "tok-def"
+	second, err := BuildPrompt(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Text == got.Text {
+		t.Fatal("prompts for different runs with the same run ID are identical")
+	}
+	if second.BundleHash != got.BundleHash {
+		t.Fatal("per-run binding must not change the static bundle hash")
+	}
+	if _, err := BuildPrompt(PromptRequest{TaskID: "t", RunID: 1, Phase: PhaseImplementation, RunDir: "relative/dir", ProcessToken: "x"}); err == nil {
+		t.Fatal("a relative run directory was accepted")
+	}
+}

@@ -3,16 +3,19 @@ package finite
 import (
 	"crypto/sha256"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 )
 
 const universalPromptCore = `FINITE CORE
-You execute one finite provider turn. SQLite owns workflow state. Do not edit front matter, move task files, choose task status, or request attempt credits. Write only inside your assigned run directory or approved task workspace. Return one result.json before exit.`
+You execute one finite provider turn. SQLite owns workflow state. Do not edit front matter, move task files, choose task status, or request attempt credits. Write only inside your assigned run directory or approved task workspace. Write the typed result to result_path before exit.`
 
 const typedResultContract = `TYPED RESULT
-Write at most 256 KiB of JSON with schema_version=1 and the exact task_id, run_id, and phase from FINITE TURN. Unknown fields are invalid. Implementation outcomes: done, review, todo, wait, failed. Review outcomes: accepted, rejected, wait, failed. Include bounded progress and evidence in summary; put large evidence under artifacts/. A wait includes a typed time or joey wait object.`
+Before you exit, write exactly one JSON object (at most 256 KiB, UTF-8) to the absolute result_path named in FINITE TURN. Copy task_id, run_id, and phase exactly from FINITE TURN. Unknown fields are invalid. Implementation outcomes: done, review, todo, wait, failed. Review outcomes: accepted, rejected, wait, failed. progress is required: what you did, in plain words. Put large evidence under the run_dir artifacts/ folder. Example:
+{"schema_version": 1, "task_id": "<task_id>", "run_id": <run_id>, "phase": "<phase>", "outcome": "done", "progress": "What changed and how it was verified.", "summary": {"outcome": "one line", "evidence": "commands run and their results", "uncertainty": "what is not proven"}}
+A wait adds "outcome": "wait" and a wait object: {"kind": "time", "wake_at": "<RFC 3339 UTC>", "reason": "..."} or {"kind": "joey", "reason": "...", "ask": {"question": "...", "options": [{"id": "approve", "label": "Approve"}, {"id": "deny", "label": "Deny"}]}}. A review that rejects adds "findings": ["..."].`
 
 var promptPacks = map[string]string{
 	"code":           "PACK: code\nMake the smallest maintainable code change and run focused failing-first verification.",
@@ -25,6 +28,9 @@ var promptPacks = map[string]string{
 func BuildPrompt(req PromptRequest) (Prompt, error) {
 	if req.TaskID == "" || req.RunID <= 0 || (req.Phase != PhaseImplementation && req.Phase != PhaseReview) {
 		return Prompt{}, fmt.Errorf("finite: invalid prompt binding")
+	}
+	if req.RunDir != "" && !filepath.IsAbs(req.RunDir) {
+		return Prompt{}, fmt.Errorf("finite: prompt run directory must be absolute")
 	}
 	role := "IMPLEMENTATION\nComplete the single finite objective and return the implementation result contract."
 	if req.Phase == PhaseReview {
@@ -47,7 +53,14 @@ func BuildPrompt(req PromptRequest) (Prompt, error) {
 	}
 	static := strings.Join(append([]string{universalPromptCore, role, typedResultContract}, sections...), "\n\n")
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(static)))
-	dynamic := "FINITE TURN\ntask_id: " + req.TaskID + "\nrun_id: " + strconv.FormatInt(req.RunID, 10) + "\nphase: " + string(req.Phase) + "\n\n" + req.Dynamic
+	dynamic := "FINITE TURN\ntask_id: " + req.TaskID + "\nrun_id: " + strconv.FormatInt(req.RunID, 10) + "\nphase: " + string(req.Phase) + "\n"
+	if req.RunDir != "" {
+		dynamic += "run_dir: " + req.RunDir + "\nresult_path: " + filepath.Join(req.RunDir, "result.json") + "\n"
+	}
+	if req.ProcessToken != "" {
+		dynamic += "process_token: " + req.ProcessToken + "\n"
+	}
+	dynamic += "\n" + req.Dynamic
 	full := req.PreviousBundleHash == "" || req.PreviousBundleHash != hash || req.ResetContext || req.UncertainContext
 	text := dynamic
 	if full {

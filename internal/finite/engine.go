@@ -249,6 +249,8 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 			e.opts.hooks.afterDispatchCommit(run)
 		}
 		promptRequest.RunID = run.ID
+		promptRequest.RunDir = run.RunDir
+		promptRequest.ProcessToken = token
 		prompt, buildErr := BuildPrompt(promptRequest)
 		if buildErr != nil {
 			return buildErr
