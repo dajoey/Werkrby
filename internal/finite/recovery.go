@@ -54,8 +54,14 @@ func (e *Engine) recoverRun(ctx context.Context, run Run) error {
 				return ErrProcessUnknown
 			}
 		}
+		// The stopped turn may still have spent tokens. Record valid usage;
+		// unreadable usage must not hold a stop open, so it stays unreported.
+		usage, usageErr := readRecoveredUsage(run)
+		if usageErr != nil {
+			usage = nil
+		}
 		_, err := e.settleRecovered(ctx, SettlementRequest{
-			RunID: run.ID, ExpectedTaskVersion: task.Version, ExecutionOutcome: RunInterrupted,
+			RunID: run.ID, ExpectedTaskVersion: task.Version, ExecutionOutcome: RunInterrupted, Usage: usage,
 		})
 		return err
 	}
