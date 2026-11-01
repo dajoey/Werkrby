@@ -19,6 +19,10 @@ import (
 // reset; with both pools walled the task waits; with B closed there is exactly
 // one run.
 
+// liveWallFallbackHomeProfiles are the disposable profiles the fallback wall
+// tests run; the home marker must list every one of them.
+var liveWallFallbackHomeProfiles = []string{"wk-finite-wall-a", "wk-finite-wall-b", "wk-finite-wall-closed-a", "wk-finite-wall-closed-b"}
+
 func liveWallFallbackHome(t *testing.T) string {
 	t.Helper()
 	home := os.Getenv("WERKRBY_FINITE_HERMES_WALL_HOME")
@@ -26,10 +30,77 @@ func liveWallFallbackHome(t *testing.T) string {
 		t.Fatalf("WERKRBY_FINITE_HERMES_WALL_HOME must name an absolute disposable home")
 	}
 	marker, err := os.ReadFile(filepath.Join(home, ".finite-hermes-disposable"))
-	if err != nil || !strings.HasPrefix(string(marker), "wk-finite-wall") {
+	if err != nil {
 		t.Fatalf("disposable wall-fallback marker: %v", err)
 	}
+	lines := strings.Split(string(marker), "\n")
+	for _, profile := range liveWallFallbackHomeProfiles {
+		listed := false
+		for _, line := range lines {
+			listed = listed || line == profile
+		}
+		if !listed {
+			t.Fatalf("disposable wall-fallback marker does not list profile %s", profile)
+		}
+	}
 	return home
+}
+
+// resetLiveProfile drops a stale profile config so the test can republish it
+// against this run's endpoint port. The rest of the profile dir — including
+// the prepared isolated Hermes runtime — is kept, so warming survives.
+func resetLiveProfile(t *testing.T, home, profile string) {
+	t.Helper()
+	_ = os.Remove(filepath.Join(home, "profiles", profile, "config.yaml"))
+}
+
+// writeLiveFallbackProfile publishes a disposable profile whose secret stream
+// drops the shared telegram token: two seat gateways live side by side in this
+// test, and one platform token may serve only one gateway. Provider keys stay.
+func writeLiveFallbackProfile(t *testing.T, home, profile, baseURL string) {
+	t.Helper()
+	bridge, err := liveSecretBridgePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "profiles", profile)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	secrets := fmt.Sprintf("/bin/sh -c %q", bridge+" --dotenv | grep -v '^TELEGRAM_'")
+	config := fmt.Sprintf(`model:
+  provider: zai
+  model: zai/glm-5.3-flash
+  base_url: %s
+secrets:
+  command:
+    command: %q
+    enabled: true
+    override_existing: false
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+platform_toolsets:
+  cli:
+    - terminal
+    - file
+mcp_servers: {}
+plugins:
+  disabled:
+    - kanban
+`, baseURL, secrets)
+	path := filepath.Join(dir, "config.yaml")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("write disposable profile: %v", err)
+	}
+	if _, err := file.WriteString(config); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeLiveFallbackWorker(t *testing.T, root, profileA, profileB string) string {
@@ -129,6 +200,20 @@ func liveRunWallWakeAt(t *testing.T, run liveFallbackRun) time.Time {
 	return execution.WallWakeAt
 }
 
+func setLiveAvailability(t *testing.T, path string, seatBAvailable bool) {
+	t.Helper()
+	value := "false"
+	if seatBAvailable {
+		value = "true"
+	}
+	roster := "seats:\n" +
+		"  - name: seat-a\n    available: true\n    fallback: seat-b\n    pool: pool-a\n" +
+		"  - name: seat-b\n    available: " + value + "\n    pool: pool-b\n"
+	if err := os.WriteFile(path, []byte(roster), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFiniteLiveCompiledHermesQuotaWallFallback(t *testing.T) {
 	if os.Getenv("WERKRBY_FINITE_HERMES_LIVE") != "1" {
 		t.Skip("compiled live Hermes quota fallback requires explicit opt-in")
@@ -136,11 +221,14 @@ func TestFiniteLiveCompiledHermesQuotaWallFallback(t *testing.T) {
 	binary := liveBinary(t)
 	home := liveWallFallbackHome(t)
 	endpoint := newLiveControlledEndpoint(t)
-	writeLiveProfile(t, home, "wk-finite-wall-a", endpoint.URL+"/wall/v1")
-	writeLiveProfile(t, home, "wk-finite-wall-b", endpoint.URL+"/wall/v1")
+	resetLiveProfile(t, home, "wk-finite-wall-a")
+	resetLiveProfile(t, home, "wk-finite-wall-b")
+	writeLiveFallbackProfile(t, home, "wk-finite-wall-a", endpoint.URL+"/wall/v1")
+	writeLiveFallbackProfile(t, home, "wk-finite-wall-b", endpoint.URL+"/wall/v1")
 	root := liveTestRoot(t, "compiled-wall-fallback")
 	worker := writeLiveFallbackWorker(t, root, "wk-finite-wall-a", "wk-finite-wall-b")
-	availability := writeLiveAvailability(t, root, true)
+	availability := filepath.Join(root, "availability.yaml")
+	setLiveAvailability(t, availability, false) // seat B stays closed until run 1 has walled
 	taskID := "compiled-wall-fb"
 	stateRoot := filepath.Join(root, "state")
 	brief := writeLiveFallbackBrief(t, root, taskID, "seat-a")
@@ -152,15 +240,19 @@ func TestFiniteLiveCompiledHermesQuotaWallFallback(t *testing.T) {
 	waitForFixture(t, func() bool { return fileExists(filepath.Join(stateRoot, "control.json")) }, "compiled owner control publication")
 	runLiveControl(t, binary, "intake", "--root", stateRoot, "--brief", brief)
 
-	// Run 1 walls on seat A.
+	// Run 1 walls on seat A, and the closed fallback keeps the task waiting.
 	status := waitLiveState(t, binary, stateRoot, taskID, StateWaiting, 2*time.Minute)
+	if status.WaitKind != WaitTime || status.WakeAt == nil {
+		t.Fatalf("wall status = %+v, want a timed provider wait", status)
+	}
 	runs := liveFallbackRuns(t, stateRoot)
 	if len(runs) != 1 || runs[0].Seat != "seat-a" || runs[0].Outcome != RunWall || !runs[0].Ended {
 		t.Fatalf("first runs = %+v, want one settled wall on seat-a", runs)
 	}
 	firstReset := liveRunWallWakeAt(t, runs[0])
 
-	// Run 2 continues on seat B before run 1's reset, then walls there too.
+	// Seat B opens: run 2 continues there before run 1's reset, then walls too.
+	setLiveAvailability(t, availability, true)
 	deadline := time.Now().Add(2 * time.Minute)
 	for time.Now().Before(deadline) {
 		status = waitLiveStatus(t, binary, stateRoot, taskID, 30*time.Second)
@@ -199,10 +291,12 @@ func TestFiniteLiveCompiledHermesQuotaWallFallbackClosedSeat(t *testing.T) {
 	binary := liveBinary(t)
 	home := liveWallFallbackHome(t)
 	endpoint := newLiveControlledEndpoint(t)
-	writeLiveProfile(t, home, "wk-finite-wall-a", endpoint.URL+"/wall/v1")
-	writeLiveProfile(t, home, "wk-finite-wall-b", endpoint.URL+"/wall/v1")
+	resetLiveProfile(t, home, "wk-finite-wall-closed-a")
+	resetLiveProfile(t, home, "wk-finite-wall-closed-b")
+	writeLiveFallbackProfile(t, home, "wk-finite-wall-closed-a", endpoint.URL+"/wall/v1")
+	writeLiveFallbackProfile(t, home, "wk-finite-wall-closed-b", endpoint.URL+"/wall/v1")
 	root := liveTestRoot(t, "compiled-wall-fallback-closed")
-	worker := writeLiveFallbackWorker(t, root, "wk-finite-wall-a", "wk-finite-wall-b")
+	worker := writeLiveFallbackWorker(t, root, "wk-finite-wall-closed-a", "wk-finite-wall-closed-b")
 	availability := writeLiveAvailability(t, root, false)
 	taskID := "compiled-wall-fbc"
 	stateRoot := filepath.Join(root, "state")
