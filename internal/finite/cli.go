@@ -59,7 +59,7 @@ func defaultCLIDependencies() cliDependencies {
 		stdout:        os.Stdout,
 		serve:         runFiniteServe,
 		controlClient: newCLIControlClient,
-		runSupervisor: RunSupervisor,
+		runSupervisor: runSupervisorWithBoundary,
 		newRunner:     NewRunner,
 		runReceiver:   runFiniteReceiver,
 	}

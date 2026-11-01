@@ -26,7 +26,7 @@ type serveRuntimeDependencies struct {
 	listen       func(string, string) (net.Listener, error)
 	newToken     func() (string, error)
 	executable   func() (string, error)
-	serveControl func(context.Context, net.Listener, *Store, *WorkspaceLock, string) error
+	serveControl func(context.Context, net.Listener, *Store, *WorkspaceLock, string, ControlWorkflow) error
 	newOutbox    func(*Store, DeliveryTransport) cliOutboxProcessor
 	stderr       io.Writer
 }
@@ -36,7 +36,7 @@ func defaultServeRuntimeDependencies() serveRuntimeDependencies {
 		listen:       net.Listen,
 		newToken:     NewControlToken,
 		executable:   os.Executable,
-		serveControl: ServeControl,
+		serveControl: ServeControlWithWorkflow,
 		newOutbox: func(store *Store, transport DeliveryTransport) cliOutboxProcessor {
 			return NewOutboxProcessor(store, transport)
 		},
@@ -116,6 +116,7 @@ func runFiniteServeWithDeps(ctx context.Context, options serveOptions, deps serv
 		_ = listener.Close()
 		return fmt.Errorf("serve: acquire finite owner: %w", err)
 	}
+	configureFiniteHermesOwner(engine, options.Harness)
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -137,7 +138,7 @@ func runFiniteServeWithDeps(ctx context.Context, options serveOptions, deps serv
 	loops.Add(1)
 	go func() {
 		defer loops.Done()
-		controlDone <- deps.serveControl(runCtx, listener, engine.store, engine.lock, token)
+		controlDone <- deps.serveControl(runCtx, listener, engine.store, engine.lock, token, engine)
 	}()
 	if err := writeCLIRendezvous(rendezvousPath, "http://"+listener.Addr().String(), token); err != nil {
 		return err

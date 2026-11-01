@@ -11,7 +11,7 @@
 
 - `cli.go` owns command parsing and delegation for `serve`, `intake`, `status`, `stop`, `answer`, `supervise`, and `test-receiver`; unrecognized commands fail explicitly, and unimplemented behavior returns a not-implemented error rather than a partial substitute.
 - `serve` owns the scheduler, control, and outbox loops under the single owner lock. `intake`, `status`, `stop`, and `answer` are bounded non-secret owner-control clients and never mutate SQLite directly.
-- `supervise` is the internal per-run child entry point and never opens the workflow database. `test-receiver` is a test-only durable file receiver, never a production channel.
+- `supervise` is the internal per-run child entry point and never opens the workflow database. `test-receiver` is a test-only durable file receiver, never a production channel. Production `runSupervisorWithBoundary` normalizes the CLI argument shape and activates exact Hermes isolation only for `herdr`; fixture and other providers retain their original context. Production serve configures real Herdr owner recovery/stop across both OS and Hermes gateway liveness and passes the Engine to `ServeControlWithWorkflow`, serializing stops and answers through `scanMu`. There is no test-only composition escape.
 - Dependency direction is `cmd/werkrby-finite -> internal/finite -> internal/harness, internal/core, internal/fsx`. Never import `internal/cli`, `internal/app`, `internal/localapi`, `internal/instance`, `internal/updater`, `internal/orchestrator`, or `internal/runs`; `internal/harness` must not import this package.
 
 ### State and authority

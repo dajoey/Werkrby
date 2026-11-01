@@ -231,12 +231,12 @@ func (h *Herdr) sendHeadlessHermesRunBoundary(ctx context.Context, key, prompt, 
 	reader := bufio.NewReader(stdout)
 	for {
 		line, readErr := reader.ReadBytes('\n')
-		if result.Len()+len(line) > hermesResultCap {
+		result.Write(line)
+		if result.Len() > hermesResultCap {
 			keep := result.Bytes()[result.Len()-hermesResultCap/2:]
 			result.Reset()
 			result.Write(keep)
 		}
-		result.Write(line)
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) {
 				procCancel()

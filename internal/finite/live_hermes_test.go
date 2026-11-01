@@ -2,240 +2,506 @@ package finite
 
 import (
 	"context"
-	"errors"
+	"database/sql"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/agent0ai/spynel/internal/harness"
+	_ "github.com/ncruces/go-sqlite3/driver"
 )
 
-func newLiveHermesOwner(t *testing.T, cfg Config, provider harness.HarnessConfig) *Engine {
+type liveControlledEndpoint struct {
+	*httptest.Server
+	mu           sync.Mutex
+	wallRequests int
+	holdRequests int
+	holdStarted  chan struct{}
+	holdOnce     sync.Once
+	releaseHold  chan struct{}
+}
+
+func newLiveControlledEndpoint(t *testing.T) *liveControlledEndpoint {
 	t.Helper()
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var owner *Engine
-	inspect := func(ctx context.Context, runID int64, token string) (RunProcesses, error) {
-		processes, processErr := InspectRun(ctx, runID, token)
-		run, runErr := owner.store.GetRun(ctx, runID)
-		if runErr != nil {
-			return RunProcesses{Liveness: LivenessUnknown}, runErr
-		}
-		provider, providerErr := harness.InspectHermesRunBoundary(ctx, harness.RunBoundarySpec{RunID: runID, ProcessToken: token, RunDir: run.RunDir})
-		if processErr != nil || providerErr != nil {
-			return RunProcesses{Liveness: LivenessUnknown, Supervisor: processes.Supervisor, Processes: processes.Processes}, errors.Join(processErr, providerErr)
-		}
-		if processes.Liveness == LivenessLive || provider.Liveness == harness.BoundaryLive {
-			processes.Liveness = LivenessLive
-			return processes, nil
-		}
-		return processes, nil
-	}
-	stop := func(ctx context.Context, runID int64, token string, grace time.Duration) (Liveness, error) {
-		processState, processErr := StopRun(ctx, runID, token, grace)
-		run, runErr := owner.store.GetRun(ctx, runID)
-		if runErr != nil {
-			return LivenessUnknown, runErr
-		}
-		providerState, providerErr := harness.StopHermesRunBoundary(ctx, harness.RunBoundarySpec{RunID: runID, ProcessToken: token, RunDir: run.RunDir})
-		if processErr != nil || providerErr != nil {
-			return LivenessUnknown, errors.Join(processErr, providerErr)
-		}
-		if processState == LivenessLive || providerState == harness.BoundaryLive {
-			return LivenessLive, nil
-		}
-		if processState == LivenessAbsent && providerState == harness.BoundaryAbsent {
-			return LivenessAbsent, nil
-		}
-		return LivenessUnknown, ErrProcessUnknown
-	}
-	owner, err = NewEngine(cfg, EngineOptions{
-		Harness: provider, Executable: executable, PollInterval: 50 * time.Millisecond, StopGrace: 25 * time.Millisecond,
-		Seats: func(context.Context) ([]Seat, error) { return []Seat{{Name: "wk-finite-test", Available: true}}, nil },
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	owner.opts.hooks.inspectRun = inspect
-	owner.opts.hooks.stopRun = stop
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		rows, err := owner.store.db.Query(`SELECT id,process_token FROM runs WHERE ended_at IS NULL AND process_token IS NOT NULL`)
-		if err == nil {
-			for rows.Next() {
-				var id int64
-				var token string
-				if rows.Scan(&id, &token) == nil {
-					_, _ = stop(ctx, id, token, 0)
-				}
+	endpoint := &liveControlledEndpoint{holdStarted: make(chan struct{}), releaseHold: make(chan struct{})}
+	endpoint.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch {
+		case strings.Contains(req.URL.Path, "/wall/"):
+			endpoint.mu.Lock()
+			endpoint.wallRequests++
+			endpoint.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			reset := time.Now().Add(2 * time.Hour).UTC().Format("2006-01-02 15:04:05")
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "HTTP 429: quota exhausted. Your limit will reset at " + reset, "type": "rate_limit_error"}})
+		case strings.Contains(req.URL.Path, "/hold/"):
+			if req.Method != http.MethodPost || !strings.Contains(req.URL.Path, "chat/completions") {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+				return
 			}
-			_ = rows.Close()
+			endpoint.mu.Lock()
+			endpoint.holdRequests++
+			endpoint.mu.Unlock()
+			endpoint.holdOnce.Do(func() { close(endpoint.holdStarted) })
+			select {
+			case <-req.Context().Done():
+			case <-endpoint.releaseHold:
+			}
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
-		_ = owner.Close()
+	}))
+	t.Cleanup(func() {
+		close(endpoint.releaseHold)
+		endpoint.Close()
 	})
-	return owner
+	return endpoint
 }
 
-func liveHermesBrief(root string, wake time.Time) string {
-	result := func(run int, phase Phase, outcome ResultOutcome) string {
-		return fmt.Sprintf(`{"schema_version":1,"run_id":%d,"task_id":"finite-hermes-live","phase":%q,"outcome":%q,"progress":"scripted live protocol step","summary":{"outcome":%q,"evidence":"real Hermes turn","uncertainty":"none"}}`, run, phase, outcome, outcome)
+func (e *liveControlledEndpoint) counts() (wall, hold int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.wallRequests, e.holdRequests
+}
+
+type liveCommandProcess struct {
+	cmd      *exec.Cmd
+	done     chan error
+	finished chan struct{}
+	waitOnce sync.Once
+	log      *os.File
+}
+
+func startLiveCommand(t *testing.T, binary string, args []string, env []string, logPath string) *liveCommandProcess {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	var lines []string
-	lines = append(lines, `---
-id: finite-hermes-live
-title: Exercise the disposable Hermes finite boundary
-risk: low
-review_required: true
-max_runs: 12
-max_failures: 4
-max_review_cycles: 3
----
-This is a disposable protocol test. Perform no investigation and make no other writes. For the current run only, use the terminal tool to write the specified bytes to the specified result.json, then stop.`)
-	lines = append(lines, fmt.Sprintf("Run 1 (implementation): write exactly `not json` to `%s`.", filepath.Join(root, "state", "runs", "1", "result.json")))
-	lines = append(lines, fmt.Sprintf("Run 2 (implementation): write a JSON result with schema_version=1, run_id=2, task_id=finite-hermes-live, phase=implementation, outcome=wait, progress=scripted wait, summary={outcome:wait,evidence:real Hermes turn,uncertainty:none}, and wait={kind:time,wake_at:%q,reason:scripted wake} to `%s`.", wake.UTC().Format(time.RFC3339), filepath.Join(root, "state", "runs", "2", "result.json")))
-	for _, step := range []struct {
-		run     int
-		phase   Phase
-		outcome ResultOutcome
-	}{{3, PhaseImplementation, ResultReview}, {4, PhaseReview, ResultRejected}, {5, PhaseImplementation, ResultReview}, {6, PhaseReview, ResultAccepted}} {
-		text := result(step.run, step.phase, step.outcome)
-		if step.outcome == ResultRejected {
-			text = strings.TrimSuffix(text, "}") + `,"findings":["scripted review rejection"]}`
+	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command(binary, args...)
+	command.Env = env
+	command.Stdout = log
+	command.Stderr = log
+	process := &liveCommandProcess{cmd: command, done: make(chan error, 1), finished: make(chan struct{}), log: log}
+	if err := command.Start(); err != nil {
+		_ = log.Close()
+		t.Fatal(err)
+	}
+	go func() {
+		process.done <- command.Wait()
+		close(process.finished)
+	}()
+	t.Cleanup(func() {
+		if command.ProcessState == nil || !command.ProcessState.Exited() {
+			_ = command.Process.Kill()
 		}
-		lines = append(lines, fmt.Sprintf("Run %d (%s): write exactly this JSON to `%s`: %s", step.run, step.phase, filepath.Join(root, "state", "runs", fmt.Sprint(step.run), "result.json"), text))
-	}
-	return strings.Join(lines, "\n")
+		process.waitOnce.Do(func() { <-process.done })
+		_ = log.Close()
+	})
+	return process
 }
 
-func TestFiniteLiveHeadlessHermesWorkflow(t *testing.T) {
-	if os.Getenv("WERKRBY_FINITE_HERMES_LIVE") != "1" {
-		t.Skip("real finite Hermes workflow requires explicit live opt-in")
+func (p *liveCommandProcess) kill(t *testing.T) {
+	t.Helper()
+	if p.cmd.ProcessState == nil || !p.cmd.ProcessState.Exited() {
+		if err := p.cmd.Process.Kill(); err != nil {
+			t.Fatal(err)
+		}
 	}
-	home := os.Getenv("WERKRBY_FINITE_HERMES_HOME")
-	if home == "" {
-		t.Fatal("WERKRBY_FINITE_HERMES_HOME is required")
+	p.waitOnce.Do(func() { <-p.done })
+}
+
+func (p *liveCommandProcess) terminate(t *testing.T) {
+	t.Helper()
+	if p.cmd.ProcessState != nil && p.cmd.ProcessState.Exited() {
+		p.waitOnce.Do(func() { <-p.done })
+		return
 	}
-	marker, err := os.ReadFile(filepath.Join(home, ".finite-hermes-disposable"))
-	if err != nil || string(marker) != "wk-finite-test\n" {
-		t.Fatalf("disposable Hermes marker: %v", err)
+	_ = p.cmd.Process.Signal(syscall.SIGTERM)
+	select {
+	case <-p.finished:
+		p.waitOnce.Do(func() { <-p.done })
+	case <-time.After(5 * time.Second):
+		p.kill(t)
 	}
-	t.Setenv("HERMES_HOME", home)
-	root := t.TempDir()
+}
+
+func liveTestRoot(t *testing.T, name string) string {
+	t.Helper()
 	if evidence := os.Getenv("WERKRBY_FINITE_HERMES_EVIDENCE"); evidence != "" {
-		root = filepath.Join(evidence, "finite-workflow")
+		root := filepath.Join(evidence, name)
 		if err := os.MkdirAll(evidence, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.Mkdir(root, 0o700); err != nil {
-			t.Fatalf("refuse to reuse finite live evidence: %v", err)
+			t.Fatalf("refuse to reuse live evidence %s: %v", root, err)
 		}
+		return root
 	}
+	return t.TempDir()
+}
+
+func liveBinary(t *testing.T) string {
+	t.Helper()
+	path := os.Getenv("WERKRBY_FINITE_COMMAND")
+	if path == "" || !filepath.IsAbs(path) {
+		t.Fatal("WERKRBY_FINITE_COMMAND must name the compiled finite binary")
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		t.Fatalf("compiled finite binary: %v", err)
+	}
+	return path
+}
+
+func liveHome(t *testing.T, env, profile string) string {
+	t.Helper()
+	home := os.Getenv(env)
+	if home == "" || !filepath.IsAbs(home) {
+		t.Fatalf("%s must name an absolute disposable home", env)
+	}
+	marker, err := os.ReadFile(filepath.Join(home, ".finite-hermes-disposable"))
+	if err != nil || string(marker) != profile+"\n" {
+		t.Fatalf("disposable marker for %s: %v", profile, err)
+	}
+	return home
+}
+
+func writeLiveProfile(t *testing.T, home, profile, baseURL string) {
+	t.Helper()
+	dir := filepath.Join(home, "profiles", profile)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := fmt.Sprintf(`model:
+  provider: zai
+  model: zai/glm-5.3-flash
+  base_url: %s
+secrets:
+  command:
+    command: /home/dajoey/ops/secrets/hermes-infisical-secrets.sh --dotenv
+    enabled: true
+    override_existing: false
+memory:
+  memory_enabled: false
+  user_profile_enabled: false
+platform_toolsets:
+  cli:
+    - terminal
+    - file
+mcp_servers: {}
+plugins:
+  disabled:
+    - kanban
+`, baseURL)
+	path := filepath.Join(dir, "config.yaml")
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("write disposable profile: %v", err)
+	}
+	if _, err := file.WriteString(config); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeLiveWorker(t *testing.T, root, profile string) string {
+	t.Helper()
 	worker := filepath.Join(root, "worker")
 	if err := os.MkdirAll(filepath.Join(worker, ".werkrby"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	model := os.Getenv("WERKRBY_FINITE_HERMES_MODEL")
-	if model == "" {
-		model = "zai/glm-5.3-flash"
-	}
-	roster := fmt.Sprintf("staff:\n  pilot:\n    runner: hermes\n    headless: true\n    args: [\"-p\", \"wk-finite-test\", \"--model\", %q]\n", model)
+	roster := fmt.Sprintf("staff:\n  pilot:\n    runner: hermes\n    headless: true\n    args: [\"-p\", %q, \"--model\", \"zai/glm-5.3-flash\"]\n", profile)
 	if err := os.WriteFile(filepath.Join(worker, ".werkrby", "roster.yaml"), []byte(roster), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	briefPath := filepath.Join(root, "brief.md")
-	if err := os.WriteFile(briefPath, []byte(liveHermesBrief(root, time.Now().Add(2*time.Second))), 0o600); err != nil {
+	return worker
+}
+
+func writeLiveBrief(t *testing.T, root, id string) string {
+	t.Helper()
+	brief := fmt.Sprintf(`---
+id: %s
+title: Compiled finite Hermes acceptance
+risk: low
+review_required: false
+---
+This is a disposable protocol test. Do not inspect or modify unrelated files.
+`, id)
+	path := filepath.Join(root, "brief.md")
+	if err := os.WriteFile(path, []byte(brief), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	provider := harness.HarnessConfig{
-		Name: "herdr", Model: "@pilot", Cwd: worker,
-		Env: []string{"HERMES_HOME=" + home, "WERKRBY_FINITE_HERMES_LIVE=1"},
+	return path
+}
+
+func liveEnv(home string) []string {
+	return append(os.Environ(), "HERMES_HOME="+home)
+}
+
+func runLiveControl(t *testing.T, binary string, args ...string) ControlStatus {
+	t.Helper()
+	command := exec.Command(binary, args...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s: %v: %s", strings.Join(args, " "), err, output)
 	}
-	cfg := Config{Root: filepath.Join(root, "state"), WorkerDir: worker}
-	owner := newLiveHermesOwner(t, cfg, provider)
-	task, err := owner.store.IntakeBrief(context.Background(), briefPath)
+	var status ControlStatus
+	if err := json.Unmarshal(output, &status); err != nil {
+		t.Fatalf("decode control status %s: %v", output, err)
+	}
+	return status
+}
+
+func waitLiveStatus(t *testing.T, binary, stateRoot, taskID string, timeout time.Duration) ControlStatus {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last error
+	for time.Now().Before(deadline) {
+		command := exec.Command(binary, "status", "--root", stateRoot, "--task", taskID)
+		output, err := command.CombinedOutput()
+		if err == nil {
+			var status ControlStatus
+			if json.Unmarshal(output, &status) == nil {
+				return status
+			}
+		}
+		last = err
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("control did not become ready: %v", last)
+	return ControlStatus{}
+}
+
+func waitLiveState(t *testing.T, binary, stateRoot, taskID string, desired State, timeout time.Duration) ControlStatus {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var last ControlStatus
+	for time.Now().Before(deadline) {
+		last = waitLiveStatus(t, binary, stateRoot, taskID, timeout)
+		if last.State == desired {
+			return last
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("task did not reach %s: %+v", desired, last)
+	return ControlStatus{}
+}
+
+func startLiveServe(t *testing.T, binary, root, worker, home, receiver, logName string) *liveCommandProcess {
+	t.Helper()
+	args := []string{"serve", "--root", root, "--worker", worker, "--seats", "wk-finite-test", "--harness", "herdr", "--model", "@pilot", "--poll-interval", "25ms", "--stop-grace", "25ms"}
+	if receiver != "" {
+		args = append(args, "--receiver-config", receiver)
+	}
+	process := startLiveCommand(t, binary, args, liveEnv(home), filepath.Join(root, logName))
+	waitForFixture(t, func() bool { return fileExists(filepath.Join(root, "control.json")) }, "compiled owner control publication")
+	return process
+}
+
+type liveRunRow struct {
+	ID           int64
+	Outcome      RunOutcome
+	RunDir       string
+	ProcessToken string
+	Ended        bool
+}
+
+func liveRuns(t *testing.T, root string) []liveRunRow {
+	t.Helper()
+	db, err := sql.Open("sqlite3", "file:"+filepath.ToSlash(filepath.Join(root, "engine.db"))+"?mode=ro&_pragma=busy_timeout(2000)")
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer db.Close()
+	rows, err := db.Query(`SELECT id,COALESCE(outcome,''),run_dir,COALESCE(process_token,''),ended_at IS NOT NULL FROM runs ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var result []liveRunRow
+	for rows.Next() {
+		var run liveRunRow
+		if err := rows.Scan(&run.ID, &run.Outcome, &run.RunDir, &run.ProcessToken, &run.Ended); err != nil {
+			t.Fatal(err)
+		}
+		result = append(result, run)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
 
-	deadline := time.Now().Add(8 * time.Minute)
-	restarted := false
-	var last Task
+func liveAdmission(t *testing.T, run liveRunRow) harness.HermesBoundaryObservation {
+	t.Helper()
+	observation, err := harness.InspectHermesRunBoundary(context.Background(), harness.RunBoundarySpec{RunID: run.ID, ProcessToken: run.ProcessToken, RunDir: run.RunDir})
+	if err != nil {
+		t.Fatalf("inspect run %d: %v", run.ID, err)
+	}
+	return observation
+}
+
+func waitLiveAdmission(t *testing.T, run liveRunRow, desired harness.BoundaryLiveness, timeout time.Duration) harness.HermesBoundaryObservation {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var observation harness.HermesBoundaryObservation
+	var err error
 	for time.Now().Before(deadline) {
-		_ = owner.ScanOnce(context.Background())
-		last, err = owner.store.GetTask(context.Background(), task.ID)
+		observation, err = harness.InspectHermesRunBoundary(context.Background(), harness.RunBoundarySpec{RunID: run.ID, ProcessToken: run.ProcessToken, RunDir: run.RunDir})
+		if err == nil && observation.Liveness == desired && observation.Identity != nil {
+			return observation
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("run %d did not reach %s: %+v, %v", run.ID, desired, observation, err)
+	return observation
+}
+
+func TestFiniteLiveCompiledHermesQuotaWall(t *testing.T) {
+	if os.Getenv("WERKRBY_FINITE_HERMES_LIVE") != "1" {
+		t.Skip("compiled live Hermes wall requires explicit opt-in")
+	}
+	binary := liveBinary(t)
+	home := liveHome(t, "WERKRBY_FINITE_HERMES_WALL_HOME", "wk-finite-wall")
+	endpoint := newLiveControlledEndpoint(t)
+	writeLiveProfile(t, home, "wk-finite-wall", endpoint.URL+"/wall/v1")
+	root := liveTestRoot(t, "compiled-wall")
+	worker := writeLiveWorker(t, root, "wk-finite-wall")
+	taskID := "compiled-wall"
+	stateRoot := filepath.Join(root, "state")
+	brief := writeLiveBrief(t, root, taskID)
+	owner := startLiveServe(t, binary, stateRoot, worker, home, "", "owner.log")
+	defer owner.terminate(t)
+	runLiveControl(t, binary, "intake", "--root", stateRoot, "--brief", brief)
+	status := waitLiveState(t, binary, stateRoot, taskID, StateWaiting, 2*time.Minute)
+	if status.WaitKind != WaitTime || status.WakeAt == nil {
+		t.Fatalf("wall status = %+v, want a timed provider wait", status)
+	}
+	runs := liveRuns(t, stateRoot)
+	if len(runs) != 1 || runs[0].Outcome != RunWall || !runs[0].Ended {
+		t.Fatalf("wall runs = %+v, want one settled RunWall", runs)
+	}
+	execution, err := os.ReadFile(filepath.Join(runs[0].RunDir, "execution.json"))
+	if err != nil || !strings.Contains(string(execution), `"outcome":"wall"`) || !strings.Contains(string(execution), `"wall_wake_at"`) {
+		t.Fatalf("provider-produced wall record = %s, %v", execution, err)
+	}
+	usage, err := os.ReadFile(filepath.Join(runs[0].RunDir, "usage.json"))
+	if err != nil || !strings.Contains(string(usage), `"source":"hermes"`) {
+		t.Fatalf("wall usage = %s, %v", usage, err)
+	}
+	observation := liveAdmission(t, runs[0])
+	if observation.Liveness != harness.BoundaryAbsent || observation.Outcome != "failed" || observation.Identity == nil {
+		t.Fatalf("wall admission = %+v, want exact failed terminal absence", observation)
+	}
+	if count, _ := endpoint.counts(); count < 1 {
+		t.Fatal("controlled endpoint saw no real Hermes wall request")
+	}
+}
+
+func TestFiniteLiveCompiledHermesForceKillStopDelivery(t *testing.T) {
+	if os.Getenv("WERKRBY_FINITE_HERMES_LIVE") != "1" {
+		t.Skip("compiled live Hermes recovery requires explicit opt-in")
+	}
+	binary := liveBinary(t)
+	home := liveHome(t, "WERKRBY_FINITE_HERMES_HOME", "wk-finite-test")
+	endpoint := newLiveControlledEndpoint(t)
+	writeLiveProfile(t, home, "wk-finite-test", endpoint.URL+"/hold/v1")
+	root := liveTestRoot(t, "compiled-recovery")
+	worker := writeLiveWorker(t, root, "wk-finite-test")
+	taskID := "compiled-recovery"
+	stateRoot := filepath.Join(root, "state")
+	brief := writeLiveBrief(t, root, taskID)
+	receiverRoot := filepath.Join(root, "receiver")
+	receiver := startLiveCommand(t, binary, []string{"test-receiver", "--root", receiverRoot}, liveEnv(home), filepath.Join(root, "receiver.log"))
+	defer receiver.terminate(t)
+	waitForFixture(t, func() bool { return fileExists(filepath.Join(receiverRoot, "receiver.json")) }, "compiled receiver rendezvous")
+	owner := startLiveServe(t, binary, stateRoot, worker, home, filepath.Join(receiverRoot, "receiver.json"), "owner-first.log")
+	runLiveControl(t, binary, "intake", "--root", stateRoot, "--brief", brief)
+	select {
+	case <-endpoint.holdStarted:
+	case <-time.After(2 * time.Minute):
+		t.Fatal("real Hermes hold request did not start")
+	}
+	runs := liveRuns(t, stateRoot)
+	if len(runs) != 1 || runs[0].Ended {
+		t.Fatalf("held runs = %+v, want one open run", runs)
+	}
+	observation := waitLiveAdmission(t, runs[0], harness.BoundaryLive, 30*time.Second)
+	if observation.Liveness != harness.BoundaryLive || observation.Identity == nil {
+		t.Fatalf("held admission = %+v, want exact live identity", observation)
+	}
+	identityBefore := observation.Identity
+	supervisorBefore, err := os.ReadFile(filepath.Join(runs[0].RunDir, "supervisor-started.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner.kill(t)
+	owner = startLiveServe(t, binary, stateRoot, worker, home, filepath.Join(receiverRoot, "receiver.json"), "owner-restarted.log")
+	_ = owner
+	status := waitLiveStatus(t, binary, stateRoot, taskID, time.Minute)
+	supervisorAfter, err := os.ReadFile(filepath.Join(runs[0].RunDir, "supervisor-started.json"))
+	if err != nil || string(supervisorBefore) != string(supervisorAfter) {
+		t.Fatalf("owner recovery replaced the supervisor: %v", err)
+	}
+	observation = waitLiveAdmission(t, runs[0], harness.BoundaryLive, 30*time.Second)
+	if observation.Liveness != harness.BoundaryLive || observation.Identity == nil ||
+		observation.Identity.SessionID != identityBefore.SessionID || observation.Identity.RequestID != identityBefore.RequestID ||
+		observation.Identity.AdmissionID != identityBefore.AdmissionID || observation.Identity.OwnerEpoch != identityBefore.OwnerEpoch {
+		t.Fatalf("recovered admission = %+v, want the identical pre-kill turn %+v", observation.Identity, identityBefore)
+	}
+	runLiveControl(t, binary, "stop", "--root", stateRoot, "--task", taskID, "--expected-version", fmt.Sprint(status.Version))
+	final := waitLiveState(t, binary, stateRoot, taskID, StateCancelled, time.Minute)
+	if !final.CancelRequested {
+		t.Fatalf("operator stop final = %+v", final)
+	}
+	runs = liveRuns(t, stateRoot)
+	if len(runs) != 1 || runs[0].Outcome != RunInterrupted || !runs[0].Ended {
+		t.Fatalf("stopped runs = %+v, want one settled interrupted run", runs)
+	}
+	observation = waitLiveAdmission(t, runs[0], harness.BoundaryAbsent, 30*time.Second)
+	if observation.Liveness != harness.BoundaryAbsent || observation.Identity == nil {
+		t.Fatalf("stopped admission = %+v, want exact terminal absence", observation)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	var deliveries []ReceivedDelivery
+	for time.Now().Before(deadline) {
+		deliveries, err = ReadReceiverDeliveries(receiverRoot)
 		if err != nil {
 			t.Fatal(err)
 		}
-		runs, listErr := owner.store.ListRuns(context.Background(), task.ID)
-		if listErr != nil {
-			t.Fatal(listErr)
-		}
-		if !restarted && len(runs) >= 4 && runs[3].StartedAt != nil && runs[3].EndedAt == nil {
-			if err := owner.Close(); err != nil {
-				t.Fatal(err)
-			}
-			owner = newLiveHermesOwner(t, cfg, provider)
-			restarted = true
-		}
-		if last.State == StateDone && len(runs) == 6 && restarted {
+		if len(deliveries) > 0 {
 			break
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
-	if !restarted {
-		t.Fatalf("owner was not restarted during the first review; last=%+v", last)
+	if len(deliveries) == 0 {
+		t.Fatal("live outbox produced no durable receiver delivery")
 	}
-	if last.State != StateDone {
-		runs, _ := owner.store.ListRuns(context.Background(), task.ID)
-		for _, run := range runs {
-			result, _ := os.ReadFile(filepath.Join(run.RunDir, "result.json"))
-			completion, _ := os.ReadFile(filepath.Join(run.RunDir, "completion.json"))
-			log, _ := os.ReadFile(filepath.Join(run.RunDir, "supervisor.log"))
-			t.Logf("run=%+v result=%s completion=%s log=%s", run, result, completion, log)
-		}
-		t.Fatalf("live workflow did not finish: %+v", last)
-	}
-	runs, err := owner.store.ListRuns(context.Background(), task.ID)
-	if err != nil || len(runs) != 6 {
-		t.Fatalf("live runs = %+v, %v", runs, err)
-	}
-	seen := map[string]bool{}
-	for index, run := range runs {
-		if run.Outcome != RunOK {
-			t.Errorf("run %d outcome = %s, want ok", run.ID, run.Outcome)
-		}
-		observation, err := harness.InspectHermesRunBoundary(context.Background(), harness.RunBoundarySpec{RunID: run.ID, ProcessToken: run.ProcessToken, RunDir: run.RunDir})
-		if err != nil || observation.Liveness != harness.BoundaryAbsent || observation.Identity == nil {
-			t.Errorf("run %d terminal boundary = %+v, %v", run.ID, observation, err)
-			continue
-		}
-		if observation.Identity.RunID != run.ID || observation.Identity.ProcessToken != run.ProcessToken || seen[observation.Identity.AdmissionID] {
-			t.Errorf("run %d exact identity = %+v", run.ID, observation.Identity)
-		}
-		seen[observation.Identity.AdmissionID] = true
-		usage, err := owner.store.GetUsage(context.Background(), run.ID)
-		if err != nil || usage.APICalls == nil || *usage.APICalls < 1 || usage.Source != "hermes" {
-			t.Errorf("run %d usage = %+v, %v", run.ID, usage, err)
-		}
-		if index == 1 && observation.Outcome != "completed" {
-			t.Errorf("wait run provider outcome = %s", observation.Outcome)
+	found := false
+	for _, delivery := range deliveries {
+		if strings.Contains(string(delivery.Payload), taskID) && strings.Contains(string(delivery.Payload), "cancelled") {
+			found = true
 		}
 	}
-	if got := countRows(t, owner.store, `SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='woke'`, task.ID); got != 1 {
-		t.Errorf("wake events = %d, want 1", got)
+	if !found {
+		t.Fatalf("receiver payloads lack the cancelled task: %+v", deliveries)
 	}
-	if got := countRows(t, owner.store, `SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='settled' AND json_extract(payload_json,'$.error')='invalid_result'`, task.ID); got != 1 {
-		t.Errorf("invalid-result settlements = %d, want 1", got)
-	}
-	accounting, err := owner.store.DerivedAccounting(context.Background(), task.ID, PhaseReview)
-	if err != nil || accounting.ReviewCycles != 1 || accounting.Attempts != 2 {
-		t.Errorf("review accounting = %+v, %v; want one rejection and two attempts", accounting, err)
-	}
-	assertEngineInvariants(t, owner.store, task.ID)
+	owner.terminate(t)
 }
