@@ -174,9 +174,16 @@ func StartSupervisor(ctx context.Context, spec SupervisorSpec) (*SupervisorHandl
 	// the child's own containment handle covers owner-crash recovery.
 	launchOpen = false
 	go func() {
-		handle.waitErr = errors.Join(command.Wait(), launch.Close())
-		_ = logFile.Close()
+		// Wrapper exit is deliberately not provider absence: report completion
+		// to the waiter as soon as the child exits, then drain the platform
+		// launch handle. The Windows owner keeps its named job handle open
+		// until the job reports no members, so a provider that outlived a
+		// crashed supervisor stays contained and observable while recovery
+		// works. Close errors are best effort and no longer join waitErr.
+		handle.waitErr = command.Wait()
 		close(handle.done)
+		_ = launch.Close()
+		_ = logFile.Close()
 	}()
 	return handle, nil
 }

@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -26,9 +28,8 @@ const (
 )
 
 var (
-	openJobObjectW     = windows.NewLazySystemDLL("kernel32.dll").NewProc("OpenJobObjectW")
-	isProcessInJobW    = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
-	commandLineToArgvW = windows.NewLazySystemDLL("shell32.dll").NewProc("CommandLineToArgvW")
+	openJobObjectW  = windows.NewLazySystemDLL("kernel32.dll").NewProc("OpenJobObjectW")
+	isProcessInJobW = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
 )
 
 type windowsSupervisorLaunch struct {
@@ -75,12 +76,31 @@ func (l *windowsSupervisorLaunch) Close() error {
 	if l.job == 0 {
 		return nil
 	}
+	// Owner-side containment drain: once the supervisor wrapper exits, this is
+	// the last handle keeping the run job alive. Hold it until the job reports
+	// no members so a provider that outlived a crashed supervisor stays inside
+	// the boundary and observable while recovery finds and stops it. A query
+	// error falls back to closing the handle; job absence then decides
+	// liveness as before.
+	for {
+		pids, err := windowsJobProcessIDs(l.job)
+		if err != nil || len(pids) == 0 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
 	err := windows.CloseHandle(l.job)
 	l.job = 0
 	return err
 }
 
 func openSupervisorContainment(token string) (supervisorContainment, error) {
+	// The supervisor role survives the graceful console stop aimed at its own
+	// process group (Ctrl-C and Ctrl-Break both arrive as Interrupt for Go
+	// processes) so the provider can drain and completion.json is still
+	// written before any termination. A provider that opts in re-arms
+	// delivery with signal.Notify afterwards.
+	signal.Ignore(os.Interrupt)
 	assignment, err := openOrCreateWindowsJob(finiteJobObjectName(token), jobObjectQuery|jobObjectAssignProcess)
 	if err != nil {
 		return nil, fmt.Errorf("open supervisor job containment: %w", err)
@@ -139,6 +159,28 @@ func ensureWindowsProcessInJob(job windows.Handle) error {
 		return nil
 	}
 	return windows.AssignProcessToJobObject(job, process)
+}
+
+// windowsProcessInJob opens pid and checks job membership on that opened
+// generation. The job PID list is a snapshot: between reading it and opening
+// a PID, the listed process can exit and the PID can be reused by a process
+// outside the boundary, so every opened generation is confirmed here before
+// it is reported or signalled.
+func windowsProcessInJob(job windows.Handle, pid int) (bool, error) {
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if windowsProcessOpenGone(err) {
+		return false, os.ErrProcessDone
+	}
+	if err != nil {
+		return false, err
+	}
+	defer windows.CloseHandle(process)
+	var inJob int32
+	result, _, callErr := isProcessInJobW.Call(uintptr(process), uintptr(job), uintptr(unsafe.Pointer(&inJob)))
+	if result == 0 {
+		return false, callErr
+	}
+	return inJob != 0, nil
 }
 
 func (c *windowsSupervisorContainment) Close() error {
@@ -244,6 +286,19 @@ func inspectRun(ctx context.Context, runID int64, token string) (RunProcesses, e
 			}
 			if err != nil {
 				return unknown(fmt.Errorf("inspect job PID %d: %w", pid, err))
+			}
+			// Confirm the opened generation on the shared job handle before it
+			// can join the observation: a reused PID never becomes a run
+			// process, so it can never be signalled later.
+			inJob, err := windowsProcessInJob(job, int(pid))
+			if errors.Is(err, os.ErrProcessDone) {
+				continue
+			}
+			if err != nil {
+				return unknown(fmt.Errorf("inspect job PID %d membership: %w", pid, err))
+			}
+			if !inJob {
+				continue
 			}
 			args, err := readWindowsCommandLine(int(pid))
 			if errors.Is(err, os.ErrProcessDone) {
@@ -418,18 +473,17 @@ func readWindowsCommandLine(pid int) ([]string, error) {
 		return nil, err
 	}
 	var argc int32
-	argv, _, callErr := commandLineToArgvW.Call(uintptr(unsafe.Pointer(textPointer)), uintptr(unsafe.Pointer(&argc)))
-	if argv == 0 {
-		return nil, callErr
+	argv, err := windows.CommandLineToArgv(textPointer, &argc)
+	if err != nil {
+		return nil, err
 	}
-	defer windows.LocalFree(windows.Handle(argv))
+	defer windows.LocalFree(windows.Handle(unsafe.Pointer(argv)))
 	if argc < 0 || argc > 4096 {
 		return nil, fmt.Errorf("invalid Windows command-line argument count %d", argc)
 	}
-	pointers := unsafe.Slice((**uint16)(unsafe.Pointer(argv)), int(argc))
 	args := make([]string, 0, argc)
-	for _, pointer := range pointers {
-		args = append(args, windows.UTF16PtrToString(pointer))
+	for _, pointer := range argv[:argc] {
+		args = append(args, windows.UTF16ToString(pointer[:]))
 	}
 	return args, nil
 }
@@ -488,10 +542,17 @@ func windowsProcessOpenGone(err error) bool {
 	return errors.Is(err, windows.ERROR_INVALID_PARAMETER)
 }
 
-func signalProcess(identity ProcessIdentity, _ bool) error {
+func signalProcess(identity ProcessIdentity, force bool) error {
 	if identity.PID <= 0 || !strings.HasPrefix(identity.Start, "windows:") {
 		return ErrProcessIdentityMismatch
 	}
+	job, err := openWindowsJob(finiteJobObjectName(identity.Token), jobObjectQuery)
+	if err != nil {
+		// A run job that no longer exists has no members: this identity is
+		// not inside any live boundary and must never be signalled.
+		return fmt.Errorf("%w: run job %s is gone", ErrProcessIdentityMismatch, finiteJobObjectName(identity.Token))
+	}
+	defer windows.CloseHandle(job)
 	process, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(identity.PID))
 	if windowsProcessOpenGone(err) {
 		return os.ErrProcessDone
@@ -510,7 +571,43 @@ func signalProcess(identity ProcessIdentity, _ bool) error {
 	if start != identity.Start {
 		return ErrProcessIdentityMismatch
 	}
+	// The start identity was recorded before this open: confirm the opened
+	// generation is a member of this run job before any signal leaves here.
+	inJob, err := windowsProcessInJob(job, identity.PID)
+	if err != nil {
+		return err
+	}
+	if !inJob {
+		return ErrProcessIdentityMismatch
+	}
+	if !force {
+		// Best effort: deliver the graceful console stop once per poll. When
+		// no shared console exists the stop loop keeps polling and terminates
+		// at the grace deadline instead.
+		_ = gracefulWindowsStop(identity)
+		return nil
+	}
 	return windows.TerminateProcess(process, 1)
+}
+
+// gracefulWindowsStop sends one console Ctrl-Break to the run's process
+// group. The supervisor is the group leader (CREATE_NEW_PROCESS_GROUP); the
+// group event reaches every provider sharing the group and console. The
+// supervisor ignores SIGBREAK (openSupervisorContainment) so the provider can
+// drain and completion.json is still written before any termination.
+func gracefulWindowsStop(identity ProcessIdentity) error {
+	args, err := readWindowsCommandLine(identity.PID)
+	if err != nil {
+		return err
+	}
+	supervisor, err := windowsExactSupervisor(args, identity.RunID, identity.Token)
+	if err != nil || !supervisor {
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("graceful stop needs the run's process group leader")
+	}
+	return windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(identity.PID))
 }
 
 func openWindowsJob(name string, access uint32) (windows.Handle, error) {

@@ -456,8 +456,10 @@ func runEnvironment(runID int64, token, runDir string) []string {
 	}
 }
 
+// finiteJobObjectName names the run job in the global namespace so an owner
+// restarted in any logon session can reopen the surviving object by name.
 func finiteJobObjectName(token string) string {
-	return `Local\WerkrbyFinite-` + token
+	return `Global\WerkrbyFinite-` + token
 }
 
 // inspectRunProcesses inspects one committed run against its recorded

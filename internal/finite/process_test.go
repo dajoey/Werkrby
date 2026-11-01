@@ -192,7 +192,7 @@ func (h *finiteFixtureHarness) Send(ctx context.Context, key, prompt string, emi
 			return "", false, err
 		}
 	}
-	if behavior == "block" || behavior == "orphan" {
+	if behavior == "block" || behavior == "orphan" || behavior == "graceful" {
 		executable, err := os.Executable()
 		if err != nil {
 			return "", false, err
@@ -204,7 +204,7 @@ func (h *finiteFixtureHarness) Send(ctx context.Context, key, prompt string, emi
 		if err := command.Start(); err != nil {
 			return "", false, err
 		}
-		if behavior == "block" {
+		if behavior == "block" || behavior == "graceful" {
 			if err := waitForReleaseFile(ctx, os.Getenv(fixtureReleaseEnv)); err != nil {
 				return "", false, err
 			}
@@ -244,6 +244,20 @@ func runFiniteFakeProvider() int {
 		if err := os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
 			return 1
 		}
+	}
+	// The graceful fixture re-arms console stop delivery: on the stop signal
+	// it marks the cooperative exit, releases the supervisor, and exits
+	// cleanly instead of waiting for termination.
+	if os.Getenv(fixtureBehaviorEnv) == "graceful" {
+		release := os.Getenv(fixtureReleaseEnv)
+		interrupts := make(chan os.Signal, 1)
+		signal.Notify(interrupts, os.Interrupt)
+		go func() {
+			<-interrupts
+			_ = os.WriteFile(filepath.Join(filepath.Dir(release), "provider-graceful-exit"), []byte("graceful"), 0o600)
+			_ = os.WriteFile(release, []byte("graceful"), 0o600)
+			os.Exit(0)
+		}()
 	}
 	if err := waitForReleaseFile(context.Background(), os.Getenv(fixtureReleaseEnv)); err != nil {
 		return 1
