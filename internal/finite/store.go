@@ -421,3 +421,10 @@ func nullString(value string) any {
 	}
 	return value
 }
+
+// CountOpenRuns is the number of provider runs that have not ended.
+func (s *Store) CountOpenRuns(ctx context.Context) (int, error) {
+	var open int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ended_at IS NULL`).Scan(&open)
+	return open, err
+}

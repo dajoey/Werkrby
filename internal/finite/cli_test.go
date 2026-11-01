@@ -79,7 +79,7 @@ func TestFiniteCLIServeDelegation(t *testing.T) {
 		Root: "state root", Worker: "worker target", Seats: []string{"alpha", "beta"},
 		Harness:     harness.HarnessConfig{Name: "finite-engine-fixture", Model: "fake-model"},
 		ControlAddr: "127.0.0.1:12345", ReceiverConfig: "receiver.json", Domains: []string{"code", "testing"},
-		PollInterval: 25 * time.Millisecond, StopGrace: 2 * time.Second,
+		PollInterval: 25 * time.Millisecond, StopGrace: 2 * time.Second, MaxOpenRuns: 6,
 	}
 	if !reflect.DeepEqual(captured, want) {
 		t.Fatalf("serve options = %#v, want %#v", captured, want)

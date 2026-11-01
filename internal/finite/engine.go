@@ -26,6 +26,7 @@ type EngineOptions struct {
 	PollInterval time.Duration
 	StopGrace    time.Duration
 	Domains      []string
+	MaxOpenRuns  int
 	OnError      func(error)
 	hooks        engineHooks
 }
@@ -134,6 +135,16 @@ func (e *Engine) ScanOnce(ctx context.Context) error {
 		}
 		if task.State != StateTodo && task.State != StateReview {
 			continue
+		}
+		if e.opts.MaxOpenRuns > 0 {
+			open, countErr := e.store.CountOpenRuns(ctx)
+			if countErr != nil {
+				errs = append(errs, countErr)
+				break
+			}
+			if open >= e.opts.MaxOpenRuns {
+				continue // queued until a run ends; woken tasks stay todo
+			}
 		}
 		if err := e.dispatchTask(ctx, task, launchReason); err != nil && !errors.Is(err, errStopPending) {
 			errs = append(errs, err)

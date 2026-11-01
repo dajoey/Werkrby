@@ -109,7 +109,7 @@ func runFiniteServeWithDeps(ctx context.Context, options serveOptions, deps serv
 	}
 	engine, err := NewEngine(config, EngineOptions{
 		Harness: options.Harness, Seats: seats, Executable: executable,
-		PollInterval: options.PollInterval, StopGrace: options.StopGrace,
+		PollInterval: options.PollInterval, StopGrace: options.StopGrace, MaxOpenRuns: options.MaxOpenRuns,
 		Domains: options.Domains, OnError: report,
 	})
 	if err != nil {

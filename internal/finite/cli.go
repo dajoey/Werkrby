@@ -30,6 +30,7 @@ type serveOptions struct {
 	Domains        []string
 	PollInterval   time.Duration
 	StopGrace      time.Duration
+	MaxOpenRuns    int
 }
 
 type receiverOptions struct {
@@ -161,8 +162,12 @@ func parseServeOptions(args []string) (serveOptions, error) {
 	flags.StringVar(&domains, "domains", "", "comma-separated prompt domain packs")
 	flags.DurationVar(&options.PollInterval, "poll-interval", options.PollInterval, "scheduler scan interval")
 	flags.DurationVar(&options.StopGrace, "stop-grace", options.StopGrace, "supervisor stop grace period")
+	flags.IntVar(&options.MaxOpenRuns, "max-open", 6, "most provider runs open at once (0 = no limit)")
 	if err := parseCLIFlags(flags, args); err != nil {
 		return serveOptions{}, err
+	}
+	if options.MaxOpenRuns < 0 {
+		return serveOptions{}, fmt.Errorf("serve: --max-open must not be negative")
 	}
 	if strings.TrimSpace(options.Root) == "" || strings.TrimSpace(options.Worker) == "" {
 		return serveOptions{}, fmt.Errorf("serve: --root and --worker are required")
