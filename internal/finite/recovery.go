@@ -145,9 +145,39 @@ func (e *Engine) recoverRun(ctx context.Context, run Run) error {
 	} else if resultPresent {
 		request.ExecutionOutcome = RunOK
 		request.Error = ""
+	} else {
+		started, err := providerTurnStarted(run)
+		if err != nil {
+			return err
+		}
+		if started {
+			// The provider turn began and its boundary died without a result or
+			// execution record: that turn was spent, so charge it as a failure
+			// and let MaxFailures bound the retries.
+			request.ExecutionOutcome = RunFail
+			request.Error = "supervisor exited during the provider turn without a result"
+		}
 	}
 	_, err = e.settleRecovered(ctx, request)
 	return err
+}
+
+// providerTurnStarted reports whether the run directory shows the supervisor
+// began its provider turn: the start fence or any recorded provider event.
+func providerTurnStarted(run Run) (bool, error) {
+	if _, err := os.Lstat(filepath.Join(run.RunDir, "supervisor-started.json")); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	info, err := os.Lstat(filepath.Join(run.RunDir, "events.jsonl"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.Size() > 0, nil
 }
 
 func (e *Engine) settleRecovered(ctx context.Context, request SettlementRequest) (Task, error) {
