@@ -2,7 +2,7 @@ package finite
 
 import (
 	"context"
-	"database/sql"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -188,6 +188,10 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 		return fmt.Errorf("finite: inspect provider seats: %w", err)
 	}
 	decision := Admit(AdmissionInput{Task: task, Phase: phase, Accounting: accounting, Seats: seats})
+	if decision.Action == AdmissionFail {
+		_, err := e.store.FailTask(ctx, task.ID, task.Version, decision.Reason)
+		return err
+	}
 	if decision.Action != AdmissionDispatch {
 		return nil
 	}
@@ -198,15 +202,14 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 	if len(brief) == 0 || len(brief) > maxBriefBytes {
 		return fmt.Errorf("finite: immutable brief size changed outside intake")
 	}
-	sessionKey := fmt.Sprintf("finite:%s:%s", task.ID, phase)
-	previousHash, err := e.latestPromptHash(ctx, task.ID, sessionKey)
-	if err != nil {
-		return err
+	if digest := fmt.Sprintf("%x", sha256.Sum256(brief)); digest != task.BriefSHA256 {
+		return fmt.Errorf("finite: immutable brief SHA-256 mismatch")
 	}
+	sessionKey := fmt.Sprintf("finite:%s:%s", task.ID, phase)
 	dynamic := fmt.Sprintf("TASK BRIEF\ntitle: %s\n\n%s", task.Title, brief)
 	promptRequest := PromptRequest{
 		TaskID: task.ID, RunID: 1, Phase: phase, Domains: e.opts.Domains,
-		Dynamic: dynamic, PreviousBundleHash: previousHash,
+		Dynamic: dynamic,
 	}
 	preliminary, err := BuildPrompt(promptRequest)
 	if err != nil {
@@ -284,19 +287,6 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 		e.signalWake()
 	}
 	return err
-}
-
-func (e *Engine) latestPromptHash(ctx context.Context, taskID, sessionKey string) (string, error) {
-	var hash string
-	err := e.store.db.QueryRowContext(ctx, `SELECT COALESCE(prompt_hash,'') FROM runs
-		WHERE task_id=? AND session_key=? AND prompt_hash IS NOT NULL ORDER BY id DESC LIMIT 1`, taskID, sessionKey).Scan(&hash)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return hash, err
 }
 
 func (e *Engine) watchSupervisor(runID int64, handle *SupervisorHandle) {

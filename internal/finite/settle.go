@@ -413,7 +413,60 @@ func insertTerminalOutbox(ctx context.Context, tx txRunner, eventID, taskID stri
 
 // FailTask records a deterministic terminal admission failure without a run.
 func (s *Store) FailTask(ctx context.Context, taskID string, expectedVersion int64, reason string) (Task, error) {
-	return s.GetTask(ctx, taskID)
+	reason = strings.TrimSpace(reason)
+	if reason == "" || len(reason) > 256 {
+		return Task{}, fmt.Errorf("finite: admission failure reason is empty or oversized")
+	}
+	var failed Task
+	err := s.withImmediateTx(ctx, func(tx txRunner) error {
+		task, err := getTaskTx(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if task.Version != expectedVersion {
+			return fmt.Errorf("%w: admission failure", ErrVersionConflict)
+		}
+		if task.CancelRequested || (task.State != StateTodo && task.State != StateReview) {
+			return fmt.Errorf("%w: admission failure from %s", ErrStateConflict, task.State)
+		}
+		var open int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE task_id=? AND ended_at IS NULL`, task.ID).Scan(&open); err != nil {
+			return err
+		}
+		if open != 0 {
+			return fmt.Errorf("%w: admission failure with an open run", ErrStateConflict)
+		}
+		now := s.now().UTC()
+		newVersion := task.Version + 1
+		update, err := tx.ExecContext(ctx, `UPDATE tasks SET state='failed',version=?,updated_at=?,
+			resume_state=NULL,wait_kind=NULL,wake_at=NULL,waiting_for=NULL,joey_ask_json=NULL
+			WHERE id=? AND version=? AND state=?`, newVersion, stamp(now), task.ID, task.Version, task.State)
+		if err != nil {
+			return err
+		}
+		if affected, _ := update.RowsAffected(); affected != 1 {
+			return fmt.Errorf("%w: admission failure update", ErrVersionConflict)
+		}
+		eventID := fmt.Sprintf("task:%s:v%d:admission_failed", task.ID, newVersion)
+		payload, _ := json.Marshal(map[string]any{"reason": reason})
+		if err := insertTaskEvent(ctx, tx, eventID, task.ID, nil, "admission_failed", task.State, StateFailed, newVersion, payload, stamp(now)); err != nil {
+			return err
+		}
+		if err := insertTerminalOutbox(ctx, tx, eventID, task.ID, 0, StateFailed, newVersion, now); err != nil {
+			return err
+		}
+		failed = task
+		failed.State = StateFailed
+		failed.Version = newVersion
+		failed.UpdatedAt = now
+		failed.ResumeState = ""
+		failed.WaitKind = ""
+		failed.WakeAt = nil
+		failed.WaitingFor = ""
+		failed.JoeyAskJSON = ""
+		return nil
+	})
+	return failed, err
 }
 
 // RequestStop commits the durable cancellation fence.

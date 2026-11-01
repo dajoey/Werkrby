@@ -55,9 +55,10 @@ type ControlWorkflow interface {
 }
 
 type controlHandler struct {
-	store *Store
-	owner *WorkspaceLock
-	token string
+	store    *Store
+	owner    *WorkspaceLock
+	token    string
+	workflow ControlWorkflow
 }
 
 // NewControlToken returns a private owner-control bearer token.
@@ -71,32 +72,32 @@ func NewControlToken() (string, error) {
 
 // NewControlHandler constructs the owner-lock-gated control handler.
 func NewControlHandler(store *Store, owner *WorkspaceLock, token string) (http.Handler, error) {
+	return NewControlHandlerWithWorkflow(store, owner, token, nil)
+}
+
+// NewControlHandlerWithWorkflow constructs a workflow-capable control handler.
+func NewControlHandlerWithWorkflow(store *Store, owner *WorkspaceLock, token string, workflow ControlWorkflow) (http.Handler, error) {
 	if store == nil || owner == nil || owner.file == nil {
 		return nil, fmt.Errorf("finite: control requires an open store under an acquired owner lock")
 	}
 	if err := validateBearerToken(token); err != nil {
 		return nil, err
 	}
-	return &controlHandler{store: store, owner: owner, token: token}, nil
-}
-
-// NewControlHandlerWithWorkflow constructs a workflow-capable control handler.
-func NewControlHandlerWithWorkflow(store *Store, owner *WorkspaceLock, token string, workflow ControlWorkflow) (http.Handler, error) {
-	return NewControlHandler(store, owner, token)
+	return &controlHandler{store: store, owner: owner, token: token, workflow: workflow}, nil
 }
 
 // ServeControl serves the minimal API on an already-bound loopback listener.
 func ServeControl(ctx context.Context, listener net.Listener, store *Store, owner *WorkspaceLock, token string) error {
-	handler, err := NewControlHandler(store, owner, token)
-	if err != nil {
-		return err
-	}
-	return serveLoopbackHTTP(ctx, listener, handler)
+	return ServeControlWithWorkflow(ctx, listener, store, owner, token, nil)
 }
 
 // ServeControlWithWorkflow serves control through the owner workflow boundary.
 func ServeControlWithWorkflow(ctx context.Context, listener net.Listener, store *Store, owner *WorkspaceLock, token string, workflow ControlWorkflow) error {
-	return ServeControl(ctx, listener, store, owner, token)
+	handler, err := NewControlHandlerWithWorkflow(store, owner, token, workflow)
+	if err != nil {
+		return err
+	}
+	return serveLoopbackHTTP(ctx, listener, handler)
 }
 
 func controlStatus(task Task) ControlStatus {
@@ -194,7 +195,13 @@ func (h *controlHandler) stop(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	task, err := h.store.RequestStop(req.Context(), input.TaskID, input.ExpectedVersion)
+	var task Task
+	var err error
+	if h.workflow != nil {
+		task, err = h.workflow.RequestStop(req.Context(), input.TaskID, input.ExpectedVersion)
+	} else {
+		task, err = h.store.RequestStop(req.Context(), input.TaskID, input.ExpectedVersion)
+	}
 	if err != nil {
 		writeControlStoreError(w, err)
 		return
@@ -212,7 +219,13 @@ func (h *controlHandler) answer(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
-	task, err := h.store.AnswerJoey(req.Context(), input.TaskID, input.ExpectedVersion, input.OptionID)
+	var task Task
+	var err error
+	if h.workflow != nil {
+		task, err = h.workflow.AnswerJoey(req.Context(), input.TaskID, input.ExpectedVersion, input.OptionID)
+	} else {
+		task, err = h.store.AnswerJoey(req.Context(), input.TaskID, input.ExpectedVersion, input.OptionID)
+	}
 	if err != nil {
 		writeControlStoreError(w, err)
 		return
