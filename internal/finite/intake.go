@@ -23,15 +23,56 @@ const maxBriefBytes = 1024 * 1024
 var briefIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
 type briefFrontMatter struct {
-	ID              string `yaml:"id"`
-	Title           string `yaml:"title"`
-	Risk            string `yaml:"risk"`
-	ReviewRequired  *bool  `yaml:"review_required"`
-	MaxRuns         *int   `yaml:"max_runs"`
-	MaxFailures     *int   `yaml:"max_failures"`
-	MaxReviewCycles *int   `yaml:"max_review_cycles"`
-	Staff           string `yaml:"staff"`
-	ReviewStaff     string `yaml:"review_staff"`
+	ID              string      `yaml:"id"`
+	Title           string      `yaml:"title"`
+	Risk            string      `yaml:"risk"`
+	ReviewRequired  *bool       `yaml:"review_required"`
+	MaxRuns         *int        `yaml:"max_runs"`
+	MaxFailures     *int        `yaml:"max_failures"`
+	MaxReviewCycles *int        `yaml:"max_review_cycles"`
+	Staff           string      `yaml:"staff"`
+	ReviewStaff     string      `yaml:"review_staff"`
+	Fallbacks       []briefRung `yaml:"fallbacks"`
+	ReviewFallbacks []briefRung `yaml:"review_fallbacks"`
+}
+
+// briefRung is one fallback chain rung in the intake representation.
+type briefRung struct {
+	Seat string `yaml:"seat"`
+	Gate string `yaml:"gate,omitempty"`
+}
+
+// parseBriefRungs validates fallback rungs against their phase staff seat and
+// returns the engine representation, or nil when the brief carries none.
+func parseBriefRungs(rungs []briefRung, primary, field string) ([]SeatRung, error) {
+	if len(rungs) == 0 {
+		return nil, nil
+	}
+	if primary == "" {
+		return nil, fmt.Errorf("finite: %s requires a staff seat", field)
+	}
+	if len(rungs) > maxFallbackRungs {
+		return nil, fmt.Errorf("finite: %s exceeds %d rungs", field, maxFallbackRungs)
+	}
+	parsed := make([]SeatRung, 0, len(rungs))
+	seen := make(map[string]bool, len(rungs)+1)
+	seen[primary] = true
+	for _, rung := range rungs {
+		seat := strings.TrimSpace(rung.Seat)
+		if !briefIDPattern.MatchString(seat) {
+			return nil, fmt.Errorf("finite: invalid fallback seat %q", rung.Seat)
+		}
+		gate := strings.TrimSpace(rung.Gate)
+		if gate != "" && gate != SeatGateBalance && gate != SeatGatePaidOK {
+			return nil, fmt.Errorf("finite: invalid fallback gate %q", rung.Gate)
+		}
+		if seen[seat] {
+			return nil, fmt.Errorf("finite: duplicate fallback seat %q", seat)
+		}
+		seen[seat] = true
+		parsed = append(parsed, SeatRung{Seat: seat, Gate: gate})
+	}
+	return parsed, nil
 }
 
 // ParseBrief decodes the strict Markdown intake representation.
@@ -86,6 +127,15 @@ func ParseBrief(data []byte) (Brief, error) {
 	}
 	brief := Brief{ID: front.ID, Title: front.Title, Risk: front.Risk, ReviewRequired: *front.ReviewRequired, MaxRuns: 12, MaxFailures: 3, MaxReviewCycles: 3,
 		Staff: front.Staff, ReviewStaff: front.ReviewStaff}
+	fallbacks, err := parseBriefRungs(front.Fallbacks, front.Staff, "fallbacks")
+	if err != nil {
+		return Brief{}, err
+	}
+	reviewFallbacks, err := parseBriefRungs(front.ReviewFallbacks, front.ReviewStaff, "review_fallbacks")
+	if err != nil {
+		return Brief{}, err
+	}
+	brief.Fallbacks, brief.ReviewFallbacks = fallbacks, reviewFallbacks
 	if front.MaxRuns != nil {
 		brief.MaxRuns = *front.MaxRuns
 	}

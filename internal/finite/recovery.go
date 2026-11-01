@@ -196,6 +196,18 @@ func providerTurnStarted(run Run) (bool, error) {
 }
 
 func (e *Engine) settleRecovered(ctx context.Context, request SettlementRequest) (Task, error) {
+	if request.ExecutionOutcome == RunWall && request.SeatChain == nil {
+		chain, chainErr := e.runSeatChain(ctx, request.RunID)
+		if chainErr != nil {
+			// A wall without its chain is a plain wait for the reset; the
+			// miss is reported but never blocks settlement.
+			if e.opts.OnError != nil {
+				e.opts.OnError(fmt.Errorf("finite: read fallback chain for run %d: %w", request.RunID, chainErr))
+			}
+		} else {
+			request.SeatChain = chain
+		}
+	}
 	if e.opts.hooks.beforeSettlement != nil {
 		e.opts.hooks.beforeSettlement(request)
 	}
@@ -211,6 +223,27 @@ func (e *Engine) settleRecovered(ctx context.Context, request SettlementRequest)
 	}
 	e.signalWake()
 	return task, nil
+}
+
+// runSeatChain reads the immutable brief's fallback chain for a run's phase.
+func (e *Engine) runSeatChain(ctx context.Context, runID int64) ([]SeatRung, error) {
+	run, err := e.store.GetRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	task, err := e.store.GetTask(ctx, run.TaskID)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(task.BriefPath)
+	if err != nil {
+		return nil, err
+	}
+	brief, err := ParseBrief(data)
+	if err != nil {
+		return nil, err
+	}
+	return brief.PhaseChain(run.Phase), nil
 }
 
 func (e *Engine) inspectRun(ctx context.Context, runID int64, token string) (RunProcesses, error) {

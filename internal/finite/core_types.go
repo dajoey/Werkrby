@@ -16,6 +16,8 @@ type Brief struct {
 	MaxReviewCycles int
 	Staff           string
 	ReviewStaff     string
+	Fallbacks       []SeatRung
+	ReviewFallbacks []SeatRung
 	Body            string
 }
 
@@ -97,7 +99,10 @@ type SettlementRequest struct {
 	ResultError         error
 	Usage               *Usage
 	WallWakeAt          *time.Time
-	Error               string
+	// SeatChain is the phase fallback chain of the walled run's brief; an
+	// empty chain keeps the wall a plain wait for the provider reset.
+	SeatChain []SeatRung
+	Error     string
 }
 
 // PromptRequest separates the static provider bundle from dynamic turn data.

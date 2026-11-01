@@ -228,7 +228,31 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 	if err != nil {
 		return fmt.Errorf("finite: parse immutable brief for dispatch: %w", err)
 	}
+	staff := parsedBrief.Staff
+	if phase == PhaseReview && parsedBrief.ReviewStaff != "" {
+		staff = parsedBrief.ReviewStaff
+	}
+	if chain := parsedBrief.PhaseChain(phase); len(chain) > 0 {
+		walls, wallErr := e.store.PhaseWalls(ctx, task.ID, phase)
+		if wallErr != nil {
+			return wallErr
+		}
+		index, earliest := chooseSeatRung(chain, walls, e.store.now().UTC())
+		if index < 0 {
+			if earliest == nil {
+				return fmt.Errorf("finite: task %s has no runnable seat in its fallback chain", task.ID)
+			}
+			if _, deferErr := e.store.WaitUntil(ctx, task.ID, task.Version, "provider quota wall", *earliest); deferErr != nil {
+				return deferErr
+			}
+			return nil
+		}
+		staff = chain[index].Seat
+	}
 	runHarness := harnessForPhase(e.opts.Harness, parsedBrief, phase)
+	if staff != "" {
+		runHarness.Model = "@" + staff
+	}
 	sessionKey := fmt.Sprintf("finite:%s:%s", task.ID, phase)
 	dynamic := fmt.Sprintf("TASK BRIEF\ntitle: %s\n\n%s", task.Title, brief)
 	history, err := e.store.TaskHistory(ctx, task.ID)
@@ -265,7 +289,7 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 		}
 	}
 	_, err = e.store.Dispatch(ctx, DispatchRequest{
-		TaskID: task.ID, ExpectedVersion: task.Version, Phase: phase, Seat: decision.Seat,
+		TaskID: task.ID, ExpectedVersion: task.Version, Phase: phase, Seat: seatForDispatch(decision.Seat, staff),
 		SessionKey: sessionKey, LaunchReason: launchReason, PromptHash: preliminary.BundleHash,
 	}, func(launchCtx context.Context, run Run) error {
 		if e.opts.hooks.afterDispatchCommit != nil {

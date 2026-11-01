@@ -190,9 +190,13 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		if err != nil {
 			return err
 		}
-		next, failureReason := settlementState(task, run, outcome, result, accounting)
+		wall, err := wallTransitionFor(ctx, tx, task, run, outcome, req, now)
+		if err != nil {
+			return err
+		}
+		next, failureReason := settlementState(task, run, outcome, result, accounting, wall)
 		newVersion := task.Version + 1
-		if err := updateSettlementTask(ctx, tx, task, next, newVersion, now, result, req.WallWakeAt, runError); err != nil {
+		if err := updateSettlementTask(ctx, tx, task, next, newVersion, now, result, wallWakeForWait(req, wall), runError); err != nil {
 			return err
 		}
 		if err := runSettlementFailpoint(SettlementAfterTaskUpdate); err != nil {
@@ -202,10 +206,14 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		settled.State = next
 		settled.Version = newVersion
 		settled.UpdatedAt = now
-		applySettlementWait(&settled, run, outcome, result, req.WallWakeAt, runError)
+		applySettlementWait(&settled, run, outcome, result, wallWakeForWait(req, wall), runError)
 		audit := map[string]any{
 			"request_sha256": fingerprint, "execution_outcome": outcome,
 			"result_outcome": resultOutcome(result), "error": runError,
+		}
+		audit["seat"] = run.Seat
+		if outcome == RunWall && req.WallWakeAt != nil {
+			audit["wall_wake_at"] = stamp(*req.WallWakeAt)
 		}
 		if failureReason != "" {
 			audit["failure_reason"] = failureReason
@@ -315,6 +323,89 @@ func validRunOutcome(outcome RunOutcome) bool {
 	return outcome == RunOK || outcome == RunFail || outcome == RunTimeout || outcome == RunLost || outcome == RunInterrupted || outcome == RunWall
 }
 
+// wallTransition is a wall settlement's routing decision: FallBack re-queues
+// the phase on a fallback seat; otherwise the task waits, for WakeAt when the
+// chain's earliest unresolved wall says so.
+type wallTransition struct {
+	FallBack bool
+	WakeAt   *time.Time
+}
+
+// wallTransitionFor walks the brief's fallback chain once this run's wall is
+// included: with a runnable rung the wall re-queues the phase, and with the
+// whole chain walled or gated it waits for the earliest wall to clear.
+func wallTransitionFor(ctx context.Context, tx txRunner, task Task, run Run, outcome RunOutcome, req SettlementRequest, now time.Time) (*wallTransition, error) {
+	if outcome != RunWall || task.CancelRequested {
+		return nil, nil
+	}
+	wall := &wallTransition{WakeAt: req.WallWakeAt}
+	if len(req.SeatChain) == 0 {
+		return wall, nil
+	}
+	walls, err := phaseWallsTx(ctx, tx, task.ID, run.Phase)
+	if err != nil {
+		return nil, err
+	}
+	if req.WallWakeAt != nil {
+		walls = append(walls, SeatWall{Seat: wallSeat(req.SeatChain, run.Seat), WakeAt: req.WallWakeAt.UTC()})
+	}
+	index, earliest := chooseSeatRung(req.SeatChain, walls, now)
+	if index >= 0 {
+		wall.FallBack = true
+		return wall, nil
+	}
+	if earliest != nil {
+		wall.WakeAt = earliest
+	}
+	return wall, nil
+}
+
+// wallWakeForWait is the wake a wall wait settles on: the chain's earliest
+// unresolved wall when the whole chain is walled, else the run's own reset.
+func wallWakeForWait(req SettlementRequest, wall *wallTransition) *time.Time {
+	if wall != nil && wall.WakeAt != nil {
+		return wall.WakeAt
+	}
+	return req.WallWakeAt
+}
+
+// PhaseWalls lists the provider walls a task's settled runs recorded for one
+// phase, with the seat each wall landed on.
+func (s *Store) PhaseWalls(ctx context.Context, taskID string, phase Phase) ([]SeatWall, error) {
+	return phaseWallsTx(ctx, s.db, taskID, phase)
+}
+
+func phaseWallsTx(ctx context.Context, runner txRunner, taskID string, phase Phase) ([]SeatWall, error) {
+	rows, err := runner.QueryContext(ctx, `SELECT te.payload_json FROM task_events te
+		WHERE te.task_id=? AND te.kind='settled'
+		AND te.run_id IN (SELECT id FROM runs WHERE task_id=? AND phase=?)`, taskID, taskID, phase)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var walls []SeatWall
+	for rows.Next() {
+		var payload string
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var audit struct {
+			ExecutionOutcome string `json:"execution_outcome"`
+			Seat             string `json:"seat"`
+			WallWakeAt       string `json:"wall_wake_at"`
+		}
+		if json.Unmarshal([]byte(payload), &audit) != nil || audit.ExecutionOutcome != string(RunWall) || audit.WallWakeAt == "" {
+			continue
+		}
+		wake, err := time.Parse(time.RFC3339Nano, audit.WallWakeAt)
+		if err != nil {
+			return nil, fmt.Errorf("finite: wall wake %q: %w", audit.WallWakeAt, err)
+		}
+		walls = append(walls, SeatWall{Seat: audit.Seat, WakeAt: wake})
+	}
+	return walls, rows.Err()
+}
+
 func resultOutcome(result *Result) ResultOutcome {
 	if result == nil {
 		return ""
@@ -331,7 +422,7 @@ func phaseQueue(phase Phase) State {
 
 // settlementState chooses the next task state and, when a run-policy cap is
 // what ends the task, names that cap.
-func settlementState(task Task, run Run, outcome RunOutcome, result *Result, accounting Accounting) (State, string) {
+func settlementState(task Task, run Run, outcome RunOutcome, result *Result, accounting Accounting, wall *wallTransition) (State, string) {
 	if task.CancelRequested {
 		return StateCancelled, ""
 	}
@@ -344,6 +435,9 @@ func settlementState(task Task, run Run, outcome RunOutcome, result *Result, acc
 			return StateFailed, "max_runs"
 		}
 		if outcome == RunWall {
+			if wall != nil && wall.FallBack {
+				return phaseQueue(run.Phase), ""
+			}
 			return StateWaiting, ""
 		}
 		return phaseQueue(run.Phase), ""
@@ -583,6 +677,63 @@ func (s *Store) RequestStop(ctx context.Context, taskID string, expectedVersion 
 // WakeTime performs a due time-only, task-only wait transition.
 func (s *Store) WakeTime(ctx context.Context, taskID string, expectedVersion int64) (Task, error) {
 	return s.completeWait(ctx, taskID, expectedVersion, "", false)
+}
+
+// WaitUntil defers a queued task whose every chain rung is walled or gated
+// until the earliest wall clears, without spending a run.
+func (s *Store) WaitUntil(ctx context.Context, taskID string, expectedVersion int64, waitingFor string, wake time.Time) (Task, error) {
+	waitingFor = strings.TrimSpace(waitingFor)
+	if waitingFor == "" {
+		waitingFor = "provider quota wall"
+	}
+	var deferred Task
+	err := s.withImmediateTx(ctx, func(tx txRunner) error {
+		task, err := getTaskTx(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if task.Version != expectedVersion {
+			return fmt.Errorf("%w: seat deferral", ErrVersionConflict)
+		}
+		if task.CancelRequested || (task.State != StateTodo && task.State != StateReview) {
+			return fmt.Errorf("%w: seat deferral from %s", ErrStateConflict, task.State)
+		}
+		var open int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE task_id=? AND ended_at IS NULL`, task.ID).Scan(&open); err != nil {
+			return err
+		}
+		if open != 0 {
+			return fmt.Errorf("%w: seat deferral with an open run", ErrStateConflict)
+		}
+		now := s.now().UTC()
+		newVersion := task.Version + 1
+		update, err := tx.ExecContext(ctx, `UPDATE tasks SET state='waiting',version=?,updated_at=?,
+			resume_state=?,wait_kind='time',wake_at=?,waiting_for=?
+			WHERE id=? AND version=? AND state=?`,
+			newVersion, stamp(now), task.State, stamp(wake), waitingFor, task.ID, task.Version, task.State)
+		if err != nil {
+			return err
+		}
+		if affected, _ := update.RowsAffected(); affected != 1 {
+			return fmt.Errorf("%w: seat deferral update", ErrVersionConflict)
+		}
+		eventID := fmt.Sprintf("task:%s:v%d:deferred", task.ID, newVersion)
+		payload, _ := json.Marshal(map[string]any{"waiting_for": waitingFor, "wake_at": stamp(wake)})
+		if err := insertTaskEvent(ctx, tx, eventID, task.ID, nil, "deferred", task.State, StateWaiting, newVersion, payload, stamp(now)); err != nil {
+			return err
+		}
+		deferred = task
+		deferred.State = StateWaiting
+		deferred.Version = newVersion
+		deferred.UpdatedAt = now
+		deferred.ResumeState = task.State
+		deferred.WaitKind = WaitTime
+		wakeValue := wake
+		deferred.WakeAt = &wakeValue
+		deferred.WaitingFor = waitingFor
+		return nil
+	})
+	return deferred, err
 }
 
 // AnswerJoey performs a matching-answer, task-only wait transition.
