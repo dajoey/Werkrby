@@ -30,10 +30,13 @@ type JoeyAskOption struct {
 }
 
 // Accounting is derived from execution records, never stored on a task.
+// Attempts and Failures count charged provider turns only; Runs counts every
+// run of the phase whatever its outcome and is what MaxRuns bounds.
 type Accounting struct {
 	Attempts     int
 	Failures     int
 	ReviewCycles int
+	Runs         int
 }
 
 // Seat describes one provider seat at the instant of a pure admission decision.

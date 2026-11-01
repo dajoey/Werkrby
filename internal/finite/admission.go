@@ -20,7 +20,7 @@ func Admit(in AdmissionInput) AdmissionDecision {
 	if in.Phase != PhaseImplementation && in.Phase != PhaseReview {
 		return AdmissionDecision{Action: AdmissionWait, Reason: "unknown_phase"}
 	}
-	if in.Accounting.Attempts >= task.MaxRuns {
+	if in.Accounting.Attempts >= task.MaxRuns || in.Accounting.Runs >= task.MaxRuns {
 		return AdmissionDecision{Action: AdmissionFail, Reason: "max_runs"}
 	}
 	if in.Accounting.Failures >= task.MaxFailures {

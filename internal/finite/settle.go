@@ -191,7 +191,7 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		if err != nil {
 			return err
 		}
-		next := settlementState(task, run, outcome, result, accounting)
+		next, failureReason := settlementState(task, run, outcome, result, accounting)
 		newVersion := task.Version + 1
 		if err := updateSettlementTask(ctx, tx, task, next, newVersion, now, result, req.WallWakeAt, runError); err != nil {
 			return err
@@ -204,10 +204,14 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		settled.Version = newVersion
 		settled.UpdatedAt = now
 		applySettlementWait(&settled, run, outcome, result, req.WallWakeAt, runError)
-		auditPayload, _ := json.Marshal(map[string]any{
+		audit := map[string]any{
 			"request_sha256": fingerprint, "execution_outcome": outcome,
 			"result_outcome": resultOutcome(result), "error": runError,
-		})
+		}
+		if failureReason != "" {
+			audit["failure_reason"] = failureReason
+		}
+		auditPayload, _ := json.Marshal(audit)
 		eventID := fmt.Sprintf("run:%d:settled", run.ID)
 		if err := insertTaskEvent(ctx, tx, eventID, task.ID, &run.ID, "settled", task.State,
 			next, newVersion, auditPayload, stamp(now)); err != nil {
@@ -289,47 +293,64 @@ func phaseQueue(phase Phase) State {
 	return StateTodo
 }
 
-func settlementState(task Task, run Run, outcome RunOutcome, result *Result, accounting Accounting) State {
+// settlementState chooses the next task state and, when a run-policy cap is
+// what ends the task, names that cap.
+func settlementState(task Task, run Run, outcome RunOutcome, result *Result, accounting Accounting) (State, string) {
 	if task.CancelRequested {
-		return StateCancelled
+		return StateCancelled, ""
 	}
-	if outcome == RunWall {
-		return StateWaiting
-	}
-	if outcome == RunLost || outcome == RunInterrupted {
-		return phaseQueue(run.Phase)
-	}
-	capReached := accounting.Attempts >= task.MaxRuns || accounting.Failures >= task.MaxFailures || accounting.ReviewCycles >= task.MaxReviewCycles
-	if result == nil {
-		if capReached {
-			return StateFailed
+	// Every run counts toward MaxRuns whatever its outcome, so an uncharged
+	// cause that repeats forever (launch failure, loss, interruption, quota
+	// wall) still ends in a failed task.
+	runCapReached := accounting.Runs >= task.MaxRuns
+	if outcome == RunWall || outcome == RunLost || outcome == RunInterrupted {
+		if runCapReached {
+			return StateFailed, "max_runs"
 		}
-		return phaseQueue(run.Phase)
+		if outcome == RunWall {
+			return StateWaiting, ""
+		}
+		return phaseQueue(run.Phase), ""
+	}
+	capReason := ""
+	switch {
+	case runCapReached || accounting.Attempts >= task.MaxRuns:
+		capReason = "max_runs"
+	case accounting.Failures >= task.MaxFailures:
+		capReason = "max_failures"
+	case accounting.ReviewCycles >= task.MaxReviewCycles:
+		capReason = "max_review_cycles"
+	}
+	if result == nil {
+		if capReason != "" {
+			return StateFailed, capReason
+		}
+		return phaseQueue(run.Phase), ""
 	}
 	switch result.Outcome {
 	case ResultDone:
 		if task.ReviewRequired {
-			return StateReview
+			return StateReview, ""
 		}
-		return StateDone
+		return StateDone, ""
 	case ResultReview:
-		return StateReview
+		return StateReview, ""
 	case ResultAccepted:
-		return StateDone
+		return StateDone, ""
 	case ResultFailed:
-		return StateFailed
+		return StateFailed, ""
 	case ResultWait:
-		return StateWaiting
+		return StateWaiting, ""
 	case ResultTodo, ResultRejected:
-		if capReached {
-			return StateFailed
+		if capReason != "" {
+			return StateFailed, capReason
 		}
 		if result.Outcome == ResultRejected {
-			return StateTodo
+			return StateTodo, ""
 		}
-		return phaseQueue(run.Phase)
+		return phaseQueue(run.Phase), ""
 	default:
-		return StateFailed
+		return StateFailed, ""
 	}
 }
 
