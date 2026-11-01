@@ -71,6 +71,10 @@ type Lease struct {
 	// without spending RecoveryCount (recordHermesUnresolvedTurn, at most
 	// hermesUnresolvedTurnBudget).
 	UnresolvedTurnCount int `json:"unresolved_turn_count,omitempty"`
+	// GatewayUnavailableCount is how many gateway-unavailable launch errors this lease
+	// absorbed without spending RecoveryCount (recordGatewayUnavailable, at most
+	// gatewayUnavailableBudget).
+	GatewayUnavailableCount int `json:"gateway_unavailable_count,omitempty"`
 	// ReviewRisk is the task's risk when Werkrby claimed it for review:
 	// reviewRiskHigh or reviewRiskRoutine. Empty means unknown (an older
 	// lease, or a review adopted without a claim) and never earns a credit.
@@ -3001,7 +3005,7 @@ func transientProviderError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "please retry") || strings.Contains(msg, "overloaded") || strings.Contains(msg, "prompt_not_delivered") ||
-		strings.Contains(msg, "gateway draining: not_ready") || strings.Contains(msg, "gateway inaccessible")
+		strings.Contains(msg, "gateway draining: not_ready") || strings.Contains(msg, "gateway inaccessible") || strings.Contains(msg, "gateway starting:")
 }
 
 // restoreLeaseForRetry returns a lease parked by a refused attempt's terminal
@@ -3157,6 +3161,9 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 	if m.recordHermesUnresolvedTurn(lease, err) {
 		return
 	}
+	if m.recordGatewayUnavailable(lease, err) {
+		return
+	}
 	lease.LastError = err.Error()
 	lease.RecoveryCount++
 	lease.State = "error"
@@ -3211,6 +3218,35 @@ const hermesBlockedBudget = 6
 // without spending RecoveryCount. Past it the verdict counts like any other, so a turn-end
 // detection that never resolves cannot re-dispatch the document for ever.
 const hermesUnresolvedTurnBudget = 6
+
+// gatewayUnavailableBudget is how many gateway-unavailable launch errors one lease absorbs
+// without spending RecoveryCount. The Hermes gateway reports draining/starting/absent/
+// inaccessible while a hermes update or a host reboot holds it (a monthly-patch reboot kept
+// launches failing for about nine minutes); one failed launch is a 2-3 s probe every ~10 s
+// scan, so this budget spans a reboot-sized outage. Past it the error counts like any other
+// and the 3-strike fail-out (with the pump's platform refund behind it) takes over.
+const gatewayUnavailableBudget = 30
+
+// gatewayUnavailableStates are the hermes gateway states whose GatewayUnavailableError reaches
+// Werkrby as "Gateway <state>: <reason>" (hermes gateway_client.py) when a worker launch cannot
+// dial a ready gateway: nothing was submitted, no turn ran, and the gateway's own revival
+// clears the condition. incompatible and conflict stay ordinary errors: a code-version
+// mismatch or a competing owner does not self-heal the way a drain window does.
+var gatewayUnavailableStates = []string{"draining", "starting", "absent", "inaccessible"}
+
+// isGatewayUnavailableError reports whether err is a gateway-unavailable launch error.
+func isGatewayUnavailableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	for _, state := range gatewayUnavailableStates {
+		if strings.Contains(msg, "Gateway "+state+":") {
+			return true
+		}
+	}
+	return false
+}
 
 // recordHermesBlocked handles a Hermes worker pane that stayed blocked on a prompt past the
 // harness's wait (harness.HermesBlockedCode). That is a harness condition the prompt watcher
@@ -3293,6 +3329,49 @@ func (m *Manager) recordHermesUnresolvedTurn(lease Lease, err error) bool {
 	msg := fmt.Sprintf("unresolved hermes turn %s (%d of %d, not counted toward recovery): %v", lease.File, lease.UnresolvedTurnCount, hermesUnresolvedTurnBudget, err)
 	if m.LogError != nil {
 		m.LogError("orchestrator", "hermes_unresolved_turn", msg)
+	} else {
+		m.log(msg)
+	}
+	return true
+}
+
+// recordGatewayUnavailable handles a worker launch that failed because the Hermes gateway was
+// not ready (isGatewayUnavailableError: draining/starting/absent/inaccessible during a hermes
+// update or a host reboot). That is a platform condition the gateway's own revival clears,
+// not a defect of the task: the lease is parked in error for another dispatch, the error is
+// logged as gateway_unavailable, and neither RecoveryCount nor the consecutive-error fail-out
+// is spent, up to gatewayUnavailableBudget per lease. It reports whether it handled the error.
+func (m *Manager) recordGatewayUnavailable(lease Lease, err error) bool {
+	if !isGatewayUnavailableError(err) {
+		return false
+	}
+	current, loadErr := m.loadLease(lease.ID)
+	if os.IsNotExist(loadErr) {
+		// Reconcile removed the lease after the worker moved the document: handled, and never
+		// saved back (that would run the transition again).
+		return true
+	}
+	if loadErr == nil {
+		lease = current
+	}
+	if lease.GatewayUnavailableCount >= gatewayUnavailableBudget {
+		return false
+	}
+	now := time.Now().UTC()
+	lease.GatewayUnavailableCount++
+	lease.LastError = err.Error()
+	lease.State = "error"
+	lease.HeartbeatAt = now
+	if saveErr := m.saveLease(lease); saveErr != nil {
+		m.log("save gateway-unavailable lease: " + saveErr.Error())
+	}
+	note := fmt.Sprintf("the Hermes gateway was not ready for the worker launch, so no turn ran (%d of %d allowed); Werkrby dispatches it again; attempt not spent", lease.GatewayUnavailableCount, gatewayUnavailableBudget)
+	if progressErr := updateDocumentProgress(lease.File, now, note); progressErr != nil {
+		m.log("record gateway-unavailable progress: " + progressErr.Error())
+	}
+	msg := fmt.Sprintf("gateway unavailable %s (%d of %d, not counted toward recovery): %v", lease.File, lease.GatewayUnavailableCount, gatewayUnavailableBudget, err)
+	if m.LogError != nil {
+		m.LogError("orchestrator", "gateway_unavailable", msg)
 	} else {
 		m.log(msg)
 	}
