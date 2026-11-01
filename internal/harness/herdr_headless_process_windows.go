@@ -4,6 +4,7 @@ package harness
 
 import (
 	"os/exec"
+	"syscall"
 	"time"
 )
 
@@ -15,8 +16,19 @@ func configureHeadlessProcess(cmd *exec.Cmd) {
 	cmd.WaitDelay = 10 * time.Second
 }
 
-// configureBoundedHeadlessProcess matches configureHeadlessProcess on Windows;
-// the finite supervisor's Job Object is the run boundary there.
-func configureBoundedHeadlessProcess(cmd *exec.Cmd) {
+// configureBoundedHeadlessProcess hands the finite run job to the provider
+// spawn on Windows: when the config carries the supervisor's query handle
+// (WindowsRunJobHandle), listing it in AdditionalInheritedHandles makes the
+// provider child inherit that one handle, so the job object stays open and
+// observable while any run member lives even after the owner and the
+// supervisor are both gone. Creation flags stay unset so the provider keeps
+// its supervisor's process group and console for graceful stops.
+func configureBoundedHeadlessProcess(cmd *exec.Cmd, cfg HarnessConfig) {
 	configureHeadlessProcess(cmd)
+	if cfg.WindowsRunJobHandle == 0 {
+		return
+	}
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		AdditionalInheritedHandles: []syscall.Handle{syscall.Handle(cfg.WindowsRunJobHandle)},
+	}
 }

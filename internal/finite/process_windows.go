@@ -134,19 +134,32 @@ func openSupervisorContainment(token string) (supervisorContainment, error) {
 		_ = windows.CloseHandle(job)
 		return nil, err
 	}
-	// Mark the handle inheritable for spawn paths that list it in
-	// SysProcAttr.AdditionalInheritedHandles: Go children inherit only stdio
-	// plus that list (syscall/exec_windows.go), so this mark alone carries no
-	// handle into a provider. What contains descendants is inherited job
-	// membership, and the object stays observable because the owner holds its
-	// handle until the job reports no members (windowsSupervisorLaunch.Close).
-	// Handing this handle to the provider spawn itself is the deferred
-	// follow-up (harness spawn change).
+	// Mark the handle inheritable and record it for the provider spawn:
+	// SysProcAttr.AdditionalInheritedHandles carries it across the harness's
+	// exec.Cmd (Go children inherit only stdio plus that list,
+	// syscall/exec_windows.go), so a harness-spawned provider keeps this job
+	// object open and observable after the owner and the supervisor are both
+	// gone. What contains descendants is inherited job membership; the
+	// provider-held handle removes the last closing handle while any run
+	// member lives.
 	if err := windows.SetHandleInformation(job, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
 		_ = windows.CloseHandle(job)
 		return nil, fmt.Errorf("make supervisor job containment inheritable: %w", err)
 	}
 	return &windowsSupervisorContainment{job: job}, nil
+}
+
+// supervisorSpawnHandle exposes the containment query handle to the provider
+// spawn: the harness lists it in SysProcAttr.AdditionalInheritedHandles so the
+// provider child holds the run job open after both wrappers die. The handle is
+// the supervisor's own query right; handing a copy to the provider spawn is
+// the inheritance handoff this carriage exists for.
+func supervisorSpawnHandle(c supervisorContainment) uintptr {
+	containment, ok := c.(*windowsSupervisorContainment)
+	if !ok {
+		return 0
+	}
+	return uintptr(containment.job)
 }
 
 func openOrCreateWindowsJob(name string, access uint32) (windows.Handle, error) {

@@ -19,8 +19,9 @@ func configureHeadlessProcess(cmd *exec.Cmd) {
 // configureBoundedHeadlessProcess keeps a finite run's provider client in the
 // supervisor's process group, which is the run's OS boundary: a client that
 // outlives a killed supervisor stays visible to recovery and is signalled by
-// group stops. Cancellation kills only the client.
-func configureBoundedHeadlessProcess(cmd *exec.Cmd) {
+// group stops. Cancellation kills only the client. The run job handle carriage
+// is Windows-only; on unix the config carries no handle.
+func configureBoundedHeadlessProcess(cmd *exec.Cmd, _ HarnessConfig) {
 	cmd.Cancel = func() error { return cmd.Process.Kill() }
 	cmd.WaitDelay = 10 * time.Second
 }

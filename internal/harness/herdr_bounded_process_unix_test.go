@@ -17,7 +17,7 @@ func TestBoundedHeadlessClientStaysInTheSupervisorGroup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sleep", "30")
-	configureBoundedHeadlessProcess(cmd)
+	configureBoundedHeadlessProcess(cmd, HarnessConfig{})
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}

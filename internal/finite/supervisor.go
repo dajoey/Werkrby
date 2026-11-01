@@ -245,6 +245,10 @@ func RunSupervisor(ctx context.Context, args []string, factory harness.Factory) 
 	}
 	runnerConfig.Env = mergeEnvironment(runnerConfig.Env, runEnvironment(binding.runID, binding.token, binding.runDir))
 	runnerConfig.Stderr = &boundedSupervisorWriter{writer: stderrFile, remaining: maxSupervisorDiagnostic}
+	// Windows inheritance handoff: the provider spawn takes this process's
+	// query handle of the run job, so the job object survives while any run
+	// member lives even when this supervisor and the owner are both gone.
+	runnerConfig.WindowsRunJobHandle = supervisorSpawnHandle(containment)
 	sessionDigest := sha256.Sum256([]byte(request.SessionKey))
 	runnerConfig.SessionsFile = filepath.Join(binding.runDir, "sessions", hex.EncodeToString(sessionDigest[:])+".json")
 	if runnerConfig.Cwd == "" {
