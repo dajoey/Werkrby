@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -192,59 +193,137 @@ func inspectRun(ctx context.Context, runID int64, token string) (RunProcesses, e
 	unknown := func(err error) (RunProcesses, error) {
 		return RunProcesses{Liveness: LivenessUnknown}, err
 	}
-	job, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery)
-	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
-		return RunProcesses{Liveness: LivenessAbsent}, nil
-	}
-	if err != nil {
-		return unknown(err)
-	}
-	defer windows.CloseHandle(job)
-	pids, err := windowsJobProcessIDs(job)
-	if err != nil {
-		return unknown(err)
-	}
 	observation := RunProcesses{Liveness: LivenessAbsent}
-	for _, pid := range pids {
-		if err := ctx.Err(); err != nil {
+	seen := map[ProcessIdentity]struct{}{}
+	addProcess := func(identity ProcessIdentity, supervisor bool) error {
+		if supervisor {
+			if observation.Supervisor != nil && !observation.Supervisor.Equal(identity) {
+				return ErrDuplicateSupervisor
+			}
+			matched := identity
+			observation.Supervisor = &matched
+		}
+		if _, exists := seen[identity]; !exists {
+			seen[identity] = struct{}{}
+			observation.Processes = append(observation.Processes, identity)
+		}
+		return nil
+	}
+	job, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery)
+	if err == nil {
+		defer windows.CloseHandle(job)
+		pids, err := windowsJobProcessIDs(job)
+		if err != nil {
 			return unknown(err)
 		}
-		identity, err := identifyProcess(int(pid), runID, token)
-		if errors.Is(err, os.ErrProcessDone) {
-			continue
-		}
-		if err != nil {
-			return unknown(fmt.Errorf("inspect job PID %d: %w", pid, err))
-		}
-		args, err := readWindowsCommandLine(int(pid))
-		if errors.Is(err, os.ErrProcessDone) {
-			continue
-		}
-		if err != nil {
-			return unknown(fmt.Errorf("read job PID %d command line: %w", pid, err))
-		}
-		if len(args) >= 2 && args[1] == "supervise" {
-			binding, err := parseSupervisorArgs(args[1:])
+		for _, pid := range pids {
+			if err := ctx.Err(); err != nil {
+				return unknown(err)
+			}
+			identity, err := identifyProcess(int(pid), runID, token)
+			if errors.Is(err, os.ErrProcessDone) {
+				continue
+			}
+			if err != nil {
+				return unknown(fmt.Errorf("inspect job PID %d: %w", pid, err))
+			}
+			args, err := readWindowsCommandLine(int(pid))
+			if errors.Is(err, os.ErrProcessDone) {
+				continue
+			}
+			if err != nil {
+				return unknown(fmt.Errorf("read job PID %d command line: %w", pid, err))
+			}
+			supervisor, err := windowsExactSupervisor(args, runID, token)
 			if err != nil {
 				return unknown(err)
 			}
-			if binding.runID == runID && binding.token != token || binding.token == token && binding.runID != runID {
-				return unknown(ErrProcessTokenMismatch)
-			}
-			if binding.runID == runID && binding.token == token {
-				if observation.Supervisor != nil {
-					return unknown(ErrDuplicateSupervisor)
-				}
-				supervisor := identity
-				observation.Supervisor = &supervisor
+			if err := addProcess(identity, supervisor); err != nil {
+				return unknown(err)
 			}
 		}
-		observation.Processes = append(observation.Processes, identity)
+	} else if !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
+		return unknown(err)
+	}
+	wrappers, err := windowsSupervisorProcesses(ctx, runID, token)
+	if err != nil {
+		return unknown(err)
+	}
+	for _, identity := range wrappers {
+		if err := addProcess(identity, true); err != nil {
+			return unknown(err)
+		}
 	}
 	if len(observation.Processes) != 0 {
 		observation.Liveness = LivenessLive
 	}
 	return observation, nil
+}
+
+func windowsExactSupervisor(args []string, runID int64, token string) (bool, error) {
+	if len(args) < 2 || args[1] != "supervise" {
+		return false, nil
+	}
+	binding, err := parseSupervisorArgs(args[1:])
+	if err != nil {
+		return false, err
+	}
+	if binding.runID == runID && binding.token != token || binding.token == token && binding.runID != runID {
+		return false, ErrProcessTokenMismatch
+	}
+	return binding.runID == runID && binding.token == token, nil
+}
+
+func windowsSupervisorProcesses(ctx context.Context, runID int64, token string) ([]ProcessIdentity, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	base := filepath.Base(executable)
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer windows.CloseHandle(snapshot)
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	var identities []ProcessIdentity
+	for err := windows.Process32First(snapshot, &entry); ; err = windows.Process32Next(snapshot, &entry) {
+		if err != nil {
+			if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+				break
+			}
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !strings.EqualFold(windows.UTF16ToString(entry.ExeFile[:]), base) {
+			continue
+		}
+		pid := int(entry.ProcessID)
+		identity, err := identifyProcess(pid, runID, token)
+		if errors.Is(err, os.ErrProcessDone) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect supervisor candidate PID %d: %w", pid, err)
+		}
+		args, err := readWindowsCommandLine(pid)
+		if errors.Is(err, os.ErrProcessDone) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read supervisor candidate PID %d command line: %w", pid, err)
+		}
+		supervisor, err := windowsExactSupervisor(args, runID, token)
+		if err != nil {
+			return nil, err
+		}
+		if supervisor {
+			identities = append(identities, identity)
+		}
+	}
+	return identities, nil
 }
 
 func windowsJobProcessIDs(job windows.Handle) ([]uint32, error) {
