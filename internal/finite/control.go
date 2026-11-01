@@ -20,15 +20,18 @@ const maxControlRequestBytes = 16 * 1024
 
 // ControlStatus is the bounded, non-secret task status exposed to owner clients.
 type ControlStatus struct {
-	ID              string     `json:"id"`
-	State           State      `json:"state"`
-	ReviewRequired  bool       `json:"review_required"`
-	CancelRequested bool       `json:"cancel_requested"`
-	Version         int64      `json:"version"`
-	ResumeState     State      `json:"resume_state,omitempty"`
-	WaitKind        WaitKind   `json:"wait_kind,omitempty"`
-	WakeAt          *time.Time `json:"wake_at,omitempty"`
-	UpdatedAt       time.Time  `json:"updated_at"`
+	ID              string          `json:"id"`
+	Title           string          `json:"title"`
+	State           State           `json:"state"`
+	ReviewRequired  bool            `json:"review_required"`
+	CancelRequested bool            `json:"cancel_requested"`
+	Version         int64           `json:"version"`
+	ResumeState     State           `json:"resume_state,omitempty"`
+	WaitKind        WaitKind        `json:"wait_kind,omitempty"`
+	WakeAt          *time.Time      `json:"wake_at,omitempty"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	WaitingFor      string          `json:"waiting_for,omitempty"`
+	JoeyAsk         json.RawMessage `json:"joey_ask,omitempty"`
 }
 
 // ControlError is a sanitized non-success response from the owner.
@@ -101,11 +104,18 @@ func ServeControlWithWorkflow(ctx context.Context, listener net.Listener, store 
 }
 
 func controlStatus(task Task) ControlStatus {
-	return ControlStatus{
-		ID: task.ID, State: task.State, ReviewRequired: task.ReviewRequired,
+	status := ControlStatus{
+		ID: task.ID, Title: task.Title, State: task.State, ReviewRequired: task.ReviewRequired,
 		CancelRequested: task.CancelRequested, Version: task.Version, ResumeState: task.ResumeState,
 		WaitKind: task.WaitKind, WakeAt: task.WakeAt, UpdatedAt: task.UpdatedAt,
 	}
+	if task.State == StateWaiting {
+		status.WaitingFor = task.WaitingFor
+		if task.WaitKind == WaitJoey && json.Valid([]byte(task.JoeyAskJSON)) {
+			status.JoeyAsk = json.RawMessage(task.JoeyAskJSON)
+		}
+	}
+	return status
 }
 
 func (h *controlHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
