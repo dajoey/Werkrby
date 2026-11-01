@@ -240,6 +240,11 @@ func (h *Herdr) Start(ctx context.Context) error {
 	if h.closed {
 		return errors.New("Herdr harness is closed")
 	}
+	if _, bounded := runBoundaryFromContext(ctx); bounded {
+		// Finite admits only configured headless staff: no Herdr daemon, pane
+		// fallback, orphan sweep, or legacy idle task belongs to the run.
+		return nil
+	}
 	if _, err := exec.LookPath(h.config.Command); err != nil {
 		return fmt.Errorf("herdr command %q not found in PATH: %w", h.config.Command, err)
 	}
@@ -867,12 +872,28 @@ func (h *Herdr) sendInternal(ctx context.Context, key, prompt string, cfg Harnes
 	}
 	h.mu.Unlock()
 
-	cfg.Model = h.rosterModelForKey(key, cfg)
+	_, bounded := runBoundaryFromContext(ctx)
+	if !bounded {
+		cfg.Model = h.rosterModelForKey(key, cfg)
+	}
 	// A `headless: true` staff runs as `claude -p`, `kimi -p` or `agy -p`, not in a pane. A roster error falls through to
-	// resolveTarget, which reports it.
-	if staff, ok, err := roster.ExpandStaff(filepath.Join(cfg.Cwd, roster.StateDirName), strings.TrimSpace(cfg.Model)); ok && err == nil && staff.Headless {
+	// resolveTarget, which reports it. Finite never falls through: its only admitted provider is configured headless Hermes.
+	staff, staffOK, staffErr := roster.ExpandStaff(filepath.Join(cfg.Cwd, roster.StateDirName), strings.TrimSpace(cfg.Model))
+	if staffOK && staffErr == nil && staff.Headless {
 		name := strings.TrimPrefix(strings.TrimSpace(cfg.Model), roster.StaffPrefix)
+		if bounded {
+			if staff.Runner != "hermes" {
+				return "", false, fmt.Errorf("finite run boundary admits configured headless Hermes staff only")
+			}
+			return h.sendHeadlessHermesRunBoundary(ctx, key, prompt, name, staff, cfg, emit)
+		}
 		return h.sendHeadless(ctx, key, prompt, name, staff, cfg, emit)
+	}
+	if bounded {
+		if staffErr != nil {
+			return "", false, fmt.Errorf("finite headless Hermes staffing: %w", staffErr)
+		}
+		return "", false, fmt.Errorf("finite run boundary requires configured headless Hermes staff; pane fallback is disabled")
 	}
 	target, paneID, tabID, isDynamic, threadID, err := h.resolveTarget(ctx, key, cfg.Model, cfg.Cwd)
 	if err != nil {

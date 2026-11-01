@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -898,45 +897,58 @@ touch "$(dirname "$0")/second"
 	}
 }
 
-// The known one-shot gap (2026-10-26): a cut client ends only the client, while the profile's
-// gateway keeps the detached turn running. An interrupt kills the client's process group and stops
-// the gateway turn before the turn is reported over.
+// A cut client ends only the client. Interruption must cancel the exact gateway
+// admission and prove its terminal absence before the finite turn can return.
 func TestHerdrHeadlessHermesInterruptStopsTheGatewayTurn(t *testing.T) {
-	h, root := hermesHeadlessFixture(t, `exec sleep 30
-`)
+	f := newHermesBoundaryFixture(t, `exec sleep 30
+`, "do the task")
+	called := make(chan HermesTurnIdentity, 1)
+	oldStop := stopHermesGatewayAdmission
+	stopHermesGatewayAdmission = func(_ context.Context, _ string, identity HermesTurnIdentity) error {
+		called <- identity
+		f.settle(t, "terminal", "interrupted")
+		return nil
+	}
+	t.Cleanup(func() { stopHermesGatewayAdmission = oldStop })
 	errc := make(chan error, 1)
 	go func() {
-		_, _, err := h.SendWithModel(context.Background(), headlessKey, "x", "@pilot", nil)
+		_, _, err := f.h.SendWithModel(f.context(), headlessKey, f.prompt, "@pilot", nil)
 		errc <- err
 	}()
 	deadline := time.Now().Add(5 * time.Second)
-	for !h.IsActive(headlessKey) {
+	for !f.h.IsActive(headlessKey) {
 		if time.Now().After(deadline) {
 			t.Fatal("headless turn never became active")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if ok, err := h.Interrupt(context.Background(), headlessKey); !ok || err != nil {
+	// Let the boundary observer discover the already-admitted gateway turn.
+	time.Sleep(150 * time.Millisecond)
+	if ok, err := f.h.Interrupt(context.Background(), headlessKey); !ok || err != nil {
 		t.Fatalf("Interrupt = %v, %v", ok, err)
 	}
 	select {
 	case err := <-errc:
 		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("err = %v, want context.Canceled", err)
+			t.Fatalf("err = %v, want context.Canceled after proven gateway absence", err)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("interrupted headless turn did not return")
 	}
-	stopArgv, err := os.ReadFile(filepath.Join(root, "stop-argv"))
-	if err != nil {
-		t.Fatalf("gateway-turn stop did not run before the turn returned: %v", err)
+	select {
+	case identity := <-called:
+		if identity.AdmissionID != boundaryTestAdmission || identity.RequestID != boundaryTestRequest || identity.SessionID != boundaryTestSession || identity.Generation == nil || *identity.Generation != 7 || identity.OwnerEpoch != 11 {
+			t.Fatalf("stopped identity = %+v, want exact session/admission/generation/epoch", identity)
+		}
+	default:
+		t.Fatal("the exact gateway admission was not stopped")
 	}
-	got := strings.Split(strings.TrimSpace(string(stopArgv)), "\n")
-	if len(got) != 8 || got[0] != "--profile" || got[1] != "wk-pilot" || got[2] != "--cwd" || got[3] != root || got[6] != "--settle" || got[7] != "240" {
-		t.Fatalf("stop argv = %q, want --profile wk-pilot --cwd <root> --since <epoch> --settle 240", got)
+	observation, err := InspectHermesRunBoundary(context.Background(), f.spec)
+	if err != nil || observation.Liveness != BoundaryAbsent {
+		t.Fatalf("provider boundary after interrupt = %+v, %v; want proven absence", observation, err)
 	}
-	if _, err := strconv.ParseInt(got[5], 10, 64); err != nil {
-		t.Fatalf("--since = %q, want an epoch seconds value", got[5])
+	if _, err := os.Stat(filepath.Join(f.root, "stop-argv")); !os.IsNotExist(err) {
+		t.Fatal("finite interruption used the legacy cwd/time stop helper")
 	}
 }
 
