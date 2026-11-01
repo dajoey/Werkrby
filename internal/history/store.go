@@ -145,11 +145,14 @@ func (s *Store) appendLocked(channel, conversation string, entry Entry) (string,
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", err
 	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
+	if err := repairTornTail(file); err != nil {
+		return "", err
+	}
 	if entry.At.IsZero() {
 		entry.At = time.Now().UTC()
 	}
@@ -225,6 +228,50 @@ func truncateUTF8(value string, limit int) string {
 	return strings.TrimSuffix(value[:cut], historyTruncatedMark) + historyTruncatedMark
 }
 
+// repairTornTail makes the next append start on its own line. A short write or
+// a crash mid-write leaves a final line without a newline; Append syncs before
+// it reports success, so that line was never acknowledged. A complete entry
+// that only lost its newline is kept and terminated; anything else is cut off
+// so it cannot merge with the next record or fail strict readers forever.
+func repairTornTail(file *os.File) error {
+	info, err := file.Stat()
+	if err != nil || info.Size() == 0 {
+		return err
+	}
+	size := info.Size()
+	last := make([]byte, 1)
+	if _, err := file.ReadAt(last, size-1); err != nil {
+		return err
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+	start := int64(0)
+	buf := make([]byte, historyReadChunk)
+	for end := size; end > 0 && start == 0; {
+		begin := max(end-int64(len(buf)), 0)
+		n, err := file.ReadAt(buf[:end-begin], begin)
+		if err != nil && !(errors.Is(err, io.EOF) && int64(n) == end-begin) {
+			return err
+		}
+		if i := bytes.LastIndexByte(buf[:n], '\n'); i >= 0 {
+			start = begin + int64(i) + 1
+		}
+		end = begin
+	}
+	if size-start <= maxHistoryEntryBytes {
+		fragment := make([]byte, size-start)
+		if _, err := file.ReadAt(fragment, start); err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		if json.Valid(fragment) {
+			_, err := file.Write([]byte{'\n'})
+			return err
+		}
+	}
+	return file.Truncate(start)
+}
+
 // ReserveRetrigger atomically rechecks exact source coverage and appends one
 // recovery reservation. A concurrent terminal/cancellation append therefore
 // wins either before this check or after the durable retrigger fact, never in
@@ -247,21 +294,14 @@ func (s *Store) ReserveRetrigger(channel, conversation string, requested []strin
 	covered := map[string]bool{}
 	admitted := map[string]bool{}
 	users := map[string]Entry{}
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), maxHistoryEntryBytes)
-	count := 0
-	for scanner.Scan() {
-		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
-			continue
-		}
-		count++
-		if max > 0 && count > max {
-			return nil, fmt.Errorf("conversation history exceeds recovery bound of %d entries", max)
-		}
-		var entry Entry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			return nil, errors.New("conversation history contains corrupt correlation data")
-		}
+	// The newest tail is enough: a requested source id is always elected from
+	// the recovery tail, and every coverage, admission, and baseline marker
+	// that applies to it is written after it, so it sits in the same tail.
+	entries, _, err := readTailEntries(path, max)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range entries {
 		if entry.RecoveryBaseline {
 			covered = map[string]bool{}
 			admitted = map[string]bool{}
@@ -280,9 +320,6 @@ func (s *Store) ReserveRetrigger(channel, conversation string, requested []strin
 		if entry.Role == "user" && wanted[entry.SourceMessageID] && !entry.AcceptedAt.IsZero() && !entry.AcceptedAt.Before(activation) && !entry.At.Before(cutoff) {
 			users[entry.SourceMessageID] = entry
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
 	}
 	ids := make([]string, 0, len(users))
 	for id := range users {
@@ -683,7 +720,11 @@ func (s *Store) HasEntries(channel, conversation string) (bool, error) {
 	return info.Size() > 0, nil
 }
 
-// HasUserSourceID strictly checks retained history with bounded memory.
+// HasUserSourceID checks retained history with bounded memory so admission
+// deduplication stays exact for every parseable entry. A line that cannot be
+// parsed has no recoverable source identity (a torn ENOSPC tail, for example);
+// it is skipped and never reinterpreted, because one unreadable line must not
+// brick the conversation or the CLI commands that share this admission check.
 // Recovery's entry limit must not prevent new messages in long conversations.
 func (s *Store) HasUserSourceID(channel, conversation, sourceID string) (bool, error) {
 	if sourceID == "" {
@@ -709,7 +750,7 @@ func (s *Store) HasUserSourceID(channel, conversation, sourceID string) (bool, e
 		}
 		var entry Entry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			return false, errors.New("conversation history contains corrupt correlation data")
+			continue
 		}
 		if entry.Role == "user" && entry.SourceMessageID == sourceID {
 			found = true
@@ -757,50 +798,95 @@ func (s *Store) RecoveryEntries(channel, conversation string, max int) ([]Entry,
 	return entries, path, nil
 }
 
-// RecoveryTail strictly validates a bounded file prefix while retaining only
-// the newest tailMax entries. It never treats omitted overflow as handled.
-func (s *Store) RecoveryTail(channel, conversation string, tailMax, scanMax int) ([]Entry, bool, string, error) {
+// RecoveryTail strictly validates and returns only the newest tailMax entries
+// of an append-only history. It seeks to the end of the file and reads back
+// just the retained tail instead of scanning the file in full, so an oversize
+// conversation costs a bounded read. truncated reports healthy oversize —
+// entries exist beyond the retained tail — and is never an error; only a
+// corrupt or unreadable tail fails closed.
+func (s *Store) RecoveryTail(channel, conversation string, tailMax int) ([]Entry, bool, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path := s.Path(channel, conversation)
+	entries, truncated, err := readTailEntries(path, tailMax)
+	return entries, truncated, path, err
+}
+
+// readTailEntries reads back only the newest tailMax entries of the history
+// file at path. It seeks to the end and walks the file backwards in bounded
+// chunks, so the cost is proportional to the retained tail, never to the file.
+func readTailEntries(path string, tailMax int) ([]Entry, bool, error) {
+	if tailMax <= 0 {
+		return nil, false, nil
+	}
 	file, err := os.Open(path)
 	if os.IsNotExist(err) {
-		return nil, false, path, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, false, path, err
+		return nil, false, err
 	}
 	defer file.Close()
-	scanner := bufio.NewScanner(file)
-	scanner.Buffer(make([]byte, 64*1024), maxHistoryEntryBytes)
-	entries := make([]Entry, 0, min(tailMax, 128))
-	count := 0
-	for scanner.Scan() {
-		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
-			continue
+	info, err := file.Stat()
+	if err != nil {
+		return nil, false, err
+	}
+	position := info.Size()
+	var carry []byte
+	reversed := make([]Entry, 0, min(tailMax, 128))
+	full := false
+	truncated := false
+	for position > 0 && !truncated {
+		readSize := int64(historyReadChunk)
+		if position < readSize {
+			readSize = position
 		}
-		count++
-		if scanMax > 0 && count > scanMax {
-			return nil, true, path, fmt.Errorf("conversation history exceeds recovery scan bound of %d entries", scanMax)
+		position -= readSize
+		chunk := make([]byte, readSize)
+		if _, err := file.ReadAt(chunk, position); err != nil {
+			return nil, false, err
 		}
-		var entry Entry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			return nil, false, path, errors.New("conversation history contains corrupt correlation data")
+		block := make([]byte, 0, len(chunk)+len(carry))
+		block = append(block, chunk...)
+		block = append(block, carry...)
+		parts := bytes.Split(block, []byte{'\n'})
+		carry = append(carry[:0], parts[0]...)
+		if len(carry) > maxHistoryEntryBytes {
+			return nil, false, fmt.Errorf("history entry exceeds %d bytes", maxHistoryEntryBytes)
 		}
-		if tailMax <= 0 {
-			continue
+		for index := len(parts) - 1; index >= 1; index-- {
+			if len(bytes.TrimSpace(parts[index])) == 0 {
+				continue
+			}
+			if full {
+				truncated = true
+				break
+			}
+			var entry Entry
+			if err := json.Unmarshal(parts[index], &entry); err != nil {
+				return nil, false, errors.New("conversation history contains corrupt correlation data")
+			}
+			reversed = append(reversed, entry)
+			if len(reversed) >= tailMax {
+				full = true
+			}
 		}
-		if len(entries) == tailMax {
-			copy(entries, entries[1:])
-			entries[len(entries)-1] = entry
+	}
+	if position == 0 && !truncated && len(bytes.TrimSpace(carry)) > 0 {
+		if full {
+			truncated = true
 		} else {
-			entries = append(entries, entry)
+			var entry Entry
+			if err := json.Unmarshal(carry, &entry); err != nil {
+				return nil, false, errors.New("conversation history contains corrupt correlation data")
+			}
+			reversed = append(reversed, entry)
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, false, path, err
+	for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+		reversed[left], reversed[right] = reversed[right], reversed[left]
 	}
-	return entries, tailMax > 0 && count > tailMax, path, nil
+	return reversed, truncated, nil
 }
 
 // List discovers conversations from disk and reads only one bounded tail entry

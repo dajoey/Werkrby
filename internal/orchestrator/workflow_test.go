@@ -13,6 +13,7 @@ import (
 
 	"github.com/agent0ai/spynel/internal/config"
 	"github.com/agent0ai/spynel/internal/extensions"
+	"github.com/agent0ai/spynel/internal/harness"
 	"github.com/agent0ai/spynel/internal/roster"
 	"github.com/agent0ai/spynel/internal/workspace"
 )
@@ -1962,5 +1963,50 @@ func TestIsQuotaErrorMatchesKimiUsageLimitWalls(t *testing.T) {
 		if isQuotaError(errors.New(msg)) {
 			t.Errorf("isQuotaError(%q) = true; only Kimi's wall wording is a quota wall", msg)
 		}
+	}
+}
+
+// The generic no-final-reply verdict means the turn ran (it wrote rows, often handing the work
+// on) and the harness could not classify how it ended — platform churn, not a repeatedly failing
+// task. The 2026-10-30 Z.ai quota storm produced three of them on a healthy task and the strike
+// count moved it to failed/. They must not count toward that fail-out.
+func TestGenericNoFinalReplyVerdictsDoNotTerminalFailATask(t *testing.T) {
+	manager, lease, doc, failed := blockedTaskFixture(t, 0)
+	var kinds []string
+	manager.LogError = func(source, kind, message string) { kinds = append(kinds, kind) }
+	generic := errors.New("runner turn failed: " + harness.HermesUnresolvedTurn)
+	for i := 0; i < 3; i++ {
+		manager.recordError(context.Background(), lease, generic)
+		if fileExists(failed) || !fileExists(doc) {
+			t.Fatalf("generic verdict %d moved the task to failed/", i+1)
+		}
+	}
+	saved, err := manager.loadLease(lease.ID)
+	if err != nil {
+		t.Fatalf("lease not kept for another dispatch: %v", err)
+	}
+	if saved.RecoveryCount != 2 {
+		t.Fatalf("RecoveryCount = %d, want 2: the generic verdict is not counted", saved.RecoveryCount)
+	}
+	if saved.UnresolvedTurnCount != 3 || saved.State != "error" {
+		t.Fatalf("lease = %+v, want unresolved_turn_count 3 in state error", saved)
+	}
+	if len(kinds) != 3 || kinds[0] != "hermes_unresolved_turn" {
+		t.Fatalf("logged kinds = %q, want three hermes_unresolved_turn lines", kinds)
+	}
+}
+
+// A turn-end detection that never resolves cannot re-dispatch for ever: past
+// hermesUnresolvedTurnBudget the verdict counts like any other error and the next strike still
+// moves the task to failed/.
+func TestGenericNoFinalReplyVerdictsPastTheBudgetCountAgain(t *testing.T) {
+	manager, lease, doc, failed := blockedTaskFixture(t, 0)
+	lease.UnresolvedTurnCount = hermesUnresolvedTurnBudget
+	if err := manager.saveLease(lease); err != nil {
+		t.Fatal(err)
+	}
+	manager.recordError(context.Background(), lease, errors.New("runner turn failed: "+harness.HermesUnresolvedTurn))
+	if !fileExists(failed) || fileExists(doc) {
+		t.Fatalf("the generic verdict past its budget of %d did not count toward the fail-out", hermesUnresolvedTurnBudget)
 	}
 }

@@ -21,6 +21,7 @@ import (
 // finished turn, but return a prompt_not_delivered error.
 func TestHerdrUndeliveredPromptMustNotCountAsFinishedTurn(t *testing.T) {
 	dir := t.TempDir()
+	writeHermesDefaultsRoster(t, dir)
 	eventsFile := filepath.Join(dir, "events.txt")
 	scriptPath := filepath.Join(dir, "fake-herdr")
 	scriptContent := fmt.Sprintf(`#!/usr/bin/env bash
@@ -107,7 +108,7 @@ esac
 		Name:         "herdr",
 		Command:      scriptPath,
 		Cwd:          dir,
-		Model:        "agy",
+		Model:        "@agyseat",
 		SessionsFile: filepath.Join(dir, "sessions.json"),
 	})
 	if err != nil {
@@ -168,6 +169,7 @@ esac
 // appears and the re-send succeeds, Werkrby emits EventFinal and completes.
 func TestHerdrUndeliveredPromptResendsWhenComposerAppears(t *testing.T) {
 	dir := t.TempDir()
+	writeHermesDefaultsRoster(t, dir)
 	eventsFile := filepath.Join(dir, "events.txt")
 	scriptPath := filepath.Join(dir, "fake-herdr")
 	scriptContent := fmt.Sprintf(`#!/usr/bin/env bash
@@ -272,7 +274,7 @@ esac
 		Name:         "herdr",
 		Command:      scriptPath,
 		Cwd:          dir,
-		Model:        "agy",
+		Model:        "@agyseat",
 		SessionsFile: filepath.Join(dir, "sessions.json"),
 	})
 	if err != nil {

@@ -64,6 +64,13 @@ type Lease struct {
 	// agent/runner pin, so without it every such park named "default" and
 	// woke a blind hour later (found live 2026-09-28).
 	TargetModel string `json:"target_model,omitempty"`
+	// HermesBlockedCount is how many hermes_blocked errors this lease absorbed without spending
+	// RecoveryCount (recordHermesBlocked, at most hermesBlockedBudget).
+	HermesBlockedCount int `json:"hermes_blocked_count,omitempty"`
+	// UnresolvedTurnCount is how many generic no-final-reply verdicts this lease absorbed
+	// without spending RecoveryCount (recordHermesUnresolvedTurn, at most
+	// hermesUnresolvedTurnBudget).
+	UnresolvedTurnCount int `json:"unresolved_turn_count,omitempty"`
 	// ReviewRisk is the task's risk when Werkrby claimed it for review:
 	// reviewRiskHigh or reviewRiskRoutine. Empty means unknown (an older
 	// lease, or a review adopted without a claim) and never earns a credit.
@@ -135,6 +142,7 @@ type Manager struct {
 	scanTimerMu                 sync.Mutex
 	holdLogMu                   sync.Mutex
 	holdLogged                  map[string]time.Time
+	workCardLogged              map[string]time.Time // when each held work Claude card was last logged (guarded by holdLogMu)
 	shadow                      admissionShadowState
 	runsShadow                  runsShadowState
 	admissionSnapshotPath       string // tests; empty means the collector's default snapshot
@@ -306,6 +314,9 @@ func (m *Manager) SetNotificationDelivery(deliver func(context.Context, Origin, 
 
 func (m *Manager) Run(ctx context.Context) error {
 	defer harness.SetRosterObserver(m.shadowRoster)()
+	if removed := SweepStaleProviderTurnLocks(m.runtimeSnapshot().StatePath("tasks")); removed > 0 {
+		m.log(fmt.Sprintf("provider-turn lock sweep: removed %d stale empty lock files", removed))
+	}
 	if err := m.ScanOnce(ctx); err != nil {
 		m.log("orchestrator scan: " + err.Error())
 	}
@@ -701,6 +712,11 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 		if m.rosterHeld("queue", route, phase, candidate.name, document) {
 			continue
 		}
+		// A work Claude card with no Claude seat to run on waits here, never claimed onto another
+		// model.
+		if m.workCardHeld(candidate.name, document) {
+			continue
+		}
 		// Work window: personal claims may not take the slot reserved for work
 		// Claude cards. Skipped, not claimed; a later work card in this queue
 		// still can be.
@@ -939,7 +955,48 @@ func (m *Manager) ensureRouteDirectories() error {
 	return nil
 }
 
+// liveLeaseConflict reports another lease that already covers the same
+// document and phase with a fresh heartbeat. It is the machine check behind the
+// 2026-10-26 double dispatch (tasks-20261026-werkrby-double-dispatch-01): one
+// live lease must mean exactly one provider session, so a dispatch that would
+// run a second session under a live lease is refused before it reaches the
+// harness. Leases whose heartbeat is older than the route's stale window are
+// not live; they are recovery material, not a running session.
+func (m *Manager) liveLeaseConflict(lease Lease) (Lease, bool) {
+	leases, err := m.loadLeases()
+	if err != nil {
+		return Lease{}, false
+	}
+	route, ok := routeByName(lease.Route)
+	if !ok {
+		return Lease{}, false
+	}
+	now := time.Now()
+	for _, other := range leases {
+		if other.ID == lease.ID || other.Route != lease.Route || other.Phase != lease.Phase {
+			continue
+		}
+		if filepath.Base(other.File) != filepath.Base(lease.File) || filepath.Base(other.File) == "" {
+			continue
+		}
+		switch other.State {
+		case "claiming", "processing", "recovering":
+		default:
+			continue
+		}
+		if now.Sub(other.HeartbeatAt) < route.StaleAfter {
+			return other, true
+		}
+	}
+	return Lease{}, false
+}
+
 func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease, recovery bool) {
+	// Every dispatch path (a claim, an adopted orphan, a recovery) passes here: a work Claude card
+	// with no Claude seat goes back to its queue folder unsent.
+	if m.releaseUnseatedWorkCard(route, lease) {
+		return
+	}
 	m.setInflight(lease.ID, true)
 	isRepair := lease.Lane == repairLane
 	m.jobs.Add(1)
@@ -952,6 +1009,15 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 			// waiting for the periodic recovery scan.
 			m.requestScan()
 		}()
+		if other, live := m.liveLeaseConflict(lease); live {
+			// Leave the lease in place without a provider turn: recovery
+			// re-runs this dispatch once the conflicting lease stops being
+			// live. Logging instead of an error state keeps the refused
+			// dispatch from burning recovery attempts on a busy document.
+			m.log(fmt.Sprintf("refused %s dispatch for %s: live lease %s (state %s, heartbeat %s ago) already covers this document and phase; a second provider session may not start while it lives",
+				lease.Phase, filepath.Base(lease.File), other.ID, other.State, time.Since(other.HeartbeatAt).Truncate(time.Second)))
+			return
+		}
 		if !m.acquireCapacity(ctx, isRepair) {
 			return
 		}
@@ -1078,6 +1144,12 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 			// until reconciliation observes the agent-authored durable file move.
 		}
 		targetModel := m.resolveTargetModel(route, lease)
+		if leaseIsWorkCard(lease) && !m.claudeTarget(targetModel) {
+			// The seat changed between the check above and routing (a cap, a stop): never send work
+			// Claude data to another model.
+			m.releaseWorkCard(route, lease)
+			return
+		}
 		// Record what this dispatch actually runs on before the send: a quota
 		// park must wake at the plan's real reset, and the model string (not
 		// the document, which roster-routed work never pins) is the only
@@ -1110,13 +1182,16 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 		var threadID string
 		var steered bool
 		run = m.runBegin(lease, targetModel)
+		// The send names the claimed document, so a harness that waits on a blocked worker can see
+		// that the worker's earlier turn already moved it and type nothing.
+		sendCtx := harness.WithClaimedDocument(ctx, lease.File)
 		for sendAttempt := 0; ; sendAttempt++ {
 			if ms, ok := m.Harness.(interface {
 				SendWithModel(context.Context, string, string, string, core.Emit) (string, bool, error)
 			}); ok && targetModel != "" {
-				threadID, steered, err = ms.SendWithModel(ctx, lease.SessionKey, prompt, targetModel, emit)
+				threadID, steered, err = ms.SendWithModel(sendCtx, lease.SessionKey, prompt, targetModel, emit)
 			} else {
-				threadID, steered, err = m.Harness.Send(ctx, lease.SessionKey, prompt, emit)
+				threadID, steered, err = m.Harness.Send(sendCtx, lease.SessionKey, prompt, emit)
 			}
 			if err == nil || sendAttempt >= 1 || ctx.Err() != nil {
 				break
@@ -1410,6 +1485,16 @@ func (m *Manager) reconcileTaskTransition(ctx context.Context, route workflowRou
 				m.log(note + " " + target)
 				return "todo", target, nil
 			}
+			if stagingErr := validateStagingCleanup(document); stagingErr != nil {
+				note := "Direct completion rejected: " + stagingErr.Error() + " Werkrby returned this task to todo."
+				now := time.Now().UTC()
+				target := statusPath(base, "todo", name)
+				if err := moveDocumentWithUpdate(path, target, "todo", now, note, nil); err != nil {
+					return "todo", path, err
+				}
+				m.log(note + " " + target)
+				return "todo", target, nil
+			}
 		}
 		if status == "review" || status == "done" {
 			// The pre-registered acceptance check gates this hand-off; without
@@ -1475,6 +1560,16 @@ func (m *Manager) reconcileTaskTransition(ctx context.Context, route workflowRou
 			}
 			m.log(note + " " + target)
 			return "todo", target, nil
+		}
+	}
+	if status == "done" {
+		document, readErr := ReadDocument(path)
+		if readErr != nil {
+			return status, path, m.skipUnreadableDocument(path, readErr)
+		}
+		if stagingErr := validateStagingCleanup(document); stagingErr != nil {
+			note := "Review acceptance rejected: " + stagingErr.Error() + " Werkrby returned this task to todo."
+			return m.redirectTransition(path, statusPath(base, "todo", name), "todo", note)
 		}
 	}
 	if status != "waiting" {
@@ -2293,6 +2388,11 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 	if !ok {
 		return "", false
 	}
+	workCard := lease.WorkCard || frontMatterIsWorkCard(frontMatter)
+	if workCard && !isClaudeStaff(staffing, staffing.Landing(stateDir, name, time.Now())) {
+		m.log("claude_only: " + filepath.Base(lease.File) + " would land on a non-Claude seat past " + name + "; not dispatched")
+		return "", true
+	}
 	shadowDone := m.shadowDispatchPending(lease, phase, name, frontMatter)
 	assigned, err := staffing.Assign(stateDir, name, lease.SessionKey, time.Now())
 	if err != nil {
@@ -2303,6 +2403,10 @@ func (m *Manager) resolveRosterModel(route workflowRoute, lease Lease) (string, 
 	}
 	if assigned != name {
 		m.log("roster: " + name + " is at its daily cap; " + filepath.Base(lease.File) + " goes to " + assigned)
+	}
+	if workCard && !isClaudeStaff(staffing, assigned) {
+		m.log("claude_only: " + filepath.Base(lease.File) + " was assigned the non-Claude seat " + assigned + "; not dispatched")
+		return "", true
 	}
 	if shadowDone != nil {
 		shadowDone(assigned)
@@ -2322,6 +2426,14 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 	text := func(key string) string {
 		value, _ := frontMatter[key].(string)
 		return strings.TrimSpace(value)
+	}
+	if frontMatterIsWorkCard(frontMatter) {
+		// A work Claude card runs on a Claude seat or nowhere, in every phase: no role, pin or
+		// escalation may move it onto another runner (work_card_fence.go).
+		if name := workCardSeat(staffing, frontMatter, fileName, logf); name != "" {
+			return name, true
+		}
+		return "", false
 	}
 
 	name := ""
@@ -2357,8 +2469,20 @@ func rosterSeat(staffing *roster.Roster, stateDir, phase string, frontMatter map
 				}
 			}
 		}
-		if name == "" && (text("agent") != "" || text("model") != "") {
-			return "", false // explicit legacy runner pin
+		if name == "" {
+			pin := text("agent")
+			if pin == "" {
+				pin = text("model")
+			}
+			if pin != "" {
+				if launchablePin(staffing, pin) {
+					return "", false // explicit pin: hermes or roster staff, launched as written
+				}
+				// Werkrby launches Hermes workers only: any other runner pin (a retired one, or one
+				// herdr supports such as codex or cursor) is routed by role instead of being handed
+				// to the harness.
+				logf("roster: runner pin " + strconv.Quote(pin) + " in " + fileName + " is neither hermes nor roster staff; routing by role")
+			}
 		}
 		if name == "" {
 			name = staffing.ForRole(phase)
@@ -2445,6 +2569,11 @@ func (m *Manager) paceHeld(route workflowRoute, phase, name string, document Doc
 }
 
 func (m *Manager) resolveLegacyTargetModel(route workflowRoute, lease Lease) string {
+	// Legacy routing names no Claude seat (Werkrby launches only Hermes here), so a work Claude
+	// card has no model on this path.
+	if leaseIsWorkCard(lease) {
+		return ""
+	}
 	harnessSettings := m.harnessSettings()
 	phase := normalizeLeasePhase(route.Name, lease.Phase)
 
@@ -2453,16 +2582,32 @@ func (m *Manager) resolveLegacyTargetModel(route workflowRoute, lease Lease) str
 		if harnessSettings.ReviewerModel != "" {
 			return harnessSettings.ReviewerModel
 		}
-		return "kimi"
+		// Hermes is the only runner Werkrby launches; a retired runner name must never be
+		// the fallback.
+		return "hermes"
 	}
 
-	// 2. Check frontmatter of the claimed task / goal file
+	// 2. Check frontmatter of the claimed task / goal file. Only a pin naming hermes or roster
+	// staff may launch; any other is logged and skipped as if absent.
 	if doc, err := ReadDocument(lease.File); err == nil {
-		if agent, ok := doc.FrontMatter["agent"].(string); ok && strings.TrimSpace(agent) != "" {
-			return strings.TrimSpace(agent)
+		var staffing *roster.Roster
+		if loaded, loadErr := roster.Load(m.Config.StatePath()); loadErr == nil {
+			staffing = loaded
 		}
-		if model, ok := doc.FrontMatter["model"].(string); ok && strings.TrimSpace(model) != "" {
-			return strings.TrimSpace(model)
+		for _, field := range []string{"agent", "model"} {
+			pin, _ := doc.FrontMatter[field].(string)
+			pin = strings.TrimSpace(pin)
+			if pin == "" {
+				continue
+			}
+			if !launchablePin(staffing, pin) {
+				m.log("legacy runner pin " + strconv.Quote(pin) + " in " + filepath.Base(lease.File) + " is neither hermes nor roster staff; using the configured model")
+				continue
+			}
+			if strings.EqualFold(pin, "hermes") {
+				return "hermes"
+			}
+			return pin
 		}
 	}
 
@@ -2473,6 +2618,18 @@ func (m *Manager) resolveLegacyTargetModel(route workflowRoute, lease Lease) str
 
 	// 4. Default harness model
 	return harnessSettings.Model
+}
+
+// launchablePin reports whether a front-matter agent:/model: pin may reach the harness as written:
+// it names hermes, or roster staff in the "@name" form the harness expands. Werkrby launches Hermes
+// workers only, and a roster staff entry is the one way to name another runner.
+func launchablePin(staffing *roster.Roster, pin string) bool {
+	pin = strings.TrimSpace(pin)
+	if strings.EqualFold(pin, "hermes") {
+		return true
+	}
+	name, ok := strings.CutPrefix(pin, roster.StaffPrefix)
+	return ok && staffing.Has(name)
 }
 
 func phaseForFile(routeName, file string) string {
@@ -2831,13 +2988,20 @@ func (m *Manager) isControlCancelled(leaseID string) bool {
 // dead or misbehaving runner. Only the harness control-plane error text is
 // matched, never the provider event stream, and quota refusals (429 plan
 // limits) deliberately do not match: those wait for reset on the same runner
-// without spending an attempt.
+// without spending an attempt. A one-shot Hermes client refused by its gateway
+// before connecting (draining before a restart, or inaccessible inside a restart
+// window; hermes_cli/gateway_client.py GatewayUnavailableError) sent no prompt,
+// so it is the same retry, not a recovery agent's job. "Gateway connection
+// failed" deliberately does not match: Hermes raises it for any socket error
+// while the turn runs, after the gateway may have accepted the prompt, and a
+// blind retry would run the same task twice.
 func transientProviderError(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "please retry") || strings.Contains(msg, "overloaded") || strings.Contains(msg, "prompt_not_delivered")
+	return strings.Contains(msg, "please retry") || strings.Contains(msg, "overloaded") || strings.Contains(msg, "prompt_not_delivered") ||
+		strings.Contains(msg, "gateway draining: not_ready") || strings.Contains(msg, "gateway inaccessible")
 }
 
 // restoreLeaseForRetry returns a lease parked by a refused attempt's terminal
@@ -2976,12 +3140,21 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 	if m.recordOperatorStop(lease) {
 		return
 	}
+	if m.leaseRemovedByReconcile(lease, err) {
+		return
+	}
 	if m.restartInterrupted(ctx, err) {
 		m.recordRestartInterrupt(lease, err)
 		return
 	}
 	if isQuotaError(err) {
 		m.recordQuotaError(lease, err)
+		return
+	}
+	if m.recordHermesBlocked(lease, err) {
+		return
+	}
+	if m.recordHermesUnresolvedTurn(lease, err) {
 		return
 	}
 	lease.LastError = err.Error()
@@ -2998,7 +3171,7 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 			_ = os.Remove(m.leasePath(lease.ID))
 			m.finishRuntimeJob(lease.ID)
 			m.log(fmt.Sprintf("abandoned repeatedly failing task %s into failed/: %v", lease.File, err))
-			go m.captureAutopsyAndAlert(lease, fmt.Errorf("task failed after %d attempts: %w", lease.RecoveryCount, err))
+			m.captureAutopsyAndAlert(lease, fmt.Errorf("task failed after %d attempts: %w", lease.RecoveryCount, err))
 			return
 		}
 	}
@@ -3012,7 +3185,118 @@ func (m *Manager) recordError(ctx context.Context, lease Lease, err error) {
 	} else {
 		m.log(msg)
 	}
-	go m.captureAutopsyAndAlert(lease, err)
+	m.captureAutopsyAndAlert(lease, err)
+}
+
+// leaseRemovedByReconcile reports whether lease's file is gone: reconcile removed it after the
+// worker moved the document out of its claimed folder and ran that transition's terminal steps
+// (hooks, the notification agent). An error the send returns afterwards is handled by doing
+// nothing; writing the lease back would make the next scan run the transition a second time.
+// Every recordError caller saved the lease before dispatching, so a missing file is never a
+// lease that was simply not written yet.
+func (m *Manager) leaseRemovedByReconcile(lease Lease, err error) bool {
+	if _, loadErr := m.loadLease(lease.ID); !os.IsNotExist(loadErr) {
+		return false
+	}
+	m.log(fmt.Sprintf("dispatch %s ended with an error after its transition was reconciled; lease not re-created: %v", lease.File, err))
+	return true
+}
+
+// hermesBlockedBudget is how many hermes_blocked errors one lease absorbs without spending
+// RecoveryCount. Past it the error counts like any other, so a Hermes pane nobody can clear cannot
+// re-dispatch the document for ever.
+const hermesBlockedBudget = 6
+
+// hermesUnresolvedTurnBudget is how many generic no-final-reply verdicts one lease absorbs
+// without spending RecoveryCount. Past it the verdict counts like any other, so a turn-end
+// detection that never resolves cannot re-dispatch the document for ever.
+const hermesUnresolvedTurnBudget = 6
+
+// recordHermesBlocked handles a Hermes worker pane that stayed blocked on a prompt past the
+// harness's wait (harness.HermesBlockedCode). That is a harness condition the prompt watcher
+// clears, not a defect of the task: the lease is parked in error for another dispatch, the error
+// is logged as hermes_blocked, and neither RecoveryCount nor the consecutive-error fail-out is
+// spent, up to hermesBlockedBudget per lease. It reports whether it handled the error.
+func (m *Manager) recordHermesBlocked(lease Lease, err error) bool {
+	if err == nil || !strings.Contains(err.Error(), harness.HermesBlockedCode) {
+		return false
+	}
+	current, loadErr := m.loadLease(lease.ID)
+	if os.IsNotExist(loadErr) {
+		// Reconcile removed the lease after the worker moved the document: handled, and never
+		// saved back (that would run the transition again).
+		return true
+	}
+	if loadErr == nil {
+		lease = current
+	}
+	if lease.HermesBlockedCount >= hermesBlockedBudget {
+		return false
+	}
+	now := time.Now().UTC()
+	lease.HermesBlockedCount++
+	lease.LastError = err.Error()
+	lease.State = "error"
+	lease.HeartbeatAt = now
+	if saveErr := m.saveLease(lease); saveErr != nil {
+		m.log("save hermes-blocked lease: " + saveErr.Error())
+	}
+	note := fmt.Sprintf("the Hermes worker pane stayed blocked on a prompt past the harness wait (%d of %d allowed); Werkrby dispatches it again; attempt not spent", lease.HermesBlockedCount, hermesBlockedBudget)
+	if progressErr := updateDocumentProgress(lease.File, now, note); progressErr != nil {
+		m.log("record hermes-blocked progress: " + progressErr.Error())
+	}
+	msg := fmt.Sprintf("hermes blocked %s (%d of %d, not counted toward recovery): %v", lease.File, lease.HermesBlockedCount, hermesBlockedBudget, err)
+	if m.LogError != nil {
+		m.LogError("orchestrator", harness.HermesBlockedCode, msg)
+	} else {
+		m.log(msg)
+	}
+	return true
+}
+
+// recordHermesUnresolvedTurn handles the generic no-final-reply verdict judgeHermesTurn emits
+// (harness.HermesUnresolvedTurn) for a delivered turn that wrote rows but ended with neither an
+// answer row nor a failed-turn boundary row inside the settle and grace windows. The turn ran —
+// it often handed real work on — and the harness could not classify how it ended, so the verdict
+// is not evidence of a repeatedly failing task: the lease is parked in error for another
+// dispatch, the error is logged as hermes_unresolved_turn, and neither RecoveryCount nor the
+// consecutive-error fail-out is spent, up to hermesUnresolvedTurnBudget per lease. It reports
+// whether it handled the error.
+func (m *Manager) recordHermesUnresolvedTurn(lease Lease, err error) bool {
+	if err == nil || !strings.Contains(err.Error(), harness.HermesUnresolvedTurn) {
+		return false
+	}
+	current, loadErr := m.loadLease(lease.ID)
+	if os.IsNotExist(loadErr) {
+		// Reconcile removed the lease after the worker moved the document: handled, and never
+		// saved back (that would run the transition again).
+		return true
+	}
+	if loadErr == nil {
+		lease = current
+	}
+	if lease.UnresolvedTurnCount >= hermesUnresolvedTurnBudget {
+		return false
+	}
+	now := time.Now().UTC()
+	lease.UnresolvedTurnCount++
+	lease.LastError = err.Error()
+	lease.State = "error"
+	lease.HeartbeatAt = now
+	if saveErr := m.saveLease(lease); saveErr != nil {
+		m.log("save unresolved-turn lease: " + saveErr.Error())
+	}
+	note := fmt.Sprintf("the worker turn ended without a final reply or a failure row (%d of %d allowed); Werkrby dispatches it again; attempt not spent", lease.UnresolvedTurnCount, hermesUnresolvedTurnBudget)
+	if progressErr := updateDocumentProgress(lease.File, now, note); progressErr != nil {
+		m.log("record unresolved-turn progress: " + progressErr.Error())
+	}
+	msg := fmt.Sprintf("unresolved hermes turn %s (%d of %d, not counted toward recovery): %v", lease.File, lease.UnresolvedTurnCount, hermesUnresolvedTurnBudget, err)
+	if m.LogError != nil {
+		m.LogError("orchestrator", "hermes_unresolved_turn", msg)
+	} else {
+		m.log(msg)
+	}
+	return true
 }
 
 // defaultTelemetryAlerterPath is the live telemetry alerter the running
@@ -3038,10 +3322,23 @@ func telemetryAlerterPathForProcess() string {
 	return telemetryAlerterPath
 }
 
+// captureAutopsyAndAlert writes the dispatch-error diagnostics autopsy on the
+// CALLING goroutine and execs the telemetry alerter detached. The write used
+// to run on a fire-and-forget goroutine no Wait tracked, so it could land
+// after manager.Wait returned - racing a test's t.TempDir RemoveAll into
+// "directory not empty" failures and writing to the workspace tree after a
+// drain had started. The JSON write is one small local file, cheap enough to
+// join; only the alerter exec (a python subprocess) stays off the critical
+// path, and test binaries never reach it.
 func (m *Manager) captureAutopsyAndAlert(lease Lease, err error) {
 	if err == nil {
 		return
 	}
+	m.captureAutopsy(lease, err)
+	go m.alertDispatchError(lease, err)
+}
+
+func (m *Manager) captureAutopsy(lease Lease, err error) {
 	diagDir := m.Config.StatePath("diagnostics")
 	if mkErr := os.MkdirAll(diagDir, 0o700); mkErr != nil {
 		return
@@ -3065,7 +3362,9 @@ func (m *Manager) captureAutopsyAndAlert(lease Lease, err error) {
 	if data, mErr := json.MarshalIndent(autopsy, "", "  "); mErr == nil {
 		_ = os.WriteFile(diagPath, data, 0o600)
 	}
+}
 
+func (m *Manager) alertDispatchError(lease Lease, err error) {
 	if alerterPath := telemetryAlerterPathForProcess(); alerterPath != "" {
 		if _, statErr := os.Stat(alerterPath); statErr == nil {
 			taskName := filepath.Base(lease.File)
@@ -3216,6 +3515,9 @@ var (
 		"kimi":     "kimi_coding",
 		"agy":      "antigravity",
 		"pi":       "zai",
+		// A bare hermes launch runs the wk-code profile, whose models spend the Z.ai plan:
+		// the turn is metered, never unmetered.
+		"hermes": "zai",
 	}
 	// providerPlanMap is the provider-prefix half of the plan lookup, the
 	// same table ~/ops/werkrby-quota-gate.py's PLAN_BY_PROVIDER uses, so the

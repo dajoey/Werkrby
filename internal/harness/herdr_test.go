@@ -26,6 +26,10 @@ func TestNewHerdrDefaults(t *testing.T) {
 }
 
 func TestHerdrModels(t *testing.T) {
+	// The picker offers only hermes: every other runner kind herdr can start is retired on
+	// this fleet (a bare non-hermes launch is refused), so offering them only ever produced
+	// a picker choice that failed at launch. Roster staff pins name another runner directly
+	// in roster.yaml and never go through the picker.
 	h, err := NewHerdr(HarnessConfig{Name: "herdr"})
 	if err != nil {
 		t.Fatalf("NewHerdr failed: %v", err)
@@ -34,68 +38,15 @@ func TestHerdrModels(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Models failed: %v", err)
 	}
-	if len(models) == 0 {
-		t.Fatalf("expected at least base models, got 0")
+	if len(models) != 1 {
+		t.Fatalf("Models() = %#v, want only hermes", models)
 	}
-
-	foundClaude := false
+	if models[0].ID != "hermes" || !models[0].Default {
+		t.Errorf("Models()[0] = %+v, want the hermes default", models[0])
+	}
 	for _, m := range models {
-		if m.ID == "claude" {
-			foundClaude = true
-			break
-		}
-	}
-	if !foundClaude {
-		t.Errorf("expected 'claude' model in Herdr models list")
-	}
-}
-
-func TestHerdrModelsOfferEveryRosterStaffRunner(t *testing.T) {
-	// Minimal roster shape matching .werkrby/roster.yaml staff.runner pins.
-	const rosterYAML = `
-staff:
-  implementer:
-    runner: cursor
-  overflow:
-    runner: pi
-  researcher:
-    runner: agy
-  chat:
-    runner: hermes
-  planner:
-    runner: opencode
-  reviewer:
-    runner: claude
-`
-	offered := map[string]bool{}
-	h, err := NewHerdr(HarnessConfig{Name: "herdr"})
-	if err != nil {
-		t.Fatalf("NewHerdr failed: %v", err)
-	}
-	models, err := h.Models(context.Background())
-	if err != nil {
-		t.Fatalf("Models failed: %v", err)
-	}
-	for _, model := range models {
-		offered[model.ID] = true
-	}
-
-	required := []string{"cursor", "pi", "agy", "hermes", "opencode", "claude"}
-	for _, runner := range required {
-		if !offered[runner] {
-			t.Errorf("Models() missing roster staff runner %q", runner)
-		}
-	}
-
-	// Keep the fixture honest: every runner: line in it must be covered above.
-	for _, line := range strings.Split(rosterYAML, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "runner:") {
-			continue
-		}
-		runner := strings.TrimSpace(strings.TrimPrefix(line, "runner:"))
-		if runner == "" || !offered[runner] {
-			t.Errorf("roster fixture runner %q is not offered by Models()", runner)
+		if m.ID != "hermes" {
+			t.Errorf("Models() offers retired runner %q", m.ID)
 		}
 	}
 }
@@ -459,6 +410,9 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The default runner is hermes, whose new pane waits for its composer instead of
+	// returning on the session id this fake reports; keep that wait short.
+	h.SetComposerWaitTimeout(20 * time.Millisecond)
 
 	key := "orchestrator:tasks:task_implementation:test-task:1"
 	sendDone := make(chan error, 1)
