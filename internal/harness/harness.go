@@ -36,6 +36,14 @@ type HarnessConfig struct {
 
 	CLIChatIdleThreshold    time.Duration
 	CLIChatIdleThresholdSet bool
+
+	// WindowsRunJobHandle carries the finite supervisor's query-right handle
+	// of the run job on Windows. The bounded provider spawn lists it in
+	// SysProcAttr.AdditionalInheritedHandles, so a harness-spawned provider
+	// keeps the job object open and observable after the owner and the
+	// supervisor are both gone. Handle values are process-local, so this is
+	// never serialized.
+	WindowsRunJobHandle uintptr `json:"-"`
 }
 
 type claimedDocumentKey struct{}

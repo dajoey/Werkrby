@@ -176,6 +176,25 @@ func (h *finiteFixtureHarness) Send(ctx context.Context, key, prompt string, emi
 		return "", false, err
 	}
 	behavior := os.Getenv(fixtureBehaviorEnv)
+	if behavior == "inherit" {
+		// A plain harness-spawned provider: it touches no job or group of its
+		// own and only stays live on the release file. Whatever keeps it inside
+		// the run boundary must travel through the harness config and the
+		// spawn itself.
+		executable, err := os.Executable()
+		if err != nil {
+			return "", false, err
+		}
+		command := exec.Command(executable, "finite-sleeper")
+		command.Env = mergeEnvironment(os.Environ(), h.cfg.Env)
+		configureInheritFixtureProcess(command, h.cfg)
+		if err := command.Start(); err != nil {
+			return "", false, err
+		}
+		if err := waitForReleaseFile(ctx, os.Getenv(fixtureReleaseEnv)); err != nil {
+			return "", false, err
+		}
+	}
 	if behavior == "group-child" {
 		// An unmarked provider child inherits the supervisor's process group
 		// and ignores SIGTERM, as a real provider tool may.
