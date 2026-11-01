@@ -32,15 +32,12 @@ func cleanCLIDisposableRoot(root string) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		return "", fmt.Errorf("finite: explicit disposable root is required")
 	}
-	absolute, err := filepath.Abs(root)
+	absolute, resolved, err := resolveStatePath(root)
 	if err != nil {
 		return "", fmt.Errorf("finite: resolve disposable root: %w", err)
 	}
-	absolute = filepath.Clean(absolute)
-	for _, part := range strings.Split(absolute, string(filepath.Separator)) {
-		if strings.EqualFold(part, ".werkrby") {
-			return "", fmt.Errorf("finite: legacy .werkrby state is not a disposable root")
-		}
+	if err := checkLegacyStateRoot(absolute, resolved); err != nil {
+		return "", err
 	}
 	return absolute, nil
 }
