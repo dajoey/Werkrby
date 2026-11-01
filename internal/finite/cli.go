@@ -79,7 +79,7 @@ func Execute(args []string, version string) error {
 func executeWithDeps(ctx context.Context, args []string, version string, deps cliDependencies) error {
 	_ = version
 	if len(args) == 0 {
-		return fmt.Errorf("command required: serve, intake, status, stop, answer, message, withdraw, ping, supervise, or test-receiver")
+		return fmt.Errorf("command required: serve, intake, status, stop, answer, message, withdraw, ping, gateway, supervise, or test-receiver")
 	}
 	switch args[0] {
 	case "serve":
@@ -90,6 +90,8 @@ func executeWithDeps(ctx context.Context, args []string, version string, deps cl
 		return deps.serve(ctx, options)
 	case "intake", "status", "stop", "answer", "message", "withdraw", "ping":
 		return executeControlCommand(ctx, args[0], args[1:], deps)
+	case "gateway":
+		return executeGatewayCommand(ctx, args[1:])
 	case "supervise":
 		return deps.runSupervisor(ctx, args[1:], deps.newRunner)
 	case "test-receiver":
