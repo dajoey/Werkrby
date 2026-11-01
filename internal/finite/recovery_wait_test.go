@@ -77,10 +77,16 @@ func TestFiniteAdoptedCompletionWaitIsBounded(t *testing.T) {
 }
 
 func TestFiniteAdoptedSettleWaitBound(t *testing.T) {
-	if got := adoptedSettleWait(0); got != 30*time.Second {
-		t.Fatalf("unset stop grace bound = %s, want 30s", got)
+	// The scan holds scanMu while it waits, and stop/answer control clients
+	// give up after 5 s, so the in-scan wait stays well under that whatever
+	// the stop grace; an unfinished boundary is simply rechecked next scan.
+	for _, grace := range []time.Duration{0, 25 * time.Millisecond, 5 * time.Second, 30 * time.Second} {
+		got := adoptedSettleWait(grace)
+		if got <= 0 || got > adoptedSettleCap || adoptedSettleCap >= 5*time.Second {
+			t.Fatalf("grace %s: bound = %s, cap %s; want 0 < bound <= cap < 5s", grace, got, adoptedSettleCap)
+		}
 	}
-	if got := adoptedSettleWait(5 * time.Second); got != 5*time.Second+adoptedSettleMargin {
-		t.Fatalf("stop grace bound = %s, want grace plus margin", got)
+	if got := adoptedSettleWait(25 * time.Millisecond); got != 25*time.Millisecond+adoptedSettleMargin && got != adoptedSettleCap {
+		t.Fatalf("short grace bound = %s", got)
 	}
 }

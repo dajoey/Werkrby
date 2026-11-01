@@ -345,11 +345,17 @@ func decodeEngineJSON(data []byte, destination any) error {
 // for an adopted boundary whose turn has already published its artifacts.
 const adoptedSettleMargin = 2 * time.Second
 
+// adoptedSettleCap keeps the in-scan wait well under the 5 s control-client
+// timeout: stop and answer requests wait on scanMu behind it.
+const adoptedSettleCap = 2 * time.Second
+
 // adoptedSettleWait bounds the in-scan wait for an adopted boundary's
-// absence. The scan holds scanMu, so the wait must never be unbounded.
+// absence. The scan holds scanMu, so the wait is short; a boundary that is not
+// absent yet stays open and is rechecked on the next scan.
 func adoptedSettleWait(stopGrace time.Duration) time.Duration {
-	if stopGrace <= 0 {
-		return 30 * time.Second
+	wait := stopGrace + adoptedSettleMargin
+	if stopGrace <= 0 || wait > adoptedSettleCap {
+		return adoptedSettleCap
 	}
-	return stopGrace + adoptedSettleMargin
+	return wait
 }
