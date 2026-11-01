@@ -65,26 +65,26 @@ const (
 
 // Task is the SQLite-backed workflow projection used by the engine.
 type Task struct {
-	ID               string
-	Title            string
-	State            State
-	Risk             string
-	ReviewRequired   bool
-	CancelRequested  bool
-	MaxRuns          int
-	MaxFailures      int
-	MaxReviewCycles  int
-	BriefPath        string
-	BriefSHA256      string
-	ProjectionPath   string
-	ResumeState      State
-	WaitKind         WaitKind
-	WakeAt           *time.Time
-	WaitingFor       string
-	JoeyAskJSON      string
-	Version          int64
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID              string
+	Title           string
+	State           State
+	Risk            string
+	ReviewRequired  bool
+	CancelRequested bool
+	MaxRuns         int
+	MaxFailures     int
+	MaxReviewCycles int
+	BriefPath       string
+	BriefSHA256     string
+	ProjectionPath  string
+	ResumeState     State
+	WaitKind        WaitKind
+	WakeAt          *time.Time
+	WaitingFor      string
+	JoeyAskJSON     string
+	Version         int64
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // Run is one provider turn. PID is recovery metadata, never proof by itself.
@@ -117,23 +117,23 @@ type Summary struct {
 
 // Wait is the typed waiting instruction in a worker result.
 type Wait struct {
-	Kind   WaitKind `json:"kind"`
-	WakeAt string   `json:"wake_at,omitempty"`
-	Reason string   `json:"reason"`
+	Kind   WaitKind        `json:"kind"`
+	WakeAt string          `json:"wake_at,omitempty"`
+	Reason string          `json:"reason"`
 	Ask    json.RawMessage `json:"ask,omitempty"`
 }
 
 // Result is bound to exactly one task, run, and phase.
 type Result struct {
-	SchemaVersion int            `json:"schema_version"`
-	RunID         int64          `json:"run_id"`
-	TaskID        string         `json:"task_id"`
-	Phase         Phase          `json:"phase"`
-	Outcome       ResultOutcome  `json:"outcome"`
-	Progress      string         `json:"progress"`
-	Summary       *Summary       `json:"summary,omitempty"`
-	Findings      []string       `json:"findings,omitempty"`
-	Wait          *Wait          `json:"wait,omitempty"`
+	SchemaVersion int           `json:"schema_version"`
+	RunID         int64         `json:"run_id"`
+	TaskID        string        `json:"task_id"`
+	Phase         Phase         `json:"phase"`
+	Outcome       ResultOutcome `json:"outcome"`
+	Progress      string        `json:"progress"`
+	Summary       *Summary      `json:"summary,omitempty"`
+	Findings      []string      `json:"findings,omitempty"`
+	Wait          *Wait         `json:"wait,omitempty"`
 }
 
 // Usage is adapter-normalized telemetry. Nil means unreported, never zero.
