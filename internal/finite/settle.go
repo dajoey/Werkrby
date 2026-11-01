@@ -61,6 +61,7 @@ func runSettlementFailpoint(point SettlementFailpoint) error {
 
 // SettleRun applies one terminal settlement and replays it idempotently.
 func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, error) {
+	req = canonicalSettlementRequest(req)
 	fingerprint, err := settlementFingerprint(req)
 	if err != nil {
 		return Task{}, err
@@ -110,12 +111,10 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 				resultInvalid = true
 			} else {
 				if result.Wait != nil && result.Wait.Kind == WaitJoey {
-					ask, askErr := decodeJoeyAsk(result.Wait.Ask)
-					if askErr != nil {
+					// A valid ask is already canonical; see canonicalSettlementRequest.
+					if _, askErr := decodeJoeyAsk(result.Wait.Ask); askErr != nil {
 						result = nil
 						resultInvalid = true
-					} else {
-						result.Wait.Ask, _ = json.Marshal(ask)
 					}
 				}
 				if result != nil {
@@ -191,7 +190,7 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		if err != nil {
 			return err
 		}
-		next := settlementState(task, run, outcome, result, accounting)
+		next, failureReason := settlementState(task, run, outcome, result, accounting)
 		newVersion := task.Version + 1
 		if err := updateSettlementTask(ctx, tx, task, next, newVersion, now, result, req.WallWakeAt, runError); err != nil {
 			return err
@@ -204,10 +203,14 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		settled.Version = newVersion
 		settled.UpdatedAt = now
 		applySettlementWait(&settled, run, outcome, result, req.WallWakeAt, runError)
-		auditPayload, _ := json.Marshal(map[string]any{
+		audit := map[string]any{
 			"request_sha256": fingerprint, "execution_outcome": outcome,
 			"result_outcome": resultOutcome(result), "error": runError,
-		})
+		}
+		if failureReason != "" {
+			audit["failure_reason"] = failureReason
+		}
+		auditPayload, _ := json.Marshal(audit)
 		eventID := fmt.Sprintf("run:%d:settled", run.ID)
 		if err := insertTaskEvent(ctx, tx, eventID, task.ID, &run.ID, "settled", task.State,
 			next, newVersion, auditPayload, stamp(now)); err != nil {
@@ -236,6 +239,30 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		return Task{}, err
 	}
 	return settled, nil
+}
+
+// canonicalSettlementRequest returns req with a valid Joey ask in canonical
+// JSON form. The result and wait are copied so the caller's request is never
+// rewritten, and the fingerprint is taken over this form so a replay whose ask
+// differs only in key order or spacing matches the settled request.
+func canonicalSettlementRequest(req SettlementRequest) SettlementRequest {
+	if req.Result == nil || req.Result.Wait == nil || req.Result.Wait.Kind != WaitJoey {
+		return req
+	}
+	ask, err := decodeJoeyAsk(req.Result.Wait.Ask)
+	if err != nil {
+		return req
+	}
+	canonical, err := json.Marshal(ask)
+	if err != nil {
+		return req
+	}
+	result := *req.Result
+	wait := *result.Wait
+	wait.Ask = canonical
+	result.Wait = &wait
+	req.Result = &result
+	return req
 }
 
 func settlementFingerprint(req SettlementRequest) (string, error) {
@@ -289,47 +316,64 @@ func phaseQueue(phase Phase) State {
 	return StateTodo
 }
 
-func settlementState(task Task, run Run, outcome RunOutcome, result *Result, accounting Accounting) State {
+// settlementState chooses the next task state and, when a run-policy cap is
+// what ends the task, names that cap.
+func settlementState(task Task, run Run, outcome RunOutcome, result *Result, accounting Accounting) (State, string) {
 	if task.CancelRequested {
-		return StateCancelled
+		return StateCancelled, ""
 	}
-	if outcome == RunWall {
-		return StateWaiting
-	}
-	if outcome == RunLost || outcome == RunInterrupted {
-		return phaseQueue(run.Phase)
-	}
-	capReached := accounting.Attempts >= task.MaxRuns || accounting.Failures >= task.MaxFailures || accounting.ReviewCycles >= task.MaxReviewCycles
-	if result == nil {
-		if capReached {
-			return StateFailed
+	// Every run counts toward MaxRuns whatever its outcome, so an uncharged
+	// cause that repeats forever (launch failure, loss, interruption, quota
+	// wall) still ends in a failed task.
+	runCapReached := accounting.Runs >= task.MaxRuns
+	if outcome == RunWall || outcome == RunLost || outcome == RunInterrupted {
+		if runCapReached {
+			return StateFailed, "max_runs"
 		}
-		return phaseQueue(run.Phase)
+		if outcome == RunWall {
+			return StateWaiting, ""
+		}
+		return phaseQueue(run.Phase), ""
+	}
+	capReason := ""
+	switch {
+	case runCapReached || accounting.Attempts >= task.MaxRuns:
+		capReason = "max_runs"
+	case accounting.Failures >= task.MaxFailures:
+		capReason = "max_failures"
+	case accounting.ReviewCycles >= task.MaxReviewCycles:
+		capReason = "max_review_cycles"
+	}
+	if result == nil {
+		if capReason != "" {
+			return StateFailed, capReason
+		}
+		return phaseQueue(run.Phase), ""
 	}
 	switch result.Outcome {
 	case ResultDone:
 		if task.ReviewRequired {
-			return StateReview
+			return StateReview, ""
 		}
-		return StateDone
+		return StateDone, ""
 	case ResultReview:
-		return StateReview
+		return StateReview, ""
 	case ResultAccepted:
-		return StateDone
+		return StateDone, ""
 	case ResultFailed:
-		return StateFailed
+		return StateFailed, ""
 	case ResultWait:
-		return StateWaiting
+		return StateWaiting, ""
 	case ResultTodo, ResultRejected:
-		if capReached {
-			return StateFailed
+		if capReason != "" {
+			return StateFailed, capReason
 		}
 		if result.Outcome == ResultRejected {
-			return StateTodo
+			return StateTodo, ""
 		}
-		return phaseQueue(run.Phase)
+		return phaseQueue(run.Phase), ""
 	default:
-		return StateFailed
+		return StateFailed, ""
 	}
 }
 

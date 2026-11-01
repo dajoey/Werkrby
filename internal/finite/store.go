@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/ncruces/go-sqlite3/driver"
@@ -26,6 +27,8 @@ type Store struct {
 	db  *sql.DB
 	cfg Config
 	now func() time.Time
+
+	intakeMu sync.Mutex
 }
 
 type txRunner interface {
@@ -280,8 +283,9 @@ func derivedAccounting(ctx context.Context, runner txRunner, taskID string, phas
 		COALESCE(SUM(CASE WHEN outcome IN ('ok','fail','timeout') THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN outcome IN ('fail','timeout') OR
 			(outcome='ok' AND NOT EXISTS (SELECT 1 FROM run_results rr WHERE rr.run_id=runs.id))
-			THEN 1 ELSE 0 END),0)
-		FROM runs WHERE task_id=? AND phase=?`, taskID, phase).Scan(&accounting.Attempts, &accounting.Failures)
+			THEN 1 ELSE 0 END),0),
+		COUNT(*)
+		FROM runs WHERE task_id=? AND phase=?`, taskID, phase).Scan(&accounting.Attempts, &accounting.Failures, &accounting.Runs)
 	if err != nil {
 		return Accounting{}, err
 	}
@@ -404,7 +408,12 @@ func (s *Store) CheckInvariants(ctx context.Context) error {
 	return rows.Err()
 }
 
-func stamp(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+// stampLayout is fixed width so SQLite text comparison and ordering of stored
+// timestamps equal time order. RFC3339Nano drops trailing zero digits, which
+// sorts a whole second after a later fraction of the same second.
+const stampLayout = "2006-01-02T15:04:05.000000000Z"
+
+func stamp(value time.Time) string { return value.UTC().Format(stampLayout) }
 
 func nullString(value string) any {
 	if value == "" {

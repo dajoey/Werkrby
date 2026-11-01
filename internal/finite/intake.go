@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -110,13 +111,21 @@ func (s *Store) IntakeBrief(ctx context.Context, sourcePath string) (task Task, 
 	if err != nil {
 		return Task{}, err
 	}
+	// Publication, the task commit and failure cleanup form one unit so an
+	// orphan reused by one intake cannot be removed by another's cleanup.
+	s.intakeMu.Lock()
+	defer s.intakeMu.Unlock()
 	briefPath := filepath.Join(s.cfg.BriefDir(), brief.ID+".md")
-	if err := fsx.AtomicCreateFile(briefPath, data, 0o600); err != nil {
-		return Task{}, fmt.Errorf("finite: publish immutable brief: %w", err)
+	if err := s.publishBrief(ctx, brief.ID, briefPath, data); err != nil {
+		return Task{}, err
 	}
-	published := true
 	defer func() {
-		if err != nil && published {
+		if err == nil {
+			return
+		}
+		// A commit-unknown error can follow a task row that did land; keep
+		// the brief unless the task row is proven absent.
+		if _, getErr := s.GetTask(context.WithoutCancel(ctx), brief.ID); errors.Is(getErr, ErrNotFound) {
 			_ = os.Remove(briefPath)
 		}
 	}()
@@ -147,6 +156,34 @@ func (s *Store) IntakeBrief(ctx context.Context, sourcePath string) (task Task, 
 		return Task{}, err
 	}
 	return task, nil
+}
+
+// publishBrief creates the immutable brief copy. A brief left by a crash
+// between publication and the task commit is reused when its bytes are
+// identical and no task row exists; any other existing brief is refused.
+func (s *Store) publishBrief(ctx context.Context, id, briefPath string, data []byte) error {
+	createErr := fsx.AtomicCreateFile(briefPath, data, 0o600)
+	if createErr == nil {
+		return nil
+	}
+	refused := fmt.Errorf("finite: publish immutable brief: %w", createErr)
+	if !errors.Is(createErr, os.ErrExist) {
+		return refused
+	}
+	if _, err := s.GetTask(ctx, id); err == nil {
+		return fmt.Errorf("finite: task %s already exists: %w", id, createErr)
+	} else if !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	info, err := os.Lstat(briefPath)
+	if err != nil || !info.Mode().IsRegular() || info.Size() != int64(len(data)) {
+		return refused
+	}
+	existing, err := os.ReadFile(briefPath)
+	if err != nil || !bytes.Equal(existing, data) {
+		return refused
+	}
+	return nil
 }
 
 func boolInt(value bool) int {

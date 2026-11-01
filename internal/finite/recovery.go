@@ -54,8 +54,14 @@ func (e *Engine) recoverRun(ctx context.Context, run Run) error {
 				return ErrProcessUnknown
 			}
 		}
+		// The stopped turn may still have spent tokens. Record valid usage;
+		// unreadable usage must not hold a stop open, so it stays unreported.
+		usage, usageErr := readRecoveredUsage(run)
+		if usageErr != nil {
+			usage = nil
+		}
 		_, err := e.settleRecovered(ctx, SettlementRequest{
-			RunID: run.ID, ExpectedTaskVersion: task.Version, ExecutionOutcome: RunInterrupted,
+			RunID: run.ID, ExpectedTaskVersion: task.Version, ExecutionOutcome: RunInterrupted, Usage: usage,
 		})
 		return err
 	}
@@ -111,8 +117,17 @@ func (e *Engine) recoverRun(ctx context.Context, run Run) error {
 		}
 		// A completed provider turn can finish between adoption and this scan.
 		// Wait for actual boundary absence now instead of depending on another
-		// scheduler pass to settle the original run.
-		if err := adopted.Wait(ctx); err != nil {
+		// scheduler pass to settle the original run, but only for a bounded
+		// time: the scan holds scanMu. A boundary that outlives the bound
+		// stays open and monitored, and a later scan settles it.
+		waitCtx, cancelWait := context.WithTimeout(ctx, adoptedSettleWait(e.opts.StopGrace))
+		err = adopted.Wait(waitCtx)
+		cancelWait()
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+				e.watchAdopted(run.ID, adopted)
+				return nil
+			}
 			return err
 		}
 	case LivenessAbsent:
@@ -145,9 +160,39 @@ func (e *Engine) recoverRun(ctx context.Context, run Run) error {
 	} else if resultPresent {
 		request.ExecutionOutcome = RunOK
 		request.Error = ""
+	} else {
+		started, err := providerTurnStarted(run)
+		if err != nil {
+			return err
+		}
+		if started {
+			// The provider turn began and its boundary died without a result or
+			// execution record: that turn was spent, so charge it as a failure
+			// and let MaxFailures bound the retries.
+			request.ExecutionOutcome = RunFail
+			request.Error = "supervisor exited during the provider turn without a result"
+		}
 	}
 	_, err = e.settleRecovered(ctx, request)
 	return err
+}
+
+// providerTurnStarted reports whether the run directory shows the supervisor
+// began its provider turn: the start fence or any recorded provider event.
+func providerTurnStarted(run Run) (bool, error) {
+	if _, err := os.Lstat(filepath.Join(run.RunDir, "supervisor-started.json")); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, err
+	}
+	info, err := os.Lstat(filepath.Join(run.RunDir, "events.jsonl"))
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.Size() > 0, nil
 }
 
 func (e *Engine) settleRecovered(ctx context.Context, request SettlementRequest) (Task, error) {
@@ -294,4 +339,17 @@ func decodeEngineJSON(data []byte, destination any) error {
 		return fmt.Errorf("finite: trailing JSON artifact data")
 	}
 	return nil
+}
+
+// adoptedSettleMargin is the slack beyond the stop grace that a scan waits
+// for an adopted boundary whose turn has already published its artifacts.
+const adoptedSettleMargin = 2 * time.Second
+
+// adoptedSettleWait bounds the in-scan wait for an adopted boundary's
+// absence. The scan holds scanMu, so the wait must never be unbounded.
+func adoptedSettleWait(stopGrace time.Duration) time.Duration {
+	if stopGrace <= 0 {
+		return 30 * time.Second
+	}
+	return stopGrace + adoptedSettleMargin
 }
