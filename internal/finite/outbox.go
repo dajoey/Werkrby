@@ -99,6 +99,7 @@ type OutboxProcessor struct {
 	Transport     DeliveryTransport
 	RetryDelay    time.Duration
 	Now           func() time.Time
+	beforeSend    func(Delivery)
 	recordAttempt func(context.Context, DeliveryAttempt) (OutboxEntry, error)
 }
 
@@ -129,6 +130,9 @@ func (p *OutboxProcessor) ProcessOnce(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	delivery := Delivery{ID: entry.DeliveryID, Payload: []byte(entry.PayloadJSON)}
+	if p.beforeSend != nil {
+		p.beforeSend(delivery)
+	}
 	deliveryErr := p.Transport.Deliver(ctx, delivery)
 	attempt := DeliveryAttempt{
 		DeliveryID: entry.DeliveryID, ExpectedSendCount: entry.SendCount,

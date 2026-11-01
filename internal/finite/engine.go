@@ -37,6 +37,8 @@ type engineHooks struct {
 	afterPIDPersist     func(Run, ProcessIdentity)
 	beforeSettlement    func(SettlementRequest)
 	afterSettlement     func(SettlementRequest)
+	beforeWake          func(Task)
+	afterWake           func(Task)
 	inspectRun          func(context.Context, int64, string) (RunProcesses, error)
 	stopRun             func(context.Context, int64, string, time.Duration) (Liveness, error)
 }
@@ -115,10 +117,16 @@ func (e *Engine) ScanOnce(ctx context.Context) error {
 		task := tasks[index]
 		launchReason := ""
 		if task.State == StateWaiting && task.WaitKind == WaitTime && task.WakeAt != nil && !e.store.now().UTC().Before(task.WakeAt.UTC()) {
+			if e.opts.hooks.beforeWake != nil {
+				e.opts.hooks.beforeWake(task)
+			}
 			updated, wakeErr := e.store.WakeTime(ctx, task.ID, task.Version)
 			if wakeErr != nil {
 				errs = append(errs, wakeErr)
 				continue
+			}
+			if e.opts.hooks.afterWake != nil {
+				e.opts.hooks.afterWake(updated)
 			}
 			task = updated
 			tasks[index] = task
