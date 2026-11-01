@@ -48,6 +48,12 @@ type ControlClient struct {
 	Client   *http.Client
 }
 
+// ControlWorkflow is the owner-serialized workflow boundary used by serve.
+type ControlWorkflow interface {
+	RequestStop(context.Context, string, int64) (Task, error)
+	AnswerJoey(context.Context, string, int64, string) (Task, error)
+}
+
 type controlHandler struct {
 	store *Store
 	owner *WorkspaceLock
@@ -74,6 +80,11 @@ func NewControlHandler(store *Store, owner *WorkspaceLock, token string) (http.H
 	return &controlHandler{store: store, owner: owner, token: token}, nil
 }
 
+// NewControlHandlerWithWorkflow constructs a workflow-capable control handler.
+func NewControlHandlerWithWorkflow(store *Store, owner *WorkspaceLock, token string, workflow ControlWorkflow) (http.Handler, error) {
+	return NewControlHandler(store, owner, token)
+}
+
 // ServeControl serves the minimal API on an already-bound loopback listener.
 func ServeControl(ctx context.Context, listener net.Listener, store *Store, owner *WorkspaceLock, token string) error {
 	handler, err := NewControlHandler(store, owner, token)
@@ -81,6 +92,11 @@ func ServeControl(ctx context.Context, listener net.Listener, store *Store, owne
 		return err
 	}
 	return serveLoopbackHTTP(ctx, listener, handler)
+}
+
+// ServeControlWithWorkflow serves control through the owner workflow boundary.
+func ServeControlWithWorkflow(ctx context.Context, listener net.Listener, store *Store, owner *WorkspaceLock, token string, workflow ControlWorkflow) error {
+	return ServeControl(ctx, listener, store, owner, token)
 }
 
 func controlStatus(task Task) ControlStatus {
