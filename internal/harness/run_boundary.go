@@ -260,7 +260,7 @@ func (b *hermesRunBoundary) poll() {
 func (b *hermesRunBoundary) refreshIdentity() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.meta.Identity != nil {
+	if b.meta.Identity != nil && b.meta.Identity.Generation != nil {
 		return nil
 	}
 	db, err := openHermesLedger(b.meta.LedgerPath)
@@ -268,11 +268,26 @@ func (b *hermesRunBoundary) refreshIdentity() error {
 		return err
 	}
 	defer db.Close()
-	identity, err := findExactHermesAdmission(context.Background(), db, b.spec, b.prompt)
+	if b.meta.Identity == nil {
+		identity, err := findExactHermesAdmission(context.Background(), db, b.spec, b.prompt)
+		if err != nil {
+			return err
+		}
+		b.meta.Identity = identity
+		return b.writeMetadataLocked()
+	}
+	row, err := readExactHermesAdmission(context.Background(), db, *b.meta.Identity, b.prompt)
 	if err != nil {
 		return err
 	}
-	b.meta.Identity = identity
+	identity, err := row.identity(b.spec)
+	if err != nil {
+		return err
+	}
+	if identity.Generation == nil {
+		return nil
+	}
+	b.meta.Identity = &identity
 	return b.writeMetadataLocked()
 }
 

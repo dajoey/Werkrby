@@ -508,3 +508,30 @@ func TestFiniteCLIListenerContract(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestFiniteServeControlUsesEngineWorkflow(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "state")
+	worker := filepath.Join(base, "worker")
+	if err := os.MkdirAll(worker, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sentinel := errors.New("control workflow sentinel")
+	deps := defaultServeRuntimeDependencies()
+	called := make(chan ControlWorkflow, 1)
+	deps.serveControl = func(_ context.Context, _ net.Listener, _ *Store, _ *WorkspaceLock, _ string, workflow ControlWorkflow) error {
+		called <- workflow
+		return sentinel
+	}
+	err := runFiniteServeWithDeps(context.Background(), serveOptions{
+		Root: root, Worker: worker, Seats: []string{"default"}, Harness: harness.HarnessConfig{Name: "finite-engine-fixture"},
+	}, deps)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("serve error = %v, want control sentinel", err)
+	}
+	workflow := <-called
+	engine, ok := workflow.(*Engine)
+	if !ok || engine == nil {
+		t.Fatalf("control workflow = %T, want the owner Engine serialized through scanMu", workflow)
+	}
+}
