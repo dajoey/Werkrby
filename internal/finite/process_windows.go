@@ -77,7 +77,7 @@ func (l *windowsSupervisorLaunch) Close() error {
 func openSupervisorContainment(token string) (supervisorContainment, error) {
 	job, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open supervisor job containment: %w", err)
 	}
 	return &windowsSupervisorContainment{job: job}, nil
 }
