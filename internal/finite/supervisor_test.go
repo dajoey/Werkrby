@@ -18,10 +18,12 @@ func TestFiniteSupervisorProtocolStartsSendsAndClosesOnce(t *testing.T) {
 	spec := newFiniteFixtureSpec(t, "complete")
 	handle, err := StartSupervisor(ctx, spec)
 	if err != nil {
-		t.Fatal(err)
+		detail, _ := os.ReadFile(filepath.Join(spec.RunDir, "supervisor.log"))
+		t.Fatalf("%v; supervisor log:\n%s", err, detail)
 	}
 	if err := handle.Wait(); err != nil {
-		t.Fatalf("supervisor: %v", err)
+		detail, _ := os.ReadFile(filepath.Join(spec.RunDir, "supervisor.log"))
+		t.Fatalf("supervisor: %v; supervisor log:\n%s", err, detail)
 	}
 	calls := readFixtureCallKinds(t, spec.RunDir)
 	if !reflect.DeepEqual(calls, []string{"start", "send", "close"}) {

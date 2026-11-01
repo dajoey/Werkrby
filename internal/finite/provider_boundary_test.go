@@ -2,6 +2,8 @@ package finite
 
 import (
 	"context"
+	"os"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -19,11 +21,15 @@ func TestFiniteDetachedProvider_L3(t *testing.T) {
 	}
 	// Wrapper exit is deliberately not provider-turn absence. The real orphan
 	// retains the run markers and waits for a test-controlled release.
+	startedPath := spec.Harness.Env[2][len(fixtureStartedEnv)+1:]
 	observation, err := InspectRun(ctx, spec.RunID, spec.ProcessToken)
 	if err != nil || observation.Liveness != LivenessLive || observation.Supervisor != nil || len(observation.Processes) == 0 {
-		t.Fatalf("detached provider boundary = %#v, %v; want provider-only live observation", observation, err)
+		pidText, _ := os.ReadFile(startedPath)
+		pid, _ := strconv.Atoi(string(pidText))
+		providerIdentity, providerErr := IdentifyProcess(pid, spec.RunID, spec.ProcessToken)
+		t.Fatalf("detached provider boundary = %#v, %v; provider identity = %#v, %v; want provider-only live observation", observation, err, providerIdentity, providerErr)
 	}
-	if !fileExists(spec.Harness.Env[2][len(fixtureStartedEnv)+1:]) {
+	if !fileExists(startedPath) {
 		t.Fatal("detached fake provider did not execute")
 	}
 	state, err := StopRun(ctx, spec.RunID, spec.ProcessToken, 25*time.Millisecond)

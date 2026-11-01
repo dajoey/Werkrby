@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,10 +19,15 @@ import (
 
 const processBoundarySupported = true
 
-const jobObjectQuery = 0x0004
+const (
+	jobObjectAssignProcess  = 0x0001
+	jobObjectQuery          = 0x0004
+	windowsErrorPartialCopy = 299
+)
 
 var (
 	openJobObjectW     = windows.NewLazySystemDLL("kernel32.dll").NewProc("OpenJobObjectW")
+	isProcessInJobW    = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
 	commandLineToArgvW = windows.NewLazySystemDLL("shell32.dll").NewProc("CommandLineToArgvW")
 )
 
@@ -45,9 +51,10 @@ func newSupervisorLaunch(command *exec.Cmd, token string) (supervisorLaunch, err
 	// No BREAKAWAY or SILENT_BREAKAWAY limit is enabled. The job also
 	// deliberately does not use KILL_ON_JOB_CLOSE: provider-only recovery after
 	// wrapper exit must remain observable instead of being hidden by job teardown.
+	// Go inherits only the explicitly configured stdio handles here. The owner
+	// lock remains non-inheritable through its own HANDLE_FLAG_INHERIT setting.
 	command.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags:    windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED,
-		NoInheritHandles: true,
+		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_SUSPENDED,
 	}
 	return &windowsSupervisorLaunch{job: job}, nil
 }
@@ -74,11 +81,46 @@ func (l *windowsSupervisorLaunch) Close() error {
 }
 
 func openSupervisorContainment(token string) (supervisorContainment, error) {
-	job, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery)
+	assignment, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery|jobObjectAssignProcess)
 	if err != nil {
+		return nil, fmt.Errorf("open supervisor job containment: %w", err)
+	}
+	if err := ensureWindowsProcessInJob(assignment); err != nil {
+		_ = windows.CloseHandle(assignment)
+		return nil, fmt.Errorf("join supervisor job containment: %w", err)
+	}
+	if err := windows.CloseHandle(assignment); err != nil {
 		return nil, err
 	}
+	job, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery)
+	if err != nil {
+		return nil, fmt.Errorf("open supervisor job containment: %w", err)
+	}
+	// Provider descendants inherit only this query-right handle. Their live
+	// handle keeps the named recovery object observable after the supervisor
+	// and owner exit; the last provider exit makes reliable absence possible.
+	if err := windows.SetHandleInformation(job, windows.HANDLE_FLAG_INHERIT, windows.HANDLE_FLAG_INHERIT); err != nil {
+		_ = windows.CloseHandle(job)
+		return nil, fmt.Errorf("make supervisor job containment inheritable: %w", err)
+	}
 	return &windowsSupervisorContainment{job: job}, nil
+}
+
+func ensureWindowsProcessInJob(job windows.Handle) error {
+	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(os.Getpid()))
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(process)
+	var inJob int32
+	result, _, callErr := isProcessInJobW.Call(uintptr(process), uintptr(job), uintptr(unsafe.Pointer(&inJob)))
+	if result == 0 {
+		return callErr
+	}
+	if inJob != 0 {
+		return nil
+	}
+	return windows.AssignProcessToJobObject(job, process)
 }
 
 func (c *windowsSupervisorContainment) Close() error {
@@ -132,7 +174,7 @@ func resumeWindowsSupervisor(pid uint32) error {
 }
 
 func identifyProcess(pid int, runID int64, token string) (ProcessIdentity, error) {
-	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(pid))
 	if windowsProcessOpenGone(err) {
 		return ProcessIdentity{}, os.ErrProcessDone
 	}
@@ -151,59 +193,137 @@ func inspectRun(ctx context.Context, runID int64, token string) (RunProcesses, e
 	unknown := func(err error) (RunProcesses, error) {
 		return RunProcesses{Liveness: LivenessUnknown}, err
 	}
-	job, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery)
-	if errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
-		return RunProcesses{Liveness: LivenessAbsent}, nil
-	}
-	if err != nil {
-		return unknown(err)
-	}
-	defer windows.CloseHandle(job)
-	pids, err := windowsJobProcessIDs(job)
-	if err != nil {
-		return unknown(err)
-	}
 	observation := RunProcesses{Liveness: LivenessAbsent}
-	for _, pid := range pids {
-		if err := ctx.Err(); err != nil {
+	seen := map[ProcessIdentity]struct{}{}
+	addProcess := func(identity ProcessIdentity, supervisor bool) error {
+		if supervisor {
+			if observation.Supervisor != nil && !observation.Supervisor.Equal(identity) {
+				return ErrDuplicateSupervisor
+			}
+			matched := identity
+			observation.Supervisor = &matched
+		}
+		if _, exists := seen[identity]; !exists {
+			seen[identity] = struct{}{}
+			observation.Processes = append(observation.Processes, identity)
+		}
+		return nil
+	}
+	job, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery)
+	if err == nil {
+		defer windows.CloseHandle(job)
+		pids, err := windowsJobProcessIDs(job)
+		if err != nil {
 			return unknown(err)
 		}
-		identity, err := identifyProcess(int(pid), runID, token)
-		if errors.Is(err, os.ErrProcessDone) {
-			continue
-		}
-		if err != nil {
-			return unknown(fmt.Errorf("inspect job PID %d: %w", pid, err))
-		}
-		args, err := readWindowsCommandLine(int(pid))
-		if errors.Is(err, os.ErrProcessDone) {
-			continue
-		}
-		if err != nil {
-			return unknown(fmt.Errorf("read job PID %d command line: %w", pid, err))
-		}
-		if len(args) >= 2 && args[1] == "supervise" {
-			binding, err := parseSupervisorArgs(args[1:])
+		for _, pid := range pids {
+			if err := ctx.Err(); err != nil {
+				return unknown(err)
+			}
+			identity, err := identifyProcess(int(pid), runID, token)
+			if errors.Is(err, os.ErrProcessDone) {
+				continue
+			}
+			if err != nil {
+				return unknown(fmt.Errorf("inspect job PID %d: %w", pid, err))
+			}
+			args, err := readWindowsCommandLine(int(pid))
+			if errors.Is(err, os.ErrProcessDone) {
+				continue
+			}
+			if err != nil {
+				return unknown(fmt.Errorf("read job PID %d command line: %w", pid, err))
+			}
+			supervisor, err := windowsExactSupervisor(args, runID, token)
 			if err != nil {
 				return unknown(err)
 			}
-			if binding.runID == runID && binding.token != token || binding.token == token && binding.runID != runID {
-				return unknown(ErrProcessTokenMismatch)
-			}
-			if binding.runID == runID && binding.token == token {
-				if observation.Supervisor != nil {
-					return unknown(ErrDuplicateSupervisor)
-				}
-				supervisor := identity
-				observation.Supervisor = &supervisor
+			if err := addProcess(identity, supervisor); err != nil {
+				return unknown(err)
 			}
 		}
-		observation.Processes = append(observation.Processes, identity)
+	} else if !errors.Is(err, windows.ERROR_FILE_NOT_FOUND) {
+		return unknown(err)
+	}
+	wrappers, err := windowsSupervisorProcesses(ctx, runID, token)
+	if err != nil {
+		return unknown(err)
+	}
+	for _, identity := range wrappers {
+		if err := addProcess(identity, true); err != nil {
+			return unknown(err)
+		}
 	}
 	if len(observation.Processes) != 0 {
 		observation.Liveness = LivenessLive
 	}
 	return observation, nil
+}
+
+func windowsExactSupervisor(args []string, runID int64, token string) (bool, error) {
+	if len(args) < 2 || args[1] != "supervise" {
+		return false, nil
+	}
+	binding, err := parseSupervisorArgs(args[1:])
+	if err != nil {
+		return false, err
+	}
+	if binding.runID == runID && binding.token != token || binding.token == token && binding.runID != runID {
+		return false, ErrProcessTokenMismatch
+	}
+	return binding.runID == runID && binding.token == token, nil
+}
+
+func windowsSupervisorProcesses(ctx context.Context, runID int64, token string) ([]ProcessIdentity, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	base := filepath.Base(executable)
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer windows.CloseHandle(snapshot)
+	entry := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
+	var identities []ProcessIdentity
+	for err := windows.Process32First(snapshot, &entry); ; err = windows.Process32Next(snapshot, &entry) {
+		if err != nil {
+			if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+				break
+			}
+			return nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if !strings.EqualFold(windows.UTF16ToString(entry.ExeFile[:]), base) {
+			continue
+		}
+		pid := int(entry.ProcessID)
+		identity, err := identifyProcess(pid, runID, token)
+		if errors.Is(err, os.ErrProcessDone) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect supervisor candidate PID %d: %w", pid, err)
+		}
+		args, err := readWindowsCommandLine(pid)
+		if errors.Is(err, os.ErrProcessDone) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read supervisor candidate PID %d command line: %w", pid, err)
+		}
+		supervisor, err := windowsExactSupervisor(args, runID, token)
+		if err != nil {
+			return nil, err
+		}
+		if supervisor {
+			identities = append(identities, identity)
+		}
+	}
+	return identities, nil
 }
 
 func windowsJobProcessIDs(job windows.Handle) ([]uint32, error) {
@@ -236,7 +356,7 @@ func windowsJobProcessIDs(job windows.Handle) ([]uint32, error) {
 }
 
 func readWindowsCommandLine(pid int) ([]string, error) {
-	process, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_VM_READ, false, uint32(pid))
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_VM_READ|windows.SYNCHRONIZE, false, uint32(pid))
 	if windowsProcessOpenGone(err) {
 		return nil, os.ErrProcessDone
 	}
@@ -259,7 +379,13 @@ func readWindowsCommandLine(pid int) ([]string, error) {
 	}
 	commandLine := parameters.CommandLine
 	if commandLine.Length == 0 {
-		return nil, nil
+		event, waitErr := windows.WaitForSingleObject(process, 0)
+		if waitErr == nil && event == windows.WAIT_OBJECT_0 {
+			return nil, os.ErrProcessDone
+		}
+		// Early process initialization can expose an empty command line before
+		// the supervisor protocol has opened its job. That is never absence.
+		return nil, fmt.Errorf("live process command line is not initialized")
 	}
 	if commandLine.Length > 64*1024-2 || commandLine.Length%2 != 0 || commandLine.Buffer == nil {
 		return nil, fmt.Errorf("invalid Windows command-line length %d", commandLine.Length)
@@ -305,13 +431,25 @@ func readWindowsMemory(process windows.Handle, address uintptr, destination unsa
 }
 
 func windowsCommandLineReadError(process windows.Handle, err error) error {
-	event, waitErr := windows.WaitForSingleObject(process, 0)
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return err
+	}
+	waitMilliseconds := uint32(0)
+	if errors.Is(err, windows.Errno(windowsErrorPartialCopy)) {
+		// An exiting process can tear down its address space after the job list
+		// is read. Wait briefly for confirmed exit; a live unreadable process
+		// remains an explicit discovery error.
+		waitMilliseconds = 25
+	}
+	event, waitErr := windows.WaitForSingleObject(process, waitMilliseconds)
 	if waitErr == nil && event == windows.WAIT_OBJECT_0 {
 		return os.ErrProcessDone
 	}
 	return err
 }
 
+// windowsProcessStart requires a handle opened with SYNCHRONIZE and
+// PROCESS_QUERY_LIMITED_INFORMATION. The wait right is separate from query.
 func windowsProcessStart(process windows.Handle) (string, error) {
 	event, err := windows.WaitForSingleObject(process, 0)
 	if err != nil {
@@ -336,7 +474,7 @@ func signalProcess(identity ProcessIdentity, _ bool) error {
 	if identity.PID <= 0 || !strings.HasPrefix(identity.Start, "windows:") {
 		return ErrProcessIdentityMismatch
 	}
-	process, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(identity.PID))
+	process, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(identity.PID))
 	if windowsProcessOpenGone(err) {
 		return os.ErrProcessDone
 	}
