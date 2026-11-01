@@ -210,6 +210,19 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		if failureReason != "" {
 			audit["failure_reason"] = failureReason
 		}
+		if result != nil {
+			// A bounded digest so later runs of the task can be told what this
+			// run concluded; the full result stays in the run directory.
+			audit["phase"] = run.Phase
+			audit["progress"] = clipRunes(result.Progress, historyProgressRunes)
+			if len(result.Findings) != 0 {
+				findings := make([]string, 0, len(result.Findings))
+				for _, finding := range result.Findings {
+					findings = append(findings, clipRunes(finding, historyFindingRunes))
+				}
+				audit["findings"] = findings
+			}
+		}
 		auditPayload, _ := json.Marshal(audit)
 		eventID := fmt.Sprintf("run:%d:settled", run.ID)
 		if err := insertTaskEvent(ctx, tx, eventID, task.ID, &run.ID, "settled", task.State,
@@ -626,7 +639,18 @@ func (s *Store) completeWait(ctx context.Context, taskID string, expectedVersion
 		if joey {
 			kind = "answered"
 		}
-		payload, _ := json.Marshal(map[string]any{"option_id": optionID})
+		answer := map[string]any{"option_id": optionID}
+		if joey {
+			if ask, err := decodeJoeyAsk([]byte(task.JoeyAskJSON)); err == nil {
+				answer["question"] = ask.Question
+				for _, option := range ask.Options {
+					if option.ID == optionID {
+						answer["label"] = option.Label
+					}
+				}
+			}
+		}
+		payload, _ := json.Marshal(answer)
 		eventID := fmt.Sprintf("task:%s:v%d:%s", task.ID, newVersion, kind)
 		if err := insertTaskEvent(ctx, tx, eventID, task.ID, nil, kind, task.State, next, newVersion, payload, stamp(now)); err != nil {
 			return err

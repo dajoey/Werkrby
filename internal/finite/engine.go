@@ -215,6 +215,13 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 	}
 	sessionKey := fmt.Sprintf("finite:%s:%s", task.ID, phase)
 	dynamic := fmt.Sprintf("TASK BRIEF\ntitle: %s\n\n%s", task.Title, brief)
+	history, err := e.store.TaskHistory(ctx, task.ID)
+	if err != nil {
+		return fmt.Errorf("finite: read task history for dispatch: %w", err)
+	}
+	if history != "" {
+		dynamic += "\n\nTASK HISTORY (earlier runs of this task, oldest first; act on Joey's answers and fix every review finding)\n" + history + "\n"
+	}
 	promptRequest := PromptRequest{
 		TaskID: task.ID, RunID: 1, Phase: phase, Domains: e.opts.Domains,
 		Dynamic: dynamic,
@@ -250,7 +257,6 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 		}
 		promptRequest.RunID = run.ID
 		promptRequest.RunDir = run.RunDir
-		promptRequest.ProcessToken = token
 		prompt, buildErr := BuildPrompt(promptRequest)
 		if buildErr != nil {
 			return buildErr
