@@ -14,3 +14,9 @@ func configureHeadlessProcess(cmd *exec.Cmd) {
 	cmd.Cancel = func() error { return cmd.Process.Kill() }
 	cmd.WaitDelay = 10 * time.Second
 }
+
+// configureBoundedHeadlessProcess matches configureHeadlessProcess on Windows;
+// the finite supervisor's Job Object is the run boundary there.
+func configureBoundedHeadlessProcess(cmd *exec.Cmd) {
+	configureHeadlessProcess(cmd)
+}

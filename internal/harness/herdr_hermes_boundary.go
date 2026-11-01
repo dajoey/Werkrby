@@ -180,7 +180,7 @@ func (h *Herdr) sendHeadlessHermesRunBoundary(ctx context.Context, key, prompt, 
 	cmd := exec.CommandContext(procContext, command, args...)
 	cmd.Dir = cfg.Cwd
 	cmd.Env = headlessChildEnv(os.Environ())
-	configureHeadlessProcess(cmd)
+	configureBoundedHeadlessProcess(cmd)
 	stderr := newTailBuffer(64 * 1024)
 	cmd.Stderr = stderr
 	stdout, err := cmd.StdoutPipe()

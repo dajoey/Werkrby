@@ -123,8 +123,9 @@ func TestHerdrHeadlessHermesClientExitIsNotProviderTurnAbsence(t *testing.T) {
 		returned <- err
 	}()
 	// The boundary publishes its metadata asynchronously; under -race and host
-	// load that can take well over a fixed sleep. Poll for the exact live
-	// admission, failing only if the turn returns first or the deadline passes.
+	// load that can take well over a fixed sleep. Poll until the client has
+	// exited and the exact admission still reads live, failing if the turn
+	// returns first or the deadline passes.
 	var observation HermesBoundaryObservation
 	var err error
 	deadline := time.Now().Add(5 * time.Second)
@@ -135,7 +136,13 @@ func TestHerdrHeadlessHermesClientExitIsNotProviderTurnAbsence(t *testing.T) {
 		case <-time.After(25 * time.Millisecond):
 		}
 		observation, err = InspectHermesRunBoundary(context.Background(), f.spec)
-		if err == nil && observation.Liveness == BoundaryLive || time.Now().After(deadline) {
+		// The point of the test is the window after the client has exited:
+		// wait until the boundary records that exit and still reads live.
+		clientExited := false
+		if meta, _, metaErr := readHermesBoundaryMetadata(f.spec); metaErr == nil {
+			clientExited = meta.ClientExited
+		}
+		if err == nil && observation.Liveness == BoundaryLive && clientExited || time.Now().After(deadline) {
 			break
 		}
 	}
