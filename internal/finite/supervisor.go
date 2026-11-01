@@ -155,16 +155,6 @@ func StartSupervisor(ctx context.Context, spec SupervisorSpec) (*SupervisorHandl
 		_ = logFile.Close()
 		return nil, err
 	}
-	// Windows creates the supervisor suspended. Capture its immutable start
-	// identity before job assignment and resume can change handle visibility or
-	// allow a short-lived child to exit.
-	identity, err := IdentifyProcess(command.Process.Pid, spec.RunID, spec.ProcessToken)
-	if err != nil {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		_ = logFile.Close()
-		return nil, fmt.Errorf("identify started supervisor: %w", err)
-	}
 	if err := launch.Started(command); err != nil {
 		_ = command.Process.Kill()
 		_ = command.Wait()
@@ -178,6 +168,13 @@ func StartSupervisor(ctx context.Context, spec SupervisorSpec) (*SupervisorHandl
 		return nil, err
 	}
 	launchOpen = false
+	identity, err := IdentifyProcess(command.Process.Pid, spec.RunID, spec.ProcessToken)
+	if err != nil {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		_ = logFile.Close()
+		return nil, fmt.Errorf("identify started supervisor: %w", err)
+	}
 	handle := &SupervisorHandle{Identity: identity, done: make(chan struct{})}
 	go func() {
 		handle.waitErr = command.Wait()

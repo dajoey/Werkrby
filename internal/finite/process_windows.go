@@ -132,7 +132,7 @@ func resumeWindowsSupervisor(pid uint32) error {
 }
 
 func identifyProcess(pid int, runID int64, token string) (ProcessIdentity, error) {
-	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(pid))
 	if windowsProcessOpenGone(err) {
 		return ProcessIdentity{}, os.ErrProcessDone
 	}
@@ -236,7 +236,7 @@ func windowsJobProcessIDs(job windows.Handle) ([]uint32, error) {
 }
 
 func readWindowsCommandLine(pid int) ([]string, error) {
-	process, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_VM_READ, false, uint32(pid))
+	process, err := windows.OpenProcess(windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_VM_READ|windows.SYNCHRONIZE, false, uint32(pid))
 	if windowsProcessOpenGone(err) {
 		return nil, os.ErrProcessDone
 	}
@@ -312,6 +312,8 @@ func windowsCommandLineReadError(process windows.Handle, err error) error {
 	return err
 }
 
+// windowsProcessStart requires a handle opened with SYNCHRONIZE and
+// PROCESS_QUERY_LIMITED_INFORMATION. The wait right is separate from query.
 func windowsProcessStart(process windows.Handle) (string, error) {
 	event, err := windows.WaitForSingleObject(process, 0)
 	if err != nil {
@@ -336,7 +338,7 @@ func signalProcess(identity ProcessIdentity, _ bool) error {
 	if identity.PID <= 0 || !strings.HasPrefix(identity.Start, "windows:") {
 		return ErrProcessIdentityMismatch
 	}
-	process, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(identity.PID))
+	process, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.SYNCHRONIZE, false, uint32(identity.PID))
 	if windowsProcessOpenGone(err) {
 		return os.ErrProcessDone
 	}
