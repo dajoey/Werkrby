@@ -97,8 +97,24 @@ func (e *Engine) recoverRun(ctx context.Context, run Run) error {
 		if err := e.persistStarted(ctx, run, identity); err != nil {
 			return err
 		}
-		e.watchAdopted(run.ID, adopted)
-		return nil
+		if result == nil || resultErr != nil {
+			e.watchAdopted(run.ID, adopted)
+			return nil
+		}
+		execution, err := readRecoveredExecution(run)
+		if err != nil {
+			return err
+		}
+		if execution == nil {
+			e.watchAdopted(run.ID, adopted)
+			return nil
+		}
+		// A completed provider turn can finish between adoption and this scan.
+		// Wait for actual boundary absence now instead of depending on another
+		// scheduler pass to settle the original run.
+		if err := adopted.Wait(ctx); err != nil {
+			return err
+		}
 	case LivenessAbsent:
 		// Settlement is permitted only after the whole run boundary is absent.
 	default:
