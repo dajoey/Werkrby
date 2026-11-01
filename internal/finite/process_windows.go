@@ -18,10 +18,15 @@ import (
 
 const processBoundarySupported = true
 
-const jobObjectQuery = 0x0004
+const (
+	jobObjectAssignProcess  = 0x0001
+	jobObjectQuery          = 0x0004
+	windowsErrorPartialCopy = 299
+)
 
 var (
 	openJobObjectW     = windows.NewLazySystemDLL("kernel32.dll").NewProc("OpenJobObjectW")
+	isProcessInJobW    = windows.NewLazySystemDLL("kernel32.dll").NewProc("IsProcessInJob")
 	commandLineToArgvW = windows.NewLazySystemDLL("shell32.dll").NewProc("CommandLineToArgvW")
 )
 
@@ -75,6 +80,17 @@ func (l *windowsSupervisorLaunch) Close() error {
 }
 
 func openSupervisorContainment(token string) (supervisorContainment, error) {
+	assignment, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery|jobObjectAssignProcess)
+	if err != nil {
+		return nil, fmt.Errorf("open supervisor job containment: %w", err)
+	}
+	if err := ensureWindowsProcessInJob(assignment); err != nil {
+		_ = windows.CloseHandle(assignment)
+		return nil, fmt.Errorf("join supervisor job containment: %w", err)
+	}
+	if err := windows.CloseHandle(assignment); err != nil {
+		return nil, err
+	}
 	job, err := openWindowsJob(finiteJobObjectName(token), jobObjectQuery)
 	if err != nil {
 		return nil, fmt.Errorf("open supervisor job containment: %w", err)
@@ -87,6 +103,23 @@ func openSupervisorContainment(token string) (supervisorContainment, error) {
 		return nil, fmt.Errorf("make supervisor job containment inheritable: %w", err)
 	}
 	return &windowsSupervisorContainment{job: job}, nil
+}
+
+func ensureWindowsProcessInJob(job windows.Handle) error {
+	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(os.Getpid()))
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(process)
+	var inJob int32
+	result, _, callErr := isProcessInJobW.Call(uintptr(process), uintptr(job), uintptr(unsafe.Pointer(&inJob)))
+	if result == 0 {
+		return callErr
+	}
+	if inJob != 0 {
+		return nil
+	}
+	return windows.AssignProcessToJobObject(job, process)
 }
 
 func (c *windowsSupervisorContainment) Close() error {
@@ -313,7 +346,17 @@ func readWindowsMemory(process windows.Handle, address uintptr, destination unsa
 }
 
 func windowsCommandLineReadError(process windows.Handle, err error) error {
-	event, waitErr := windows.WaitForSingleObject(process, 0)
+	if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+		return err
+	}
+	waitMilliseconds := uint32(0)
+	if errors.Is(err, windows.Errno(windowsErrorPartialCopy)) {
+		// An exiting process can tear down its address space after the job list
+		// is read. Wait briefly for confirmed exit; a live unreadable process
+		// remains an explicit discovery error.
+		waitMilliseconds = 25
+	}
+	event, waitErr := windows.WaitForSingleObject(process, waitMilliseconds)
 	if waitErr == nil && event == windows.WAIT_OBJECT_0 {
 		return os.ErrProcessDone
 	}
