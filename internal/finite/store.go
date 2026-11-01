@@ -408,7 +408,12 @@ func (s *Store) CheckInvariants(ctx context.Context) error {
 	return rows.Err()
 }
 
-func stamp(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }
+// stampLayout is fixed width so SQLite text comparison and ordering of stored
+// timestamps equal time order. RFC3339Nano drops trailing zero digits, which
+// sorts a whole second after a later fraction of the same second.
+const stampLayout = "2006-01-02T15:04:05.000000000Z"
+
+func stamp(value time.Time) string { return value.UTC().Format(stampLayout) }
 
 func nullString(value string) any {
 	if value == "" {
