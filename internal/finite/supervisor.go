@@ -161,13 +161,6 @@ func StartSupervisor(ctx context.Context, spec SupervisorSpec) (*SupervisorHandl
 		_ = logFile.Close()
 		return nil, err
 	}
-	if err := launch.Close(); err != nil {
-		_ = command.Process.Kill()
-		_ = command.Wait()
-		_ = logFile.Close()
-		return nil, err
-	}
-	launchOpen = false
 	identity, err := IdentifyProcess(command.Process.Pid, spec.RunID, spec.ProcessToken)
 	if err != nil {
 		_ = command.Process.Kill()
@@ -176,8 +169,12 @@ func StartSupervisor(ctx context.Context, spec SupervisorSpec) (*SupervisorHandl
 		return nil, fmt.Errorf("identify started supervisor: %w", err)
 	}
 	handle := &SupervisorHandle{Identity: identity, done: make(chan struct{})}
+	// Transfer the platform launch handle to the waiter. In particular, the
+	// Windows owner keeps its named job handle alive until the child has exited;
+	// the child's own containment handle covers owner-crash recovery.
+	launchOpen = false
 	go func() {
-		handle.waitErr = command.Wait()
+		handle.waitErr = errors.Join(command.Wait(), launch.Close())
 		_ = logFile.Close()
 		close(handle.done)
 	}()
