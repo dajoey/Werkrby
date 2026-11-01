@@ -3,6 +3,8 @@ package finite
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -45,7 +47,7 @@ func configureFiniteHermesOwner(engine *Engine, provider harness.HarnessConfig) 
 		if runErr != nil {
 			return RunProcesses{Liveness: LivenessUnknown}, runErr
 		}
-		provider, providerErr := harness.InspectHermesRunBoundary(ctx, harness.RunBoundarySpec{RunID: runID, ProcessToken: token, RunDir: run.RunDir})
+		provider, providerErr := inspectFiniteHermesRecovery(ctx, run)
 		if processErr != nil || providerErr != nil {
 			return RunProcesses{Liveness: LivenessUnknown, Supervisor: processes.Supervisor, Processes: processes.Processes}, errors.Join(processErr, providerErr)
 		}
@@ -60,7 +62,11 @@ func configureFiniteHermesOwner(engine *Engine, provider harness.HarnessConfig) 
 		if runErr != nil {
 			return LivenessUnknown, runErr
 		}
-		providerState, providerErr := harness.StopHermesRunBoundary(ctx, harness.RunBoundarySpec{RunID: runID, ProcessToken: token, RunDir: run.RunDir})
+		observation, providerErr := inspectFiniteHermesRecovery(ctx, run)
+		providerState := observation.Liveness
+		if providerErr == nil && providerState == harness.BoundaryLive {
+			providerState, providerErr = harness.StopHermesRunBoundary(ctx, harness.RunBoundarySpec{RunID: runID, ProcessToken: token, RunDir: run.RunDir})
+		}
 		if processErr != nil || providerErr != nil {
 			return LivenessUnknown, errors.Join(processErr, providerErr)
 		}
@@ -72,4 +78,40 @@ func configureFiniteHermesOwner(engine *Engine, provider harness.HarnessConfig) 
 		}
 		return LivenessUnknown, ErrProcessUnknown
 	}
+}
+
+// inspectFiniteHermesRecovery distinguishes never-admitted terminal runs from
+// missing evidence after admission. No supervisor start record proves no client
+// was created. With a start record, valid terminal artifacts plus no exact
+// admission prove a terminal pre-admission failure; everything else fails closed.
+func inspectFiniteHermesRecovery(ctx context.Context, run Run) (harness.HermesBoundaryObservation, error) {
+	spec := harness.RunBoundarySpec{RunID: run.ID, ProcessToken: run.ProcessToken, RunDir: run.RunDir}
+	_, err := os.Lstat(filepath.Join(run.RunDir, "hermes-provider.json"))
+	if err == nil {
+		return harness.InspectHermesRunBoundary(ctx, spec)
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return harness.HermesBoundaryObservation{Liveness: harness.BoundaryUnknown}, err
+	}
+	admitted, err := harness.HermesRunHasAdmission(ctx, spec)
+	if err != nil {
+		return harness.HermesBoundaryObservation{Liveness: harness.BoundaryUnknown}, err
+	}
+	if admitted {
+		return harness.HermesBoundaryObservation{Liveness: harness.BoundaryUnknown}, fmt.Errorf("hermes-provider.json is missing after an exact admission")
+	}
+	if _, err := os.Lstat(filepath.Join(run.RunDir, "supervisor-started.json")); errors.Is(err, os.ErrNotExist) {
+		return harness.HermesBoundaryObservation{Liveness: harness.BoundaryAbsent}, nil
+	} else if err != nil {
+		return harness.HermesBoundaryObservation{Liveness: harness.BoundaryUnknown}, err
+	}
+	execution, err := readRecoveredExecution(run)
+	if err != nil {
+		return harness.HermesBoundaryObservation{Liveness: harness.BoundaryUnknown}, err
+	}
+	_, resultErr, resultPresent := readRecoveredResult(run)
+	if execution == nil && (!resultPresent || resultErr != nil) {
+		return harness.HermesBoundaryObservation{Liveness: harness.BoundaryUnknown}, fmt.Errorf("no terminal evidence proves a never-admitted run")
+	}
+	return harness.HermesBoundaryObservation{Liveness: harness.BoundaryAbsent}, nil
 }
