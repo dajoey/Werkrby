@@ -147,8 +147,13 @@ func validateDisposableHermesHome(home, profile string) error {
 	if err != nil {
 		return err
 	}
-	if string(data) != profile+"\n" {
-		return fmt.Errorf("finite Hermes disposable marker does not match profile %s", profile)
+	// The marker lists every profile this home admits, one per line.
+	listed := false
+	for _, line := range strings.Split(string(data), "\n") {
+		listed = listed || line == profile
+	}
+	if !listed || !strings.HasSuffix(string(data), "\n") {
+		return fmt.Errorf("finite Hermes disposable marker does not list profile %s", profile)
 	}
 	return nil
 }

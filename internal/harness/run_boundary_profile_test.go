@@ -33,6 +33,15 @@ func TestFiniteHermesProfileFence(t *testing.T) {
 	if err := validateDisposableHermesHome(home, "wk-finite-impl"); err == nil {
 		t.Error("a marker naming another profile admitted this one")
 	}
+	write("wk-finite-code\nwk-finite-media")
+	for _, profile := range []string{"wk-finite-code", "wk-finite-media"} {
+		if err := validateDisposableHermesHome(home, profile); err != nil {
+			t.Errorf("profile %q listed in a multi-profile marker was refused: %v", profile, err)
+		}
+	}
+	if err := validateDisposableHermesHome(home, "wk-finite-ops"); err == nil {
+		t.Error("a profile missing from the multi-profile marker was admitted")
+	}
 	userHome, err := os.UserHomeDir()
 	if err == nil {
 		if err := validateDisposableHermesHome(filepath.Join(userHome, ".hermes"), "wk-finite"); err == nil {
