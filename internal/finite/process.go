@@ -58,8 +58,9 @@ func (id ProcessIdentity) Equal(other ProcessIdentity) bool {
 
 // RunProcesses is one complete run-boundary observation. Supervisor is nil
 // when only provider processes remain. Processes includes the supervisor and
-// every discovered provider process, including members of the supervisor's
-// process group.
+// every discovered provider process. On Linux, members of the supervisor's
+// process group are enumerated once the supervisor is gone; while it lives
+// the run is live and stop signals reach its whole group at once.
 type RunProcesses struct {
 	Liveness   Liveness
 	Supervisor *ProcessIdentity
@@ -140,8 +141,8 @@ type RunBoundary struct {
 
 const (
 	// processRescanInterval spaces complete process scans in wait and stop
-	// loops.
-	processRescanInterval = 25 * time.Millisecond
+	// loops; one scan reads /proc for every process on the host.
+	processRescanInterval = 250 * time.Millisecond
 	// processGroupProbeInterval spaces the single-syscall process-group probe
 	// that lets a stop loop rescan as soon as the run's group is gone.
 	processGroupProbeInterval = 25 * time.Millisecond
@@ -193,19 +194,33 @@ func normalizeRunBoundary(boundary RunBoundary) (RunBoundary, error) {
 	return boundary, nil
 }
 
-// AdoptRun accepts only an exact run/token/PID/start match.
+// AdoptRun accepts only an exact run/token/PID/start match of a live
+// supervisor. Callers scan the complete boundary first; adoption itself
+// verifies the one supervisor generation it monitors.
 func AdoptRun(ctx context.Context, expected ProcessIdentity) (*AdoptedRun, error) {
 	if expected.Start == "" || expected.PID <= 0 {
 		return nil, ErrProcessIdentityMismatch
 	}
-	observation, err := InspectRunBoundary(ctx, adoptedBoundary(expected))
-	if err != nil {
+	if err := validateRunBinding(expected.RunID, expected.Token); err != nil {
 		return nil, err
 	}
-	if observation.Liveness != LivenessLive || observation.Supervisor == nil || !observation.Supervisor.Equal(expected) {
-		return nil, ErrProcessIdentityMismatch
+	if err := verifyLiveSupervisor(ctx, expected); err != nil {
+		return nil, err
 	}
 	return &AdoptedRun{expected: expected}, nil
+}
+
+// verifyLiveSupervisorByScan is the portable adoption check: one complete
+// scan that must observe exactly the expected supervisor.
+func verifyLiveSupervisorByScan(ctx context.Context, expected ProcessIdentity) error {
+	observation, err := InspectRunBoundary(ctx, adoptedBoundary(expected))
+	if err != nil {
+		return err
+	}
+	if observation.Liveness != LivenessLive || observation.Supervisor == nil || !observation.Supervisor.Equal(expected) {
+		return ErrProcessIdentityMismatch
+	}
+	return nil
 }
 
 func adoptedBoundary(expected ProcessIdentity) RunBoundary {
@@ -218,6 +233,11 @@ func adoptedBoundary(expected ProcessIdentity) RunBoundary {
 func (a *AdoptedRun) Wait(ctx context.Context) error {
 	boundary := adoptedBoundary(a.expected)
 	for {
+		// While the exact supervisor generation lives the boundary is live;
+		// wait for its exit instead of rescanning every process.
+		if err := waitForSupervisorExit(ctx, a.expected); err != nil {
+			return err
+		}
 		observation, err := InspectRunBoundary(ctx, boundary)
 		if err != nil {
 			return err

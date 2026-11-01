@@ -93,10 +93,12 @@ type linuxSupervisorMatch struct {
 }
 
 // inspectRunBoundary performs one complete /proc scan. Processes of other
-// users are skipped after one fstatat; for the rest, /proc/<pid>/stat gives
-// the process group and start generation, and argv is interpreted only when
-// /proc/<pid>/exe is the finite executable or the PID is the recorded
-// supervisor's.
+// users are skipped after one fstatat. For the rest, /proc/<pid>/exe decides
+// whether argv is interpreted: only the finite executable (and the recorded
+// supervisor PID) can be a supervisor or marked provider. While the run's
+// supervisor lives, the run is live and its whole process group is signalled
+// as one, so group members are enumerated from /proc/<pid>/stat only once the
+// supervisor is gone.
 func inspectRunBoundary(ctx context.Context, boundary RunBoundary) (RunProcesses, error) {
 	unknown := func(err error) (RunProcesses, error) {
 		return RunProcesses{Liveness: LivenessUnknown}, err
@@ -118,6 +120,7 @@ func inspectRunBoundary(ctx context.Context, boundary RunBoundary) (RunProcesses
 
 	var recorded linuxRecordedProcess
 	var processes []*linuxProcess
+	var deferred []string
 	for _, name := range names {
 		if err := ctx.Err(); err != nil {
 			return unknown(err)
@@ -140,6 +143,14 @@ func inspectRunBoundary(ctx context.Context, boundary RunBoundary) (RunProcesses
 			}
 			continue
 		}
+		finite, err := linuxRunsExecutable(procFD, name, executables)
+		if err != nil {
+			return unknown(fmt.Errorf("inspect PID %d executable: %w", pid, err))
+		}
+		if !finite && !isRecorded {
+			deferred = append(deferred, name)
+			continue
+		}
 		process, err := readLinuxStatAt(procFD, name+"/stat", pid)
 		if errors.Is(err, errLinuxProcessGone) {
 			continue
@@ -147,18 +158,11 @@ func inspectRunBoundary(ctx context.Context, boundary RunBoundary) (RunProcesses
 		if err != nil {
 			return unknown(fmt.Errorf("inspect PID %d: %w", pid, err))
 		}
+		process.finite = finite
 		if isRecorded {
 			recorded = linuxRecordedProcess{present: true, process: process}
 		}
 		if process.zombie() {
-			continue
-		}
-		process.finite, err = linuxRunsExecutable(procFD, name, executables)
-		if err != nil {
-			return unknown(fmt.Errorf("inspect PID %d executable: %w", pid, err))
-		}
-		if !process.finite && !isRecorded {
-			processes = append(processes, process)
 			continue
 		}
 		process.args, err = readLinuxCmdline(pid)
@@ -268,6 +272,25 @@ func inspectRunBoundary(ctx context.Context, boundary RunBoundary) (RunProcesses
 		group = 0
 	}
 	minimumStart := linuxStartTicks(recordedStart)
+	if group > 0 && supervisor == nil {
+		// The supervisor is gone: the run is whatever remains of its group.
+		for _, name := range deferred {
+			if err := ctx.Err(); err != nil {
+				return unknown(err)
+			}
+			pid, _ := strconv.Atoi(name)
+			process, err := readLinuxStatAt(procFD, name+"/stat", pid)
+			if errors.Is(err, errLinuxProcessGone) {
+				continue
+			}
+			if err != nil {
+				return unknown(fmt.Errorf("inspect PID %d: %w", pid, err))
+			}
+			if !process.zombie() {
+				processes = append(processes, process)
+			}
+		}
+	}
 
 	observation := RunProcesses{Liveness: LivenessAbsent, Supervisor: supervisor, group: group}
 	grouped := false
@@ -625,6 +648,83 @@ func signalProcessGroup(group int, force bool) error {
 		return nil
 	}
 	return err
+}
+
+// verifyLiveSupervisor checks the one expected supervisor generation: same
+// owner, same start, not exited, and argv bound to exactly this run.
+func verifyLiveSupervisor(ctx context.Context, expected ProcessIdentity) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !strings.HasPrefix(expected.Start, "linux:") {
+		return ErrProcessIdentityMismatch
+	}
+	name := strconv.Itoa(expected.PID)
+	var status unix.Stat_t
+	if err := unix.Fstatat(unix.AT_FDCWD, "/proc/"+name, &status, 0); err != nil {
+		if linuxProcessReadError(err) == errLinuxProcessGone {
+			return ErrProcessIdentityMismatch
+		}
+		return errors.Join(ErrProcessUnknown, err)
+	}
+	if int(status.Uid) != os.Getuid() {
+		return ErrProcessIdentityMismatch
+	}
+	process, err := readLinuxStatAt(unix.AT_FDCWD, "/proc/"+name+"/stat", expected.PID)
+	if errors.Is(err, errLinuxProcessGone) {
+		return ErrProcessIdentityMismatch
+	}
+	if err != nil {
+		return errors.Join(ErrProcessUnknown, err)
+	}
+	if process.zombie() || "linux:"+process.start != expected.Start {
+		return ErrProcessIdentityMismatch
+	}
+	args, err := readLinuxCmdline(expected.PID)
+	if errors.Is(err, errLinuxProcessGone) {
+		return ErrProcessIdentityMismatch
+	}
+	if err != nil {
+		return errors.Join(ErrProcessUnknown, err)
+	}
+	binding, isSupervisor, err := linuxSupervisorBinding(args)
+	if !isSupervisor || err != nil || binding.runID != expected.RunID || binding.token != expected.Token {
+		return ErrProcessIdentityMismatch
+	}
+	return nil
+}
+
+// waitForSupervisorExit blocks while the exact supervisor generation lives,
+// using a pidfd that becomes readable when the process terminates. It returns
+// at once when the generation is already gone or pidfds are unavailable, so
+// the caller's complete scan decides.
+func waitForSupervisorExit(ctx context.Context, identity ProcessIdentity) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	fd, err := unix.PidfdOpen(identity.PID, 0)
+	if err != nil {
+		return nil
+	}
+	unix.CloseOnExec(fd)
+	defer unix.Close(fd)
+	process, err := readLinuxStatAt(unix.AT_FDCWD, filepath.Join("/proc", strconv.Itoa(identity.PID), "stat"), identity.PID)
+	if err != nil || process.zombie() || "linux:"+process.start != identity.Start {
+		return nil
+	}
+	descriptors := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		ready, err := unix.Poll(descriptors, int(processRescanInterval.Milliseconds()))
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil || ready > 0 {
+			return nil
+		}
+	}
 }
 
 func signalProcess(identity ProcessIdentity, force bool) error {

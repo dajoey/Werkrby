@@ -73,8 +73,8 @@ func TestFiniteSupervisorDeathKeepsGroupMembersLive(t *testing.T) {
 	spec, handle, child := startGroupChildSupervisor(t, ctx)
 	boundary := RunBoundary{RunID: spec.RunID, Token: spec.ProcessToken, RunDir: spec.RunDir, Supervisor: handle.Identity}
 	observation, err := InspectRunBoundary(ctx, boundary)
-	if err != nil || observation.Liveness != LivenessLive || observation.Supervisor == nil || !observedPIDs(observation)[child] {
-		t.Fatalf("live supervisor boundary = %#v, %v; want supervisor and child %d", observation, err, child)
+	if err != nil || observation.Liveness != LivenessLive || observation.Supervisor == nil || !observation.Supervisor.Equal(handle.Identity) {
+		t.Fatalf("live supervisor boundary = %#v, %v; want the supervisor", observation, err)
 	}
 	if err := syscall.Kill(handle.Identity.PID, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
