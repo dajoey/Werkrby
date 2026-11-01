@@ -113,6 +113,24 @@ func (c *fakeCLIControlClient) Answer(ctx context.Context, id string, version in
 	return c.record(ctx, fmt.Sprintf("answer:%s:%d:%s", id, version, option))
 }
 
+func (c *fakeCLIControlClient) recordInbox(ctx context.Context, call string) (InboxReply, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		return InboxReply{}, fmt.Errorf("control call %s has no bounded deadline", call)
+	}
+	c.calls = append(c.calls, call)
+	return InboxReply{OK: c.err == nil, TaskID: "task-one"}, c.err
+}
+
+func (c *fakeCLIControlClient) Message(ctx context.Context, id, kind, messageID, text string) (InboxReply, error) {
+	return c.recordInbox(ctx, fmt.Sprintf("message:%s:%s:%s:%s", id, kind, messageID, text))
+}
+func (c *fakeCLIControlClient) Withdraw(ctx context.Context, id, messageID string) (InboxReply, error) {
+	return c.recordInbox(ctx, fmt.Sprintf("withdraw:%s:%s", id, messageID))
+}
+func (c *fakeCLIControlClient) Ping(ctx context.Context, id string) (InboxReply, error) {
+	return c.recordInbox(ctx, "ping:"+id)
+}
+
 func TestFiniteCLIControlClientBehavior(t *testing.T) {
 	tests := []struct {
 		name string
@@ -123,6 +141,10 @@ func TestFiniteCLIControlClientBehavior(t *testing.T) {
 		{name: "status", args: []string{"status", "--root", "state", "--task", "task-one"}, call: "status:task-one"},
 		{name: "stop", args: []string{"stop", "--root", "state", "--task", "task-one", "--expected-version", "7"}, call: "stop:task-one:7"},
 		{name: "answer", args: []string{"answer", "--root", "state", "--task", "task-one", "--expected-version", "8", "--option", "approve"}, call: "answer:task-one:8:approve"},
+		{name: "message", args: []string{"message", "--root", "state", "--task", "task-one", "--kind", "interrupt", "--id", "ctl-1", "--text", "steer left"}, call: "message:task-one:interrupt:ctl-1:steer left"},
+		{name: "message_default_kind", args: []string{"message", "--root", "state", "--task", "task-one", "--text", "hi"}, call: "message:task-one:message::hi"},
+		{name: "withdraw", args: []string{"withdraw", "--root", "state", "--task", "task-one", "--id", "ctl-1"}, call: "withdraw:task-one:ctl-1"},
+		{name: "ping", args: []string{"ping", "--root", "state", "--task", "task-one"}, call: "ping:task-one"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -141,6 +163,16 @@ func TestFiniteCLIControlClientBehavior(t *testing.T) {
 			}
 			if !reflect.DeepEqual(client.calls, []string{test.call}) {
 				t.Fatalf("control calls = %q, want %q", client.calls, test.call)
+			}
+			if test.args[0] == "message" || test.args[0] == "withdraw" || test.args[0] == "ping" {
+				var reply InboxReply
+				if err := json.Unmarshal(output.Bytes(), &reply); err != nil {
+					t.Fatalf("control output is not bounded inbox JSON: %v; output=%q", err, output.String())
+				}
+				if !reply.OK || reply.TaskID != "task-one" {
+					t.Fatalf("inbox control output = %+v", reply)
+				}
+				return
 			}
 			var status ControlStatus
 			if err := json.Unmarshal(output.Bytes(), &status); err != nil {

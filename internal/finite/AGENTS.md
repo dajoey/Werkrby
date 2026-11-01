@@ -9,8 +9,8 @@
 
 ### Command composition
 
-- `cli.go` owns command parsing and delegation for `serve`, `intake`, `status`, `stop`, `answer`, `supervise`, and `test-receiver`; unrecognized commands fail explicitly, and unimplemented behavior returns a not-implemented error rather than a partial substitute.
-- `serve` owns the scheduler, control, and outbox loops under the single owner lock. `intake`, `status`, `stop`, and `answer` are bounded non-secret owner-control clients and never mutate SQLite directly.
+- `cli.go` owns command parsing and delegation for `serve`, `intake`, `status`, `stop`, `answer`, `message`, `withdraw`, `ping`, `supervise`, and `test-receiver`; unrecognized commands fail explicitly, and unimplemented behavior returns a not-implemented error rather than a partial substitute.
+- `serve` owns the scheduler, control, and outbox loops under the single owner lock. `intake`, `status`, `stop`, `answer`, `message`, `withdraw`, and `ping` are bounded non-secret owner-control clients and never mutate SQLite directly.
 - `supervise` is the internal per-run child entry point and never opens the workflow database. `test-receiver` is a test-only durable file receiver, never a production channel. Production `runSupervisorWithBoundary` normalizes the CLI argument shape and activates exact Hermes isolation only for `herdr`; fixture and other providers retain their original context. Production serve configures real Herdr owner recovery/stop across both OS and Hermes gateway liveness and passes the Engine to `ServeControlWithWorkflow`, serializing stops and answers through `scanMu`. There is no test-only composition escape.
 - Dependency direction is `cmd/werkrby-finite -> internal/finite -> internal/harness, internal/core, internal/fsx`. Never import `internal/cli`, `internal/app`, `internal/localapi`, `internal/instance`, `internal/updater`, `internal/orchestrator`, or `internal/runs`; `internal/harness` must not import this package.
 
@@ -35,6 +35,11 @@
 - Recover each open run individually: honor a durable stop fence first, check for a complete run-bound result, discover the exact run ID, and validate the OS process-start identity before adopting a live supervisor. Never start a replacement for an adopted run.
 - Incomplete, timed-out, duplicate-wrapper, token-mismatch, or detached-provider evidence leaves the run open and non-dispatchable. Classify loss only after a complete reliable scan proves provider-turn absence; never bulk-close open runs or treat PID evidence alone as identity.
 - Commit the durable stop fence before signalling a supervisor. Stop-pending work is non-dispatchable, unresolved termination remains open, and a stopped run is never resumed as ordinary work.
+
+### Run inbox
+
+- Operator steering into a live provider turn is a run-private append-only `inbox.jsonl` beside `prompt.txt`: `POST /v1/message` appends one line `{"schema_version","id","kind","text","created_at"}` (kind `message` or `interrupt`) for the task's single open run, `POST /v1/withdraw` removes an undelivered line, and `GET /v1/inbox` reads messages, the worker's `inbox-ack.jsonl` acknowledgement ids, and the run's last provider event line back. Each route resolves the task through SQLite and refuses with 404/409 when no open run exists; `status` reports the open run's id and phase.
+- Delivery is exactly-once per message id (a repeated id answers duplicate and appends nothing; an interrupt with a queued message's id upgrades that line in place; an acknowledged id answers delivered and never changes), and never touches the supervisor or the provider: one attempt stays one provider call. The worker prompt owns the reading side: check the inbox between steps, quote the message when acting on it, and append handled ids to `inbox-ack.jsonl`. A crash-torn append tail is sealed with a newline on the next append and skipped by readers; withdrawal and upgrade rewrite the whole file atomically under the handler's inbox lock.
 
 ### Projection and delivery
 

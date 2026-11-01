@@ -44,6 +44,9 @@ type cliControlClient interface {
 	Status(context.Context, string) (ControlStatus, error)
 	Stop(context.Context, string, int64) (ControlStatus, error)
 	Answer(context.Context, string, int64, string) (ControlStatus, error)
+	Message(context.Context, string, string, string, string) (InboxReply, error)
+	Withdraw(context.Context, string, string) (InboxReply, error)
+	Ping(context.Context, string) (InboxReply, error)
 }
 
 type cliDependencies struct {
@@ -76,7 +79,7 @@ func Execute(args []string, version string) error {
 func executeWithDeps(ctx context.Context, args []string, version string, deps cliDependencies) error {
 	_ = version
 	if len(args) == 0 {
-		return fmt.Errorf("command required: serve, intake, status, stop, answer, supervise, or test-receiver")
+		return fmt.Errorf("command required: serve, intake, status, stop, answer, message, withdraw, ping, supervise, or test-receiver")
 	}
 	switch args[0] {
 	case "serve":
@@ -85,7 +88,7 @@ func executeWithDeps(ctx context.Context, args []string, version string, deps cl
 			return err
 		}
 		return deps.serve(ctx, options)
-	case "intake", "status", "stop", "answer":
+	case "intake", "status", "stop", "answer", "message", "withdraw", "ping":
 		return executeControlCommand(ctx, args[0], args[1:], deps)
 	case "supervise":
 		return deps.runSupervisor(ctx, args[1:], deps.newRunner)
@@ -246,7 +249,7 @@ func (v *requiredCLIVersion) Set(text string) error {
 
 func executeControlCommand(ctx context.Context, command string, args []string, deps cliDependencies) error {
 	flags := newCLIFlagSet(command)
-	var root, taskID, sourcePath, optionID string
+	var root, taskID, sourcePath, optionID, kind, messageID, text string
 	var version requiredCLIVersion
 	flags.StringVar(&root, "root", "", "explicit disposable finite state root")
 	switch command {
@@ -261,6 +264,16 @@ func executeControlCommand(ctx context.Context, command string, args []string, d
 		flags.StringVar(&taskID, "task", "", "task ID")
 		flags.Var(&version, "expected-version", "expected task version")
 		flags.StringVar(&optionID, "option", "", "Joey answer option ID")
+	case "message":
+		flags.StringVar(&taskID, "task", "", "task ID")
+		flags.StringVar(&kind, "kind", "message", "message kind: message or interrupt")
+		flags.StringVar(&messageID, "id", "", "stable message id (deduplicated; withdrawable)")
+		flags.StringVar(&text, "text", "", "message text delivered into the live run")
+	case "withdraw":
+		flags.StringVar(&taskID, "task", "", "task ID")
+		flags.StringVar(&messageID, "id", "", "message id to withdraw before delivery")
+	case "ping":
+		flags.StringVar(&taskID, "task", "", "task ID")
 	}
 	if err := parseCLIFlags(flags, args); err != nil {
 		return err
@@ -280,22 +293,42 @@ func executeControlCommand(ctx context.Context, command string, args []string, d
 	if command == "answer" && strings.TrimSpace(optionID) == "" {
 		return fmt.Errorf("answer: --option is required")
 	}
+	if command == "message" && strings.TrimSpace(text) == "" {
+		return fmt.Errorf("message: --text is required")
+	}
+	if command == "withdraw" && strings.TrimSpace(messageID) == "" {
+		return fmt.Errorf("withdraw: --id is required")
+	}
 	client, err := deps.controlClient(root)
 	if err != nil {
 		return fmt.Errorf("%s: %w", command, err)
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, cliControlTimeout)
 	defer cancel()
-	var status ControlStatus
+	var payload any
 	switch command {
 	case "intake":
+		var status ControlStatus
 		status, err = client.Intake(requestCtx, sourcePath)
+		payload = status
 	case "status":
+		var status ControlStatus
 		status, err = client.Status(requestCtx, taskID)
+		payload = status
 	case "stop":
+		var status ControlStatus
 		status, err = client.Stop(requestCtx, taskID, version.value)
+		payload = status
 	case "answer":
+		var status ControlStatus
 		status, err = client.Answer(requestCtx, taskID, version.value, optionID)
+		payload = status
+	case "message":
+		payload, err = client.Message(requestCtx, taskID, kind, messageID, text)
+	case "withdraw":
+		payload, err = client.Withdraw(requestCtx, taskID, messageID)
+	case "ping":
+		payload, err = client.Ping(requestCtx, taskID)
 	}
 	if err != nil {
 		return fmt.Errorf("%s: %w", command, err)
@@ -303,7 +336,7 @@ func executeControlCommand(ctx context.Context, command string, args []string, d
 	if deps.stdout == nil {
 		return fmt.Errorf("%s: output writer is not configured", command)
 	}
-	if err := json.NewEncoder(deps.stdout).Encode(status); err != nil {
+	if err := json.NewEncoder(deps.stdout).Encode(payload); err != nil {
 		return fmt.Errorf("%s: write status: %w", command, err)
 	}
 	return nil

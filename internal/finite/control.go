@@ -26,6 +26,8 @@ type ControlStatus struct {
 	ReviewRequired  bool            `json:"review_required"`
 	CancelRequested bool            `json:"cancel_requested"`
 	Version         int64           `json:"version"`
+	RunID           int64           `json:"run_id,omitempty"`
+	RunPhase        Phase           `json:"run_phase,omitempty"`
 	ResumeState     State           `json:"resume_state,omitempty"`
 	WaitKind        WaitKind        `json:"wait_kind,omitempty"`
 	WakeAt          *time.Time      `json:"wake_at,omitempty"`
@@ -62,6 +64,7 @@ type controlHandler struct {
 	owner    *WorkspaceLock
 	token    string
 	workflow ControlWorkflow
+	inbox    *inboxSender
 }
 
 // NewControlToken returns a private owner-control bearer token.
@@ -86,7 +89,7 @@ func NewControlHandlerWithWorkflow(store *Store, owner *WorkspaceLock, token str
 	if err := validateBearerToken(token); err != nil {
 		return nil, err
 	}
-	return &controlHandler{store: store, owner: owner, token: token, workflow: workflow}, nil
+	return &controlHandler{store: store, owner: owner, token: token, workflow: workflow, inbox: newInboxSender(store)}, nil
 }
 
 // ServeControl serves the minimal API on an already-bound loopback listener.
@@ -152,6 +155,24 @@ func (h *controlHandler) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		h.answer(w, req)
+	case "/v1/message":
+		if req.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		h.message(w, req)
+	case "/v1/withdraw":
+		if req.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		h.withdraw(w, req)
+	case "/v1/inbox":
+		if req.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		h.inboxRead(w, req)
 	default:
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 	}
@@ -193,7 +214,11 @@ func (h *controlHandler) status(w http.ResponseWriter, req *http.Request) {
 		writeControlStoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, controlStatus(task))
+	status := controlStatus(task)
+	if run, err := h.store.OpenRunForTask(req.Context(), taskID); err == nil && run.ID > 0 {
+		status.RunID, status.RunPhase = run.ID, run.Phase
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 func (h *controlHandler) stop(w http.ResponseWriter, req *http.Request) {
@@ -243,6 +268,89 @@ func (h *controlHandler) answer(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, controlStatus(task))
 }
 
+// message delivers one operator message into the task's live run inbox.
+func (h *controlHandler) message(w http.ResponseWriter, req *http.Request) {
+	var input struct {
+		TaskID string `json:"task_id"`
+		Kind   string `json:"kind"`
+		ID     string `json:"id"`
+		Text   string `json:"text"`
+	}
+	if err := decodeRequestJSON(w, req, &input, maxControlRequestBytes); err != nil {
+		status := http.StatusBadRequest
+		var maxBytes *http.MaxBytesError
+		if errors.As(err, &maxBytes) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		writeJSON(w, status, map[string]string{"error": "invalid request"})
+		return
+	}
+	if !briefIDPattern.MatchString(strings.TrimSpace(input.TaskID)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	if strings.TrimSpace(input.Kind) == "" {
+		input.Kind = inboxKindMessage
+	}
+	reply, err := h.inbox.Send(req.Context(), strings.TrimSpace(input.TaskID),
+		strings.ToLower(strings.TrimSpace(input.Kind)), strings.TrimSpace(input.ID), input.Text)
+	if err != nil {
+		writeInboxError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, reply)
+}
+
+// withdraw removes one undelivered message from the task's run inbox.
+func (h *controlHandler) withdraw(w http.ResponseWriter, req *http.Request) {
+	var input struct {
+		TaskID    string `json:"task_id"`
+		MessageID string `json:"message_id"`
+	}
+	if err := decodeRequestJSON(w, req, &input, maxControlRequestBytes); err != nil ||
+		!briefIDPattern.MatchString(strings.TrimSpace(input.TaskID)) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	reply, err := h.inbox.Withdraw(req.Context(), strings.TrimSpace(input.TaskID), strings.TrimSpace(input.MessageID))
+	if err != nil {
+		writeInboxError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, reply)
+}
+
+// inboxRead reports a task's run inbox, acknowledgements, and last activity.
+func (h *controlHandler) inboxRead(w http.ResponseWriter, req *http.Request) {
+	taskID := req.URL.Query().Get("id")
+	if !briefIDPattern.MatchString(taskID) || len(req.URL.Query()) != 1 {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
+		return
+	}
+	reply, err := h.inbox.Read(req.Context(), taskID)
+	if err != nil {
+		writeInboxError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, reply)
+}
+
+func writeInboxError(w http.ResponseWriter, err error) {
+	status := http.StatusInternalServerError
+	message := "internal error"
+	switch {
+	case errors.Is(err, ErrNotFound):
+		status, message = http.StatusNotFound, "not found"
+	case strings.Contains(err.Error(), "no open run"), strings.Contains(err.Error(), "inbox is full"):
+		status, message = http.StatusConflict, "conflict"
+	case strings.Contains(err.Error(), "must not"), strings.Contains(err.Error(), "too long"),
+		strings.Contains(err.Error(), "unknown message kind"), strings.Contains(err.Error(), "is required"),
+		strings.Contains(err.Error(), "single line"):
+		status, message = http.StatusBadRequest, "invalid request"
+	}
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
 func writeControlStoreError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	message := "internal error"
@@ -287,25 +395,77 @@ func (c ControlClient) Answer(ctx context.Context, taskID string, expectedVersio
 	return c.call(ctx, http.MethodPost, "/v1/answer", map[string]any{"task_id": taskID, "expected_version": expectedVersion, "option_id": optionID})
 }
 
+// Message delivers one operator message into the task's live run inbox.
+func (c ControlClient) Message(ctx context.Context, taskID, kind, id, text string) (InboxReply, error) {
+	if !briefIDPattern.MatchString(taskID) || strings.TrimSpace(text) == "" {
+		return InboxReply{}, fmt.Errorf("finite: invalid message request")
+	}
+	if strings.TrimSpace(kind) == "" {
+		kind = inboxKindMessage
+	}
+	body := map[string]any{"task_id": taskID, "kind": kind, "text": text}
+	if strings.TrimSpace(id) != "" {
+		body["id"] = strings.TrimSpace(id)
+	}
+	var reply InboxReply
+	if err := c.callAny(ctx, http.MethodPost, "/v1/message", body, &reply); err != nil {
+		return InboxReply{}, err
+	}
+	return reply, nil
+}
+
+// Withdraw removes one undelivered message from the task's run inbox.
+func (c ControlClient) Withdraw(ctx context.Context, taskID, messageID string) (InboxReply, error) {
+	if !briefIDPattern.MatchString(taskID) || strings.TrimSpace(messageID) == "" {
+		return InboxReply{}, fmt.Errorf("finite: invalid withdraw request")
+	}
+	var reply InboxReply
+	if err := c.callAny(ctx, http.MethodPost, "/v1/withdraw",
+		map[string]any{"task_id": taskID, "message_id": strings.TrimSpace(messageID)}, &reply); err != nil {
+		return InboxReply{}, err
+	}
+	return reply, nil
+}
+
+// Ping reads a task's run inbox, acknowledgements, and last activity line.
+func (c ControlClient) Ping(ctx context.Context, taskID string) (InboxReply, error) {
+	if !briefIDPattern.MatchString(taskID) {
+		return InboxReply{}, fmt.Errorf("finite: invalid ping request")
+	}
+	var reply InboxReply
+	if err := c.callAny(ctx, http.MethodGet, "/v1/inbox?id="+url.QueryEscape(taskID), nil, &reply); err != nil {
+		return InboxReply{}, err
+	}
+	return reply, nil
+}
+
 func (c ControlClient) call(ctx context.Context, method, path string, input any) (ControlStatus, error) {
-	endpoint, err := validateLoopbackEndpoint(c.Endpoint)
-	if err != nil {
+	var status ControlStatus
+	if err := c.callAny(ctx, method, path, input, &status); err != nil {
 		return ControlStatus{}, err
 	}
+	return status, nil
+}
+
+func (c ControlClient) callAny(ctx context.Context, method, path string, input any, out any) error {
+	endpoint, err := validateLoopbackEndpoint(c.Endpoint)
+	if err != nil {
+		return err
+	}
 	if err := validateBearerToken(c.Token); err != nil {
-		return ControlStatus{}, err
+		return err
 	}
 	var body io.Reader
 	if input != nil {
 		encoded, err := json.Marshal(input)
 		if err != nil || len(encoded) > maxControlRequestBytes {
-			return ControlStatus{}, fmt.Errorf("finite: control request exceeds its bound")
+			return fmt.Errorf("finite: control request exceeds its bound")
 		}
 		body = bytes.NewReader(encoded)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint.String()+path, body)
 	if err != nil {
-		return ControlStatus{}, err
+		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.Token)
 	if input != nil {
@@ -317,7 +477,7 @@ func (c ControlClient) call(ctx context.Context, method, path string, input any)
 	}
 	response, err := client.Do(req)
 	if err != nil {
-		return ControlStatus{}, fmt.Errorf("finite: owner request failed: %w", err)
+		return fmt.Errorf("finite: owner request failed: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
@@ -327,11 +487,10 @@ func (c ControlClient) call(ctx context.Context, method, path string, input any)
 		if err := decodeResponseJSON(response.Body, &failure, 4096); err != nil || failure.Error == "" {
 			failure.Error = "request rejected"
 		}
-		return ControlStatus{}, &ControlError{StatusCode: response.StatusCode, Message: failure.Error}
+		return &ControlError{StatusCode: response.StatusCode, Message: failure.Error}
 	}
-	var status ControlStatus
-	if err := decodeResponseJSON(response.Body, &status, maxControlResponseBytes); err != nil {
-		return ControlStatus{}, err
+	if err := decodeResponseJSON(response.Body, out, maxControlResponseBytes); err != nil {
+		return err
 	}
-	return status, nil
+	return nil
 }

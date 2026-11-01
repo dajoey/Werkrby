@@ -17,6 +17,9 @@ Before you exit, write exactly one JSON object (at most 256 KiB, UTF-8) to the a
 {"schema_version": 1, "task_id": "<task_id>", "run_id": <run_id>, "phase": "<phase>", "outcome": "done", "progress": "What changed and how it was verified.", "summary": {"outcome": "one line", "evidence": "commands run and their results", "uncertainty": "what is not proven"}}
 A wait adds "outcome": "wait" and a wait object: {"kind": "time", "wake_at": "<RFC 3339 UTC>", "reason": "..."} or {"kind": "joey", "reason": "...", "ask": {"question": "...", "options": [{"id": "approve", "label": "Approve"}, {"id": "deny", "label": "Deny"}]}}. A review that rejects adds "findings": ["..."].`
 
+const runInboxContract = `RUN INBOX
+The engine may deliver operator messages into inbox.jsonl inside your run directory while you work: check that file at the start of the turn and between each of your steps (absent or empty means nothing is waiting). Each line is one message {"id","kind","text"}: kind "message" is guidance to apply at the next step; kind "interrupt" is urgent and preempts your current plan. When you act on a message, quote its text (at least its first line) in the progress you report and in the result, and answer a question it asks inside this turn or by ending the turn as a Joey wait. Once you have handled a message (acted on it or explicitly declined it), append its id on its own line to inbox-ack.jsonl in the run directory. Never write inbox.jsonl yourself; the engine owns it.`
+
 var promptPacks = map[string]string{
 	"code":           "PACK: code\nMake the smallest maintainable code change and run focused failing-first verification.",
 	"docs":           "PACK: docs\nVerify claims against the source and keep documentation concise and current.",
@@ -51,7 +54,7 @@ func BuildPrompt(req PromptRequest) (Prompt, error) {
 		}
 		sections = append(sections, pack)
 	}
-	static := strings.Join(append([]string{universalPromptCore, role, typedResultContract}, sections...), "\n\n")
+	static := strings.Join(append([]string{universalPromptCore, role, typedResultContract, runInboxContract}, sections...), "\n\n")
 	hash := fmt.Sprintf("%x", sha256.Sum256([]byte(static)))
 	dynamic := "FINITE TURN\ntask_id: " + req.TaskID + "\nrun_id: " + strconv.FormatInt(req.RunID, 10) + "\nphase: " + string(req.Phase) + "\n"
 	if req.RunDir != "" {
