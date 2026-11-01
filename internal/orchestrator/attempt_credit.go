@@ -116,6 +116,9 @@ func setResumeCredit(path string, credit bool) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseExternallyExecuted(path, document); err != nil {
+		return err
+	}
 	_, present := document.FrontMatter[resumeCreditField]
 	if credit {
 		if value, _ := document.FrontMatter[resumeCreditField].(bool); value {

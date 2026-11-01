@@ -650,6 +650,9 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 			m.reportUnparseableDocument(source, readErr)
 			continue
 		}
+		if externallyExecuted(document) {
+			continue
+		}
 		if !documentDue(document, time.Now(), phase) {
 			continue
 		}
@@ -796,6 +799,14 @@ func (m *Manager) scanPhaseQueueMode(ctx context.Context, route workflowRoute, s
 			return err
 		}
 		claimed, claimErr := m.claimPhaseDocument(source, target, phaseClaimedStatus(phase), attemptField, now)
+		if claimAbandoned(claimErr) {
+			// Under the claim lock the source was gone or marked `executor: finite` (the bridge
+			// took it after this scan read it). Nothing was claimed: drop the lease journaled
+			// above and leave the document where the bridge put it.
+			_ = os.Remove(m.leasePath(key))
+			m.log("abandoned the claim of " + candidate.name + ": " + claimErr.Error())
+			continue
+		}
 		if claimErr != nil {
 			_, targetErr := os.Stat(target)
 			_, sourceErr := os.Stat(source)
@@ -859,6 +870,9 @@ func (m *Manager) startExistingClaim(ctx context.Context, route workflowRoute, p
 	if err != nil {
 		return m.skipUnreadableDocument(path, err)
 	}
+	if externallyExecuted(document) {
+		return nil
+	}
 	id := documentID(document)
 	if id == "" {
 		id = leaseID(route.Name+":"+phase, path)
@@ -894,6 +908,9 @@ func (m *Manager) startExistingClaim(ctx context.Context, route workflowRoute, p
 				if err := updateDocumentProgressWithUpdate(path, time.Now().UTC(), note, func(frontMatter map[string]any) {
 					frontMatter[planningHoldDeferredField] = true
 				}); err != nil {
+					if errors.Is(err, errExternallyExecuted) {
+						return nil
+					}
 					return err
 				}
 			}
@@ -1047,6 +1064,10 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 			recoveryAttempt := lease.RecoveryCount + 1
 			note := fmt.Sprintf("Werkrby started recovery attempt %d for %s after its durable execution ownership required reconciliation; the recovery agent must record its findings and outcome here.", recoveryAttempt, strings.ReplaceAll(normalizeLeasePhase(route.Name, lease.Phase), "_", " "))
 			if err := updateDocumentProgress(lease.File, time.Now().UTC(), note); err != nil {
+				if errors.Is(err, errExternallyExecuted) {
+					m.dropExternallyExecutedLease(lease, lease.File)
+					return
+				}
 				m.recordError(ctx, lease, fmt.Errorf("record recovery progress: %w", err))
 				return
 			}
@@ -1059,6 +1080,12 @@ func (m *Manager) dispatch(ctx context.Context, route workflowRoute, lease Lease
 		harnessSettings := m.harnessSettings()
 		prompt = config.PrependAgentPrefix(m.agentPrefix(lease.Phase, harnessSettings), prompt)
 		firstAssignedAt, providerIterations, err := ReserveProviderTurn(lease.File, time.Now().UTC())
+		if errors.Is(err, errExternallyExecuted) {
+			// The last gate before the provider: the reservation re-read the document under its
+			// lock and another engine now executes it. No turn, no error path.
+			m.dropExternallyExecutedLease(lease, lease.File)
+			return
+		}
 		if err != nil {
 			m.recordError(ctx, lease, err)
 			return
@@ -1320,6 +1347,11 @@ func (m *Manager) reconcileTransitions(ctx context.Context) error {
 			m.finishRuntimeJob(lease.ID)
 			continue
 		}
+		// The document left its claimed path into the hands of another engine: no transition
+		// validation, terminal hooks, or notification turn for it.
+		if m.releaseExternallyExecutedLease(lease, path) {
+			continue
+		}
 		phase := normalizeLeasePhase(route.Name, lease.Phase)
 		switch route.Name {
 		case "tasks":
@@ -1334,6 +1366,10 @@ func (m *Manager) reconcileTransitions(ctx context.Context) error {
 			// cancelled context (shutdown) still aborts the scan.
 			if ctx.Err() != nil {
 				return err
+			}
+			if errors.Is(err, errExternallyExecuted) {
+				m.dropExternallyExecutedLease(lease, path)
+				continue
 			}
 			if !errors.Is(err, errUnreadableDocument) {
 				m.log(fmt.Sprintf("transition for %s failed, lease kept for the next scan: %v", lease.File, err))
@@ -1788,12 +1824,25 @@ func (m *Manager) resumeInterruptedClaims(ctx context.Context) error {
 		if lease.State != "claiming" || m.isInflight(lease.ID) || m.Harness.IsActive(lease.SessionKey) {
 			continue
 		}
+		// An interrupted claim whose document another engine took is not resumed.
+		if m.releaseExternallyExecutedLease(lease, lease.SourceFile, lease.File) {
+			continue
+		}
 		if _, err := os.Stat(lease.File); os.IsNotExist(err) && lease.SourceFile != "" {
 			if _, sourceErr := os.Stat(lease.SourceFile); sourceErr == nil {
 				phase := normalizeLeasePhase(lease.Route, lease.Phase)
 				field := phaseAttemptField(phase)
 				document, claimErr := m.claimPhaseDocument(lease.SourceFile, lease.File, phaseClaimedStatus(phase), field, time.Now())
+				if errors.Is(claimErr, errExternallyExecuted) {
+					m.dropExternallyExecutedLease(lease, lease.SourceFile)
+					continue
+				}
 				if claimErr != nil {
+					if errors.Is(claimErr, errClaimSourceGone) {
+						// The source moved before the claim held its lock; the next scan finds
+						// where it went (the guard above drops the lease if the bridge took it).
+						continue
+					}
 					if _, readErr := ReadDocument(lease.SourceFile); readErr != nil {
 						_ = m.skipUnreadableDocument(lease.SourceFile, readErr)
 						continue
@@ -1815,6 +1864,10 @@ func (m *Manager) resumeInterruptedClaims(ctx context.Context) error {
 			document, readErr := ReadDocument(lease.File)
 			if readErr != nil {
 				_ = m.skipUnreadableDocument(lease.File, readErr)
+				continue
+			}
+			if externallyExecuted(document) {
+				m.dropExternallyExecutedLease(lease, lease.File)
 				continue
 			}
 			attempt := lease.ClaimAttempt
@@ -1891,6 +1944,10 @@ func (m *Manager) recoverOrphanClaims(ctx context.Context) error {
 				}
 				path := filepath.Join(directory, entry.Name())
 				if m.hasLeaseForFile(path) {
+					continue
+				}
+				// A claimed folder holding a document another engine runs is not an orphan.
+				if externallyExecutedAt(path) {
 					continue
 				}
 				m.log("recovering claimed document without lease: " + path)
@@ -1971,6 +2028,9 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 				m.reportUnparseableDocument(path, err)
 				continue
 			}
+			if externallyExecuted(document) {
+				continue
+			}
 			due, err := scheduledWake(document, now)
 			if err != nil {
 				m.log("waiting schedule " + path + ": " + err.Error())
@@ -2016,6 +2076,10 @@ func (m *Manager) wakeWaitingDocuments(ctx context.Context) error {
 				}
 				delete(fm, "resume_status")
 			}); err != nil {
+				// Gone or finite under the lock: another writer owns it now; skip, not abort.
+				if errors.Is(err, errExternallyExecuted) || errors.Is(err, os.ErrNotExist) {
+					continue
+				}
 				return err
 			}
 			if route.Name == "goals" && targetStatus == "planning" {
@@ -2225,6 +2289,10 @@ func (m *Manager) recoverStale(ctx context.Context) error {
 		if !ok {
 			continue
 		}
+		// Neither a stall check nor a requeue for a document another engine now runs.
+		if !m.isInflight(lease.ID) && !m.Harness.IsActive(lease.SessionKey) && m.releaseExternallyExecutedLease(lease, lease.File) {
+			continue
+		}
 		foreignOwner := lease.OwnerID != "" && lease.OwnerID != m.ownerID
 		if lease.State == "awaiting_transition" {
 			if (!foreignOwner && now.Sub(lease.HeartbeatAt) < awaitingTransitionStaleAfter) || m.isInflight(lease.ID) || m.Harness.IsActive(lease.SessionKey) {
@@ -2246,6 +2314,10 @@ func (m *Manager) recoverStale(ctx context.Context) error {
 					delete(fm, resumeCreditField)
 				}
 				if moveErr := moveDocumentWithUpdate(lease.File, target, requeueStatus, now.UTC(), note, update); moveErr != nil {
+					if errors.Is(moveErr, errExternallyExecuted) {
+						m.dropExternallyExecutedLease(lease, lease.File)
+						continue
+					}
 					m.log("requeue stranded document: " + moveErr.Error())
 					continue
 				}

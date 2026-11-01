@@ -24,6 +24,11 @@ import (
 // already happened and stands; a hook or notification failure is a separate
 // recoverable defect, exactly as completeTransition treats it.
 func (m *Manager) FinalizeOperatorTaskTransition(ctx context.Context, targetPath, taskID, threadID, status string) {
+	// A finite-executed task gets none of the legacy settle machinery: no summary stamp, hooks,
+	// or notification turn.
+	if externallyExecutedAt(targetPath) {
+		return
+	}
 	switch status {
 	case "done", "todo":
 		m.finalizeTaskCompletionSummary(targetPath, status)

@@ -300,6 +300,9 @@ func moveDocumentLocked(path, target, status string, now time.Time, before, afte
 	if err != nil {
 		return err
 	}
+	if err := refuseExternallyExecuted(path, document); err != nil {
+		return err
+	}
 	if before != nil {
 		before(&document)
 	}
@@ -331,6 +334,9 @@ func updateDocumentProgressWithUpdate(path string, now time.Time, note string, u
 	defer unlockProviderTurn(lock)
 	document, err := ReadDocument(path)
 	if err != nil {
+		return err
+	}
+	if err := refuseExternallyExecuted(path, document); err != nil {
 		return err
 	}
 	if update != nil {

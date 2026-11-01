@@ -112,6 +112,10 @@ func archiveTerminalTask(path, destination, status string, cutoff time.Time, act
 	if err != nil {
 		return 0, 0, 1
 	}
+	// A finite-executed task is the other engine's to keep or archive; it stays where it is.
+	if externallyExecuted(document) {
+		return 0, 0, 0
+	}
 	updated, err := retentionDocumentTime(document.FrontMatter["updated_at"])
 	if err != nil || strings.TrimSpace(stringField(document, "status")) != status {
 		return 0, 0, 1

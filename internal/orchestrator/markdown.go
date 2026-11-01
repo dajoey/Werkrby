@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -185,6 +186,18 @@ func claimDocumentWithWriter(source, target, status, attemptField string, now ti
 		return Document{}, err
 	}
 	defer unlockProviderTurn(lock)
+	// Re-check under the lock: the bridge takes a todo document under this same lock, writing
+	// `executor: finite` and then moving it to working/ (this claim's own target). A source that is
+	// gone or now finite was never claimed; an unreadable one keeps today's path below.
+	current, readErr := ReadDocument(source)
+	if errors.Is(readErr, fs.ErrNotExist) {
+		return Document{}, fmt.Errorf("%s: %w", source, errClaimSourceGone)
+	}
+	if readErr == nil {
+		if err := refuseExternallyExecuted(source, current); err != nil {
+			return Document{}, err
+		}
+	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return Document{}, err
 	}
@@ -271,6 +284,9 @@ func reserveProviderTurn(path string, now time.Time, afterRead func()) (time.Tim
 	defer unlockProviderTurn(lock)
 	document, err := ReadDocument(path)
 	if err != nil {
+		return time.Time{}, 0, err
+	}
+	if err := refuseExternallyExecuted(path, document); err != nil {
 		return time.Time{}, 0, err
 	}
 	if afterRead != nil {

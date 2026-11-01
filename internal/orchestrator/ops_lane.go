@@ -139,7 +139,8 @@ func (m *Manager) opsDocumentsWaiting(cfg config.Config) int {
 				continue
 			}
 			document, err := ReadDocument(filepath.Join(queue.dir, entry.Name()))
-			if err != nil || documentSlotClass(route, document) != slotClassOps {
+			// A finite-executed document is never claimed here, so it is not ops work waiting.
+			if err != nil || externallyExecuted(document) || documentSlotClass(route, document) != slotClassOps {
 				continue
 			}
 			if !documentDue(document, now, queue.phase) || m.rosterHeldNow(route, queue.phase, entry.Name(), document) {
