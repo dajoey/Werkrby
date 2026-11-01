@@ -180,8 +180,27 @@ func liveHome(t *testing.T, env, profile string) string {
 	return home
 }
 
+func liveSecretBridgePath() (string, error) {
+	path := os.Getenv("WERKRBY_FINITE_HERMES_SECRET_BRIDGE")
+	if path == "" || !filepath.IsAbs(path) {
+		return "", fmt.Errorf("setup required: set WERKRBY_FINITE_HERMES_SECRET_BRIDGE to the absolute Hermes dotenv secret bridge executable")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("setup required: Hermes secret bridge is not a readable regular executable: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("setup required: Hermes secret bridge is not a regular executable")
+	}
+	return path, nil
+}
+
 func writeLiveProfile(t *testing.T, home, profile, baseURL string) {
 	t.Helper()
+	bridge, err := liveSecretBridgePath()
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := filepath.Join(home, "profiles", profile)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -192,7 +211,7 @@ func writeLiveProfile(t *testing.T, home, profile, baseURL string) {
   base_url: %s
 secrets:
   command:
-    command: /home/dajoey/ops/secrets/hermes-infisical-secrets.sh --dotenv
+    command: %q
     enabled: true
     override_existing: false
 memory:
@@ -206,7 +225,7 @@ mcp_servers: {}
 plugins:
   disabled:
     - kanban
-`, baseURL)
+`, baseURL, bridge+" --dotenv")
 	path := filepath.Join(dir, "config.yaml")
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {

@@ -599,6 +599,60 @@ func specFromMetadata(meta hermesBoundaryMetadata) RunBoundarySpec {
 	return RunBoundarySpec{RunID: meta.RunID, ProcessToken: meta.ProcessToken}
 }
 
+// HermesRunHasAdmission checks for an exact prompt admission when the metadata
+// file is absent. Setup failures that precede any client start have no admission;
+// an unreadable or ambiguous ledger always fails closed.
+func HermesRunHasAdmission(ctx context.Context, spec RunBoundarySpec) (bool, error) {
+	data, err := os.ReadFile(filepath.Join(spec.RunDir, "supervisor.json"))
+	if err != nil {
+		return false, err
+	}
+	var request struct {
+		Harness HarnessConfig `json:"harness"`
+	}
+	if err := json.Unmarshal(data, &request); err != nil {
+		return false, err
+	}
+	staff, ok, err := roster.ExpandStaff(filepath.Join(request.Harness.Cwd, roster.StateDirName), strings.TrimSpace(request.Harness.Model))
+	if err != nil || !ok || !staff.Headless || staff.Runner != "hermes" {
+		return false, nil
+	}
+	if strings.TrimSpace(os.Getenv("HERMES_HOME")) == "" {
+		return false, errors.New("Hermes admission check requires an explicit disposable HERMES_HOME")
+	}
+	home, err := hermesHomeDir("")
+	if err != nil {
+		return false, err
+	}
+	profile, explicit, err := hermesLaunchProfile(staff.Args)
+	if err != nil || !explicit {
+		return false, nil
+	}
+	if err := validateDisposableHermesHome(home, profile); err != nil {
+		// Profile/home validation happens before the client starts. A terminal run
+		// that failed at this fence has no provider admission.
+		return false, nil
+	}
+	ledger, err := hermesLedgerPath(home, staff.Args)
+	if err != nil {
+		return false, err
+	}
+	prompt, err := os.ReadFile(filepath.Join(spec.RunDir, "prompt.txt"))
+	if err != nil {
+		return false, err
+	}
+	db, err := openHermesLedger(ledger)
+	if err != nil {
+		return false, err
+	}
+	defer db.Close()
+	identity, err := findExactHermesAdmission(ctx, db, spec, string(prompt))
+	if err != nil {
+		return false, err
+	}
+	return identity != nil, nil
+}
+
 // InspectHermesRunBoundary reconstructs the exact provider turn from run-private
 // metadata and the disposable profile ledger. It never infers absence from a
 // client PID or process exit.
