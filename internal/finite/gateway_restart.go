@@ -32,7 +32,9 @@ type gatewayRestartOptions struct {
 	DrainTimeout   time.Duration // whole-drain budget before the abort
 	DrainPoll      time.Duration // drain poll interval
 	KillGrace      time.Duration // TERM-to-KILL grace on the old gateway
-	EnsureTimeout  time.Duration // `gateway ensure` readiness timeout
+	EnsureTimeout  time.Duration // per-attempt `gateway ensure` readiness timeout
+	EnsureRetry    time.Duration // overall budget across ensure attempts before the abort
+	EnsurePoll     time.Duration // wait between ensure attempts
 	MCPServers     []string      // servers the verification gate requires; empty skips the gate
 }
 
@@ -46,6 +48,7 @@ type gatewayRuntimeState struct {
 	CodeSHA      string `json:"code_sha"`
 	StartTime    uint64 `json:"start_time"`
 	UpdatedAt    string `json:"updated_at"`
+	ExitReason   string `json:"exit_reason"`
 }
 
 func (s gatewayRuntimeState) running() bool {
@@ -233,14 +236,42 @@ func runGatewayRestart(ctx context.Context, options gatewayRestartOptions, deps 
 	}
 
 	// Start the fresh gateway through the machine-readable ensure boundary.
+	// A non-ready verdict is not automatically terminal: hermes answers
+	// "draining" while a gateway it found or just started shuts down (the
+	// live abort of 2026-11-02T01:43Z), and its documented client behaviour
+	// then is to wait the owner out and ensure again. Retry within the
+	// overall budget; the verification gate below still refuses anything but
+	// a proven fresh boot before serve ever resumes.
 	ensureStartedAt := deps.now()
-	logf("ensuring a fresh gateway (timeout %s)", options.EnsureTimeout)
-	ensureState, err := deps.ensureGateway(ctx, options)
-	if err != nil {
-		return abort("ensure", "gateway ensure failed: %v", err)
-	}
-	if ensureState != "ready" {
-		return abort("ensure", "gateway ensure reported %q, want \"ready\"", ensureState)
+	ensureDeadline := deps.now().Add(options.EnsureRetry)
+	var lastVerdict, lastExitReason string
+	logf("ensuring a fresh gateway (attempt timeout %s, overall budget %s)", options.EnsureTimeout, options.EnsureRetry)
+	for {
+		ensureState, err := deps.ensureGateway(ctx, options)
+		if err != nil {
+			return abort("ensure", "gateway ensure failed: %v", err)
+		}
+		if ensureState == "ready" {
+			break
+		}
+		lastVerdict = ensureState
+		// A fresh boot that died at startup leaves its exit_reason in the
+		// state file; surface it so the operator abort names the cause.
+		if observed, stateErr := deps.readGatewayState(ctx); stateErr == nil &&
+			strings.TrimSpace(observed.ExitReason) != "" {
+			lastExitReason = observed.ExitReason
+		}
+		if !deps.now().Before(ensureDeadline) {
+			detail := fmt.Sprintf("gateway ensure never reported ready within %s (last verdict %q)",
+				options.EnsureRetry, lastVerdict)
+			if strings.TrimSpace(lastExitReason) != "" {
+				detail += fmt.Sprintf("; gateway_state exit_reason: %s", lastExitReason)
+			}
+			return abort("ensure", "%s", detail)
+		}
+		if err := deps.sleep(ctx, options.EnsurePoll); err != nil {
+			return abort("ensure", "interrupted: %v", err)
+		}
 	}
 
 	// Verification gate: a genuinely fresh boot with code identity and the
@@ -641,6 +672,8 @@ func parseGatewayRestartOptions(args []string) (gatewayRestartOptions, error) {
 		DrainPoll:      15 * time.Second,
 		KillGrace:      180 * time.Second,
 		EnsureTimeout:  120 * time.Second,
+		EnsureRetry:    10 * time.Minute,
+		EnsurePoll:     5 * time.Second,
 	}
 	var root, hermesHome, relayDir, mcpServers string
 	flags.StringVar(&root, "root", "", "finite state root")
@@ -653,7 +686,9 @@ func parseGatewayRestartOptions(args []string) (gatewayRestartOptions, error) {
 	flags.DurationVar(&options.DrainTimeout, "drain-timeout", options.DrainTimeout, "drain budget before the abort")
 	flags.DurationVar(&options.DrainPoll, "drain-poll", options.DrainPoll, "drain poll interval")
 	flags.DurationVar(&options.KillGrace, "kill-grace", options.KillGrace, "TERM-to-KILL grace on the old gateway")
-	flags.DurationVar(&options.EnsureTimeout, "ensure-timeout", options.EnsureTimeout, "gateway ensure readiness timeout")
+	flags.DurationVar(&options.EnsureTimeout, "ensure-timeout", options.EnsureTimeout, "per-attempt gateway ensure readiness timeout")
+	flags.DurationVar(&options.EnsureRetry, "ensure-retry-timeout", options.EnsureRetry, "overall budget across gateway ensure attempts")
+	flags.DurationVar(&options.EnsurePoll, "ensure-poll", options.EnsurePoll, "wait between gateway ensure attempts")
 	flags.StringVar(&mcpServers, "mcp-servers", "spark,graphiti,rag", "MCP servers the verification gate requires (empty skips the gate)")
 	// Skip the leading subcommand word before flag parsing.
 	rest := args
@@ -682,6 +717,9 @@ func parseGatewayRestartOptions(args []string) (gatewayRestartOptions, error) {
 	}
 	if options.KillGrace <= 0 || options.EnsureTimeout <= 0 {
 		return gatewayRestartOptions{}, fmt.Errorf("gateway restart: --kill-grace and --ensure-timeout must be positive")
+	}
+	if options.EnsurePoll <= 0 || options.EnsureRetry < options.EnsurePoll {
+		return gatewayRestartOptions{}, fmt.Errorf("gateway restart: --ensure-retry-timeout must be at least one --ensure-poll")
 	}
 	if strings.TrimSpace(options.GatewayProfile) == "" {
 		return gatewayRestartOptions{}, fmt.Errorf("gateway restart: --profile must not be empty")
