@@ -213,11 +213,12 @@ type cliRoster struct {
 }
 
 type cliRosterSeat struct {
-	Name       string     `yaml:"name"`
-	Available  bool       `yaml:"available"`
-	QuotaReset *time.Time `yaml:"quota_reset,omitempty"`
-	Fallback   string     `yaml:"fallback,omitempty"`
-	Pool       string     `yaml:"pool,omitempty"`
+	Name           string     `yaml:"name"`
+	Available      bool       `yaml:"available"`
+	QuotaReset     *time.Time `yaml:"quota_reset,omitempty"`
+	Fallback       string     `yaml:"fallback,omitempty"`
+	Pool           string     `yaml:"pool,omitempty"`
+	AvailableUntil *time.Time `yaml:"available_until,omitempty"`
 }
 
 func cliSeatProvider(options serveOptions) (func(context.Context) ([]Seat, error), error) {
@@ -307,7 +308,8 @@ func loadCLIRoster(path string) ([]Seat, error) {
 		}
 		seen[configured.Name] = struct{}{}
 		seats = append(seats, Seat{Name: configured.Name, Available: configured.Available,
-			QuotaReset: configured.QuotaReset, Fallback: configured.Fallback, Pool: configured.Pool})
+			QuotaReset: configured.QuotaReset, Fallback: configured.Fallback, Pool: configured.Pool,
+			AvailableUntil: configured.AvailableUntil})
 	}
 	return seats, nil
 }

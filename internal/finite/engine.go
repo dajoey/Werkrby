@@ -217,6 +217,18 @@ func (e *Engine) listTasks(ctx context.Context) ([]Task, error) {
 	return tasks, rows.Err()
 }
 
+// currentSeats reads the provider seats and applies roster seat expiry
+// against the engine clock, so no seat stays open on a roster reading older
+// than its own available_until, whatever the provider said. Errors come back
+// unwrapped for the caller to classify.
+func (e *Engine) currentSeats(ctx context.Context) ([]Seat, error) {
+	seats, err := e.opts.Seats(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return expireSeats(seats, e.store.now().UTC()), nil
+}
+
 func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason string) error {
 	if task.CancelRequested {
 		return nil
@@ -238,7 +250,7 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 	if e.opts.Seats == nil {
 		return fmt.Errorf("finite: no seat provider configured")
 	}
-	seats, err := e.opts.Seats(ctx)
+	seats, err := e.currentSeats(ctx)
 	if err != nil {
 		return fmt.Errorf("finite: inspect provider seats: %w", err)
 	}
@@ -437,7 +449,7 @@ func (e *Engine) tryFallbackWake(ctx context.Context, task Task) (Task, bool, er
 	if err != nil {
 		return Task{}, false, nil
 	}
-	seats, err := e.opts.Seats(ctx)
+	seats, err := e.currentSeats(ctx)
 	if err != nil {
 		return Task{}, false, nil
 	}

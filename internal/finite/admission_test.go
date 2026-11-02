@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -128,6 +129,74 @@ func TestFiniteAdmissionFallbackWalk(t *testing.T) {
 		in.Seats[1].Pool = "venice"
 		if decision := Admit(in); decision.Action != AdmissionDispatch || decision.Seat != "seat-b" {
 			t.Fatalf("cross-pool fallback admission = %+v, want dispatch on seat-b", decision)
+		}
+	})
+}
+
+func TestFiniteExpireSeats(t *testing.T) {
+	now := time.Date(2026, 11, 2, 1, 0, 0, 0, time.UTC)
+	past := now.Add(-time.Minute)
+	exact := now
+	future := now.Add(15 * time.Minute)
+	reset := now.Add(time.Hour)
+	pointer := func(value time.Time) *time.Time { return &value }
+
+	t.Run("expired_seat_comes_back_unavailable", func(t *testing.T) {
+		got := expireSeats([]Seat{{Name: "seat-bal", Available: true, Pool: "zai_balance", AvailableUntil: pointer(past)}}, now)
+		if got[0].Available {
+			t.Fatalf("past expiry seat = %+v, want unavailable", got[0])
+		}
+		if got[0].AvailableUntil == nil || !got[0].AvailableUntil.Equal(past) {
+			t.Fatalf("past expiry seat = %+v, want the reading kept", got[0])
+		}
+	})
+
+	t.Run("expiry_at_the_instant_closes_too", func(t *testing.T) {
+		got := expireSeats([]Seat{{Name: "seat-bal", Available: true, AvailableUntil: pointer(exact)}}, now)
+		if got[0].Available {
+			t.Fatalf("instant expiry seat = %+v, want unavailable", got[0])
+		}
+	})
+
+	t.Run("later_expiry_and_no_expiry_are_unchanged", func(t *testing.T) {
+		got := expireSeats([]Seat{
+			{Name: "seat-later", Available: true, AvailableUntil: pointer(future)},
+			{Name: "seat-plain", Available: true},
+		}, now)
+		if !got[0].Available || !got[1].Available {
+			t.Fatalf("unexpired seats = %+v, want both available", got)
+		}
+	})
+
+	t.Run("unavailable_seat_stays_unavailable", func(t *testing.T) {
+		got := expireSeats([]Seat{
+			{Name: "seat-closed", Available: false, AvailableUntil: pointer(future)},
+			{Name: "seat-closed-expired", Available: false, AvailableUntil: pointer(past)},
+		}, now)
+		if got[0].Available || got[1].Available {
+			t.Fatalf("closed seats = %+v, want both unavailable", got)
+		}
+	})
+
+	t.Run("reset_fallback_and_pool_are_never_touched", func(t *testing.T) {
+		got := expireSeats([]Seat{{
+			Name: "seat-bal", Available: true, QuotaReset: pointer(reset),
+			Fallback: "seat-next", Pool: "zai_balance", AvailableUntil: pointer(past),
+		}}, now)
+		if got[0].QuotaReset == nil || !got[0].QuotaReset.Equal(reset) || got[0].Fallback != "seat-next" || got[0].Pool != "zai_balance" {
+			t.Fatalf("expired seat = %+v, want reset, fallback and pool kept", got[0])
+		}
+	})
+
+	t.Run("input_slice_is_not_modified", func(t *testing.T) {
+		seats := []Seat{
+			{Name: "seat-bal", Available: true, AvailableUntil: pointer(past)},
+			{Name: "seat-plain", Available: true},
+		}
+		want := append([]Seat(nil), seats...)
+		_ = expireSeats(seats, now)
+		if !reflect.DeepEqual(seats, want) {
+			t.Fatalf("input seats = %+v, want the caller slice untouched (was %+v)", seats, want)
 		}
 	})
 }
