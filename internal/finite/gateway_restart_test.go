@@ -113,7 +113,12 @@ func (f *fakeGatewayDeps) deps(logf func(string, ...any)) gatewayRestartDeps {
 			f.systemctlOps = append(f.systemctlOps, op)
 			switch {
 			case strings.Contains(op, " is-active "):
-				return f.serveState, nil
+				// Real systemctl prints the state and exits 3 for every state
+				// but active; the command must read the state, not the code.
+				if f.serveState != "active" {
+					return f.serveState + "\n", fmt.Errorf("systemctl is-active: exit status 3")
+				}
+				return f.serveState + "\n", nil
 			case strings.Contains(op, " stop "):
 				f.serveState = "inactive"
 				f.recordLocked("serve-stop")
