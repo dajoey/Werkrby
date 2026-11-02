@@ -324,8 +324,12 @@ func waitForGatewayExit(ctx context.Context, deps gatewayRestartDeps, pid int, t
 func waitServeState(ctx context.Context, deps gatewayRestartDeps, options gatewayRestartOptions, want string, timeout time.Duration) error {
 	deadline := deps.now().Add(timeout)
 	for {
-		output, err := deps.systemctl(ctx, "--user", "is-active", options.ServeUnit)
-		if err == nil && strings.TrimSpace(output) == want {
+		// systemctl is-active exits 3 for every state but active, so the
+		// printed state is the answer whatever the exit code; a unit that
+		// failed while stopping is stopped too.
+		output, _ := deps.systemctl(ctx, "--user", "is-active", options.ServeUnit)
+		got := strings.TrimSpace(output)
+		if got == want || (want == "inactive" && got == "failed") {
 			return nil
 		}
 		if !deps.now().Before(deadline) {
