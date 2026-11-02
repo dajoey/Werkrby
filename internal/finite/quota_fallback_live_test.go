@@ -21,7 +21,7 @@ import (
 
 // liveWallFallbackHomeProfiles are the disposable profiles the fallback wall
 // tests run; the home marker must list every one of them.
-var liveWallFallbackHomeProfiles = []string{"wk-finite-wall-a", "wk-finite-wall-b", "wk-finite-wall-closed-a", "wk-finite-wall-closed-b"}
+var liveWallFallbackHomeProfiles = []string{"wk-finite-wall-a", "wk-finite-wall-b", "wk-finite-wall-closed-a", "wk-finite-wall-closed-b", "wk-finite-wall-expired-a", "wk-finite-wall-expired-b"}
 
 func liveWallFallbackHome(t *testing.T) string {
 	t.Helper()
@@ -129,6 +129,22 @@ func writeLiveAvailability(t *testing.T, root string, seatBAvailable bool) strin
 	roster := "seats:\n" +
 		"  - name: seat-a\n    available: true\n    fallback: seat-b\n    pool: pool-a\n" +
 		"  - name: seat-b\n    available: " + value + "\n    pool: pool-b\n"
+	if err := os.WriteFile(path, []byte(roster), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// writeLiveAvailabilityExpiring writes seat-b open with an available_until,
+// quoted the way the roster writer's yaml.safe_dump emits it, so the compiled
+// engine must decode the real writer form and expire the seat at it.
+func writeLiveAvailabilityExpiring(t *testing.T, root string, until time.Time) string {
+	t.Helper()
+	path := filepath.Join(root, "availability.yaml")
+	roster := "seats:\n" +
+		"  - name: seat-a\n    available: true\n    fallback: seat-b\n    pool: pool-a\n" +
+		"  - name: seat-b\n    available: true\n    pool: pool-b\n" +
+		"    available_until: '" + until.UTC().Format("2006-01-02T15:04:05Z") + "'\n"
 	if err := os.WriteFile(path, []byte(roster), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -320,5 +336,46 @@ func TestFiniteLiveCompiledHermesQuotaWallFallbackClosedSeat(t *testing.T) {
 	}
 	if current := waitLiveStatus(t, binary, stateRoot, taskID, 30*time.Second); current.State != StateWaiting {
 		t.Fatalf("closed-fallback task = %s, want still waiting", current.State)
+	}
+}
+
+func TestFiniteLiveCompiledHermesQuotaWallFallbackExpiredSeat(t *testing.T) {
+	if os.Getenv("WERKRBY_FINITE_HERMES_LIVE") != "1" {
+		t.Skip("compiled live Hermes quota fallback requires explicit opt-in")
+	}
+	binary := liveBinary(t)
+	home := liveWallFallbackHome(t)
+	endpoint := newLiveControlledEndpoint(t)
+	resetLiveProfile(t, home, "wk-finite-wall-expired-a")
+	resetLiveProfile(t, home, "wk-finite-wall-expired-b")
+	writeLiveFallbackProfile(t, home, "wk-finite-wall-expired-a", endpoint.URL+"/wall/v1")
+	writeLiveFallbackProfile(t, home, "wk-finite-wall-expired-b", endpoint.URL+"/wall/v1")
+	root := liveTestRoot(t, "compiled-wall-fallback-expired")
+	worker := writeLiveFallbackWorker(t, root, "wk-finite-wall-expired-a", "wk-finite-wall-expired-b")
+	availability := writeLiveAvailabilityExpiring(t, root, time.Now().Add(-time.Hour))
+	taskID := "compiled-wall-fbe"
+	stateRoot := filepath.Join(root, "state")
+	brief := writeLiveFallbackBrief(t, root, taskID, "seat-a")
+	owner := startLiveCommand(t, binary, []string{
+		"serve", "--root", stateRoot, "--worker", worker, "--roster", availability,
+		"--harness", "herdr", "--model", "@seat-a", "--poll-interval", "25ms", "--stop-grace", "25ms",
+	}, liveEnv(home), filepath.Join(root, "owner.log"))
+	defer owner.terminate(t)
+	waitForFixture(t, func() bool { return fileExists(filepath.Join(stateRoot, "control.json")) }, "compiled owner control publication")
+	runLiveControl(t, binary, "intake", "--root", stateRoot, "--brief", brief)
+
+	// Run 1 walls on seat A; the fallback reads open but its available_until
+	// has passed, so the engine must expire it and keep the task waiting.
+	status := waitLiveState(t, binary, stateRoot, taskID, StateWaiting, 2*time.Minute)
+	if status.WaitKind != WaitTime || status.WakeAt == nil {
+		t.Fatalf("expired-fallback status = %+v, want a timed wait", status)
+	}
+	time.Sleep(2 * time.Second)
+	runs := liveFallbackRuns(t, stateRoot)
+	if len(runs) != 1 || runs[0].Seat != "seat-a" || runs[0].Outcome != RunWall {
+		t.Fatalf("expired-fallback runs = %+v, want exactly one walled run on seat-a", runs)
+	}
+	if current := waitLiveStatus(t, binary, stateRoot, taskID, 30*time.Second); current.State != StateWaiting {
+		t.Fatalf("expired-fallback task = %s, want still waiting", current.State)
 	}
 }

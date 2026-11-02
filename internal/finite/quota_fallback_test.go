@@ -588,6 +588,41 @@ func TestFiniteCLIRosterAvailableUntil(t *testing.T) {
 	}
 }
 
+// TestFiniteCLIRosterLoadsWriterSample decodes the roster writer's real
+// availability.yaml with the engine's strict decoder. It is the roster read
+// proof for installs: every seat the writer stamped with available_until
+// carries one, and no other seat does.
+func TestFiniteCLIRosterLoadsWriterSample(t *testing.T) {
+	sample := os.Getenv("WERKRBY_FINITE_ROSTER_SAMPLE")
+	if sample == "" {
+		t.Skip("WERKRBY_FINITE_ROSTER_SAMPLE must name the writer's availability.yaml")
+	}
+	expiring := make(map[string]bool)
+	for _, name := range strings.Split(os.Getenv("WERKRBY_FINITE_ROSTER_SAMPLE_EXPIRING"), ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			expiring[name] = true
+		}
+	}
+	seats, err := loadCLIRoster(sample)
+	if err != nil {
+		t.Fatalf("load writer sample %s: %v", sample, err)
+	}
+	if len(seats) == 0 {
+		t.Fatalf("writer sample %s decoded no seats", sample)
+	}
+	for _, seat := range seats {
+		if expiring[seat.Name] {
+			if seat.AvailableUntil == nil {
+				t.Fatalf("seat %s = %+v, want the writer's available_until", seat.Name, seat)
+			}
+			continue
+		}
+		if seat.AvailableUntil != nil {
+			t.Fatalf("seat %s = %+v, want no available_until", seat.Name, seat)
+		}
+	}
+}
+
 func TestFiniteProjectionRunsTableShowsSeat(t *testing.T) {
 	task := Task{ID: "task-seat-column", Title: "Seat column", State: StateDone, Risk: "low",
 		Version: 2, CreatedAt: time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC), UpdatedAt: time.Date(2026, 11, 1, 12, 1, 0, 0, time.UTC)}
