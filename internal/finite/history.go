@@ -24,8 +24,17 @@ func clipRunes(text string, limit int) string {
 
 // TaskHistory renders what earlier runs of a task concluded and how Joey
 // answered, oldest first, from committed task events. It is prompt context
-// only and never drives workflow state.
+// only and never drives workflow state. This is the implementation-phase
+// view: every earlier run carries its own progress.
 func (s *Store) TaskHistory(ctx context.Context, taskID string) (string, error) {
+	return s.TaskHistoryForPhase(ctx, taskID, PhaseImplementation)
+}
+
+// TaskHistoryForPhase renders the task history as one phase's prompt reads
+// it. A review run sees findings and Joey's answers but never the progress
+// text an implementer wrote about its own work; an implementation run sees
+// everything.
+func (s *Store) TaskHistoryForPhase(ctx context.Context, taskID string, phase Phase) (string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT kind, run_id, payload_json FROM task_events
 		WHERE task_id=? AND kind IN ('settled','answered') ORDER BY rowid`, taskID)
 	if err != nil {
@@ -69,7 +78,11 @@ func (s *Store) TaskHistory(ctx context.Context, taskID string) (string, error) 
 			if event.Phase == "" {
 				line = fmt.Sprintf("- Run %d: %s.", *runID, outcome)
 			}
-			if event.Progress != "" {
+			// A review prompt never sees what an implementer wrote about its own
+			// work: a settled implementation run renders without its progress,
+			// with its error text when there is one. Findings stay.
+			implemented := event.Phase == "" || event.Phase == string(PhaseImplementation)
+			if event.Progress != "" && !(phase == PhaseReview && implemented) {
 				line += " " + event.Progress
 			} else if event.Error != "" {
 				line += " " + clipRunes(event.Error, historyFindingRunes)

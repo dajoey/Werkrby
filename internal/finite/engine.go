@@ -364,8 +364,11 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 // dispatchDynamic builds the dynamic turn data for one dispatch: the brief and
 // the task history selected for the phase. It is prompt context only.
 func (e *Engine) dispatchDynamic(ctx context.Context, task Task, phase Phase, brief []byte) (string, error) {
+	if phase == PhaseReview {
+		brief = stripImplementerBriefSections(brief)
+	}
 	dynamic := fmt.Sprintf("TASK BRIEF\ntitle: %s\n\n%s", task.Title, brief)
-	history, err := e.store.TaskHistory(ctx, task.ID)
+	history, err := e.store.TaskHistoryForPhase(ctx, task.ID, phase)
 	if err != nil {
 		return "", fmt.Errorf("finite: read task history for dispatch: %w", err)
 	}
@@ -373,6 +376,34 @@ func (e *Engine) dispatchDynamic(ctx context.Context, task Task, phase Phase, br
 		dynamic += "\n\nTASK HISTORY (earlier runs of this task, oldest first; act on Joey's answers and fix every review finding)\n" + history + "\n"
 	}
 	return dynamic, nil
+}
+
+// stripImplementerBriefSections cuts what the implementer wrote about its own
+// work from a review brief: every line from the first implementer heading
+// ("## Progress so far (earlier runs..." or "## Earlier attempt") to the end
+// of the body. Nothing inside that span ends the cut, so a worker-written
+// heading cannot leak text; the front matter and every line before it stay.
+// The bridge writes everything after the Progress heading, so for a brief
+// taken in before the bridge restart a "## Joey's instruction" placed after
+// Progress is also cut from review prompts (implementation prompts keep it).
+func stripImplementerBriefSections(brief []byte) []byte {
+	lines := strings.Split(string(brief), "\n")
+	closing := -1
+	for i := 1; i < len(lines); i++ {
+		if lines[i] == "---" {
+			closing = i
+			break
+		}
+	}
+	if closing < 0 {
+		return brief
+	}
+	for i := closing + 1; i < len(lines); i++ {
+		if strings.HasPrefix(lines[i], "## Progress so far (earlier runs") || lines[i] == "## Earlier attempt" {
+			return []byte(strings.Join(lines[:i], "\n"))
+		}
+	}
+	return brief
 }
 
 // briefChangedReason is the terminal failure recorded when a committed brief
