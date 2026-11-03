@@ -1,7 +1,6 @@
 package finite
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,8 +9,6 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,20 +18,23 @@ import (
 // engine-owned drained restart of the finite Hermes gateway. The defaults are
 // the hand procedure recorded in notebook Projects/Werkrby Finite Engine.
 type gatewayRestartOptions struct {
-	Root           string        // finite state root (required)
-	HermesHome     string        // dedicated finite Hermes home (never ~/.hermes)
-	RelayDir       string        // relay directory holding bridge.on
-	ServeUnit      string        // systemd user unit owning dispatch
-	SystemctlBin   string        // systemctl executable
-	HermesBin      string        // hermes executable for the fresh gateway boot
-	GatewayProfile string        // profile passed to the fresh gateway boot
-	DrainTimeout   time.Duration // whole-drain budget before the abort
-	DrainPoll      time.Duration // drain poll interval
-	KillGrace      time.Duration // TERM-to-KILL grace on the old gateway
-	EnsureTimeout  time.Duration // per-attempt fresh-boot readiness budget
-	EnsureRetry    time.Duration // overall budget across fresh-boot attempts before the abort
-	EnsurePoll     time.Duration // wait between fresh-boot attempts
-	MCPServers     []string      // servers the verification gate requires; empty skips the gate
+	Root            string        // finite state root (required)
+	HermesHome      string        // dedicated finite Hermes home (never ~/.hermes)
+	RelayDir        string        // relay directory holding bridge.on
+	ServeUnit       string        // systemd user unit owning dispatch
+	SystemctlBin    string        // systemctl executable
+	HermesBin       string        // hermes executable for the fresh gateway boot
+	GatewayProfile  string        // profile passed to the fresh gateway boot
+	DrainTimeout    time.Duration // whole-drain budget before the abort
+	DrainPoll       time.Duration // drain poll interval
+	KillGrace       time.Duration // TERM-to-KILL grace on the old gateway
+	EnsureTimeout   time.Duration // per-attempt fresh-boot readiness budget
+	EnsureRetry     time.Duration // overall budget across fresh-boot attempts before the abort
+	EnsurePoll      time.Duration // wait between fresh-boot attempts
+	MCPServers      []string      // servers the verification gate requires; empty skips the gate
+	MCPProbeProfile string        // worker seat the gate probes through; its config must carry the required servers
+	MCPProbeTimeout time.Duration // per-server `hermes mcp test` budget
+	MCPProbeRetry   time.Duration // overall budget across probe passes before the abort
 
 	// OldGatewayPID is set by runGatewayRestart just before the boot loop:
 	// the boot's readiness poll must ignore any state file still naming the
@@ -59,20 +59,16 @@ func (s gatewayRuntimeState) running() bool {
 	return s.Kind == "hermes-gateway" && s.GatewayState == "running" && s.PID > 0
 }
 
-// gatewayMCPCheck is the Step-4-style shared check over the profile agent logs.
+// gatewayMCPCheck is the MCP verification gate's verdict: one live
+// `hermes mcp test` probe per required server, each required to pass.
 type gatewayMCPCheck struct {
-	Servers       map[string]int `json:"servers"`
-	SummaryLines  int            `json:"summary_lines"`
-	CooldownLines int            `json:"cooldown_lines"`
+	Servers map[string]int `json:"servers"`
 }
 
-// allConnected reports the MCP verification gate: every required server
-// registered at least one tool after the fresh boot, a healthy summary line
-// appeared, and no server sat out in the retry cooldown.
+// allConnected reports the MCP verification gate: every required server was
+// probed successfully through the fresh boot's own hermes binary, home,
+// profile config and environment.
 func (c gatewayMCPCheck) allConnected(required []string) bool {
-	if c.CooldownLines > 0 || c.SummaryLines < 1 {
-		return false
-	}
 	for _, name := range required {
 		if c.Servers[name] < 1 {
 			return false
@@ -83,15 +79,14 @@ func (c gatewayMCPCheck) allConnected(required []string) bool {
 
 // gatewayRestartResult is the one-JSON-object stdout contract of the command.
 type gatewayRestartResult struct {
-	State            string         `json:"state"`
-	OldPID           int            `json:"old_pid"`
-	NewPID           int            `json:"new_pid"`
-	CodeSHA          string         `json:"code_sha"`
-	DrainedSeconds   time.Duration  `json:"drained_seconds"`
-	MCPServers       map[string]int `json:"mcp_servers,omitempty"`
-	MCPCooldownLines int            `json:"mcp_cooldown_lines"`
-	ServeRestarted   bool           `json:"serve_restarted"`
-	IntakeRestored   bool           `json:"intake_restored"`
+	State          string         `json:"state"`
+	OldPID         int            `json:"old_pid"`
+	NewPID         int            `json:"new_pid"`
+	CodeSHA        string         `json:"code_sha"`
+	DrainedSeconds time.Duration  `json:"drained_seconds"`
+	MCPServers     map[string]int `json:"mcp_servers,omitempty"`
+	ServeRestarted bool           `json:"serve_restarted"`
+	IntakeRestored bool           `json:"intake_restored"`
 }
 
 // gatewayAbortError marks a gate failure after dispatch was already stopped:
@@ -119,7 +114,7 @@ type gatewayRestartDeps struct {
 	processCmdline   func(ctx context.Context, pid int) ([]string, error)
 	processAlive     func(ctx context.Context, pid int) bool
 	inServeCgroup    func() bool
-	mcpCheck         func(ctx context.Context, since time.Time) (gatewayMCPCheck, error)
+	mcpCheck         func(ctx context.Context) (gatewayMCPCheck, error)
 	removeBridge     func(ctx context.Context) error
 	touchBridge      func(ctx context.Context) error
 	now              func() time.Time
@@ -249,7 +244,6 @@ func runGatewayRestart(ctx context.Context, options gatewayRestartOptions, deps 
 	// retry within the overall budget; the verification gate below still
 	// refuses anything but a proven fresh boot before serve ever resumes.
 	options.OldGatewayPID = oldPID
-	ensureStartedAt := deps.now()
 	ensureDeadline := deps.now().Add(options.EnsureRetry)
 	var lastVerdict, lastExitReason string
 	logf("starting a fresh gateway (client-style boot; attempt timeout %s, overall budget %s)", options.EnsureTimeout, options.EnsureRetry)
@@ -305,16 +299,29 @@ func runGatewayRestart(ctx context.Context, options gatewayRestartOptions, deps 
 		DrainedSeconds: drainedAt.Sub(drainStart).Truncate(time.Millisecond),
 	}
 	if len(options.MCPServers) > 0 {
-		check, err := deps.mcpCheck(ctx, ensureStartedAt)
-		if err != nil {
-			return abort("verify", "MCP check: %v", err)
-		}
-		if !check.allConnected(options.MCPServers) {
-			return abort("verify", "MCP gate failed: servers=%v summary_lines=%d cooldown_lines=%d (required: %s)",
-				check.Servers, check.SummaryLines, check.CooldownLines, strings.Join(options.MCPServers, ","))
+		// The gate retries within its budget so one transient probe failure
+		// (a network blip, a server restarting) does not strand Werkrby off;
+		// a server that never answers still aborts fail-closed.
+		probeDeadline := deps.now().Add(options.MCPProbeRetry)
+		var check gatewayMCPCheck
+		var probeErr error
+		for {
+			check, probeErr = deps.mcpCheck(ctx)
+			if probeErr == nil && check.allConnected(options.MCPServers) {
+				break
+			}
+			if probeErr == nil {
+				probeErr = fmt.Errorf("the probe verdict lacks required servers: %v (required: %s)",
+					check.Servers, strings.Join(options.MCPServers, ","))
+			}
+			if !deps.now().Before(probeDeadline) {
+				return abort("verify", "MCP gate failed: %v", probeErr)
+			}
+			if err := deps.sleep(ctx, mcpProbePoll); err != nil {
+				return abort("verify", "interrupted: %v", err)
+			}
 		}
 		result.MCPServers = check.Servers
-		result.MCPCooldownLines = check.CooldownLines
 	}
 
 	// Resume dispatch and intake only after the gate passed.
@@ -409,66 +416,65 @@ func readGatewayStateFile(path string) (gatewayRuntimeState, error) {
 	return state, nil
 }
 
-var (
-	mcpRegisteredLine = regexp.MustCompile(`MCP server '([^']+)' \([A-Za-z]+\): registered ([0-9]+) tool`)
-	mcpHealthySummary = regexp.MustCompile(`tools\.mcp_tool:\s+MCP: [0-9]+ tool\(s\) from [0-9]+ server\(s\)$`)
-	mcpCooldownPhrase = "not attempted (in retry cooldown)"
-	mcpLogStamp       = "2006-01-02 15:04:05"
-)
+// mcpProbePoll: how often a failed probe pass is retried inside the budget.
+const mcpProbePoll = 5 * time.Second
 
-// scanMCPLogs implements the Step-4-style shared check: walk the home's
-// profile agent logs and judge only lines written after `since`.
-func scanMCPLogs(home string, required []string, since time.Time) (gatewayMCPCheck, error) {
-	check := gatewayMCPCheck{Servers: map[string]int{}}
-	profiles, err := os.ReadDir(filepath.Join(home, "profiles"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return check, nil
-		}
-		return check, err
-	}
-	cutoff := since.Format(mcpLogStamp)
-	for _, profile := range profiles {
-		if !profile.IsDir() {
-			continue
-		}
-		logPath := filepath.Join(home, "profiles", profile.Name(), "logs", "agent.log")
-		file, err := os.Open(logPath)
+// probeMCPServers implements the MCP verification gate directly: for every
+// required server, `<hermes> --profile <seat> mcp test <server>` must exit 0
+// within the per-server timeout. It replaced the passive profile agent.log
+// scan after the 2026-11-03T09:02Z live abort: with dispatch stopped and
+// intake off — the restart's own state while it verifies — no profile agent
+// ever initializes, so registration lines are never written (the fresh boot
+// wrote none in its whole ten-minute idle life, and it idle-exits at 600 s).
+// A probe is evidence the gate can produce on demand: the boot's own hermes
+// binary, home and environment reaching the required MCP servers without a
+// model call. The probe profile is a worker seat; the gateway's own profile
+// configures no MCP servers.
+func probeMCPServers(ctx context.Context, hermesBin, profile, home string, servers []string, perServer time.Duration) (gatewayMCPCheck, error) {
+	if strings.TrimSpace(hermesBin) == "" {
+		resolved, err := exec.LookPath("hermes")
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return check, err
+			return gatewayMCPCheck{}, fmt.Errorf("resolve the hermes executable: %w", err)
 		}
-		scanner := bufio.NewScanner(file)
-		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if len(line) < len(mcpLogStamp) || line[:len(mcpLogStamp)] < cutoff {
-				continue
-			}
-			if match := mcpRegisteredLine.FindStringSubmatch(line); match != nil {
-				count, err := strconv.Atoi(match[2])
-				if err == nil && count > check.Servers[match[1]] {
-					check.Servers[match[1]] = count
-				}
-				continue
-			}
-			if mcpHealthySummary.MatchString(line) {
-				check.SummaryLines++
-				continue
-			}
-			if strings.Contains(line, mcpCooldownPhrase) {
-				check.CooldownLines++
-			}
+		hermesBin = resolved
+	}
+	if strings.TrimSpace(profile) == "" {
+		return gatewayMCPCheck{}, fmt.Errorf("the MCP probe profile is empty")
+	}
+	check := gatewayMCPCheck{Servers: map[string]int{}}
+	for _, server := range servers {
+		if err := ctx.Err(); err != nil {
+			return gatewayMCPCheck{}, err
 		}
-		scanErr := scanner.Err()
-		_ = file.Close()
-		if scanErr != nil {
-			return check, scanErr
+		probeCtx, cancel := context.WithTimeout(ctx, perServer)
+		command := exec.CommandContext(probeCtx, hermesBin, "--profile", profile, "mcp", "test", server)
+		command.Env = append(os.Environ(), "HERMES_HOME="+home)
+		// A probe that leaves grandchildren holding the output pipes (a
+		// hung helper of its own) must not outlive its budget: WaitDelay
+		// force-closes the pipes after the deadline kill.
+		command.WaitDelay = 2 * time.Second
+		output, err := command.CombinedOutput()
+		cancel()
+		if err != nil {
+			return gatewayMCPCheck{}, fmt.Errorf("probe %s: %w (output: %s)", server, err, outputTail(string(output)))
 		}
+		check.Servers[server] = 1
 	}
 	return check, nil
+}
+
+// outputTail keeps the last few lines of a probe's output for the abort.
+func outputTail(output string) string {
+	output = strings.TrimSpace(output)
+	lines := strings.Split(output, "\n")
+	if len(lines) > 4 {
+		lines = lines[len(lines)-4:]
+	}
+	tail := strings.Join(lines, " | ")
+	if len(tail) > 400 {
+		tail = tail[len(tail)-400:]
+	}
+	return tail
 }
 
 // writeGatewayRestartResult prints the one-JSON-object result contract.
@@ -661,8 +667,8 @@ func resolveGatewayRestartDeps(options gatewayRestartOptions) (gatewayRestartDep
 	deps.processCmdline = procProcessCmdline
 	deps.processAlive = procProcessAlive
 	deps.inServeCgroup = procInServeCgroup
-	deps.mcpCheck = func(_ context.Context, since time.Time) (gatewayMCPCheck, error) {
-		return scanMCPLogs(options.HermesHome, options.MCPServers, since)
+	deps.mcpCheck = func(ctx context.Context) (gatewayMCPCheck, error) {
+		return probeMCPServers(ctx, options.HermesBin, options.MCPProbeProfile, options.HermesHome, options.MCPServers, options.MCPProbeTimeout)
 	}
 	relayDir := options.RelayDir
 	bridgePath := filepath.Join(relayDir, "bridge.on")
@@ -686,15 +692,18 @@ func resolveGatewayRestartDeps(options gatewayRestartOptions) (gatewayRestartDep
 func parseGatewayRestartOptions(args []string) (gatewayRestartOptions, error) {
 	flags := newCLIFlagSet("gateway restart")
 	options := gatewayRestartOptions{
-		ServeUnit:      "werkrby-finite-serve.service",
-		SystemctlBin:   "systemctl",
-		GatewayProfile: "default",
-		DrainTimeout:   60 * time.Minute,
-		DrainPoll:      15 * time.Second,
-		KillGrace:      180 * time.Second,
-		EnsureTimeout:  120 * time.Second,
-		EnsureRetry:    10 * time.Minute,
-		EnsurePoll:     5 * time.Second,
+		ServeUnit:       "werkrby-finite-serve.service",
+		SystemctlBin:    "systemctl",
+		GatewayProfile:  "default",
+		DrainTimeout:    60 * time.Minute,
+		DrainPoll:       15 * time.Second,
+		KillGrace:       180 * time.Second,
+		EnsureTimeout:   120 * time.Second,
+		EnsureRetry:     10 * time.Minute,
+		EnsurePoll:      5 * time.Second,
+		MCPProbeProfile: "wk-finite-code",
+		MCPProbeTimeout: 60 * time.Second,
+		MCPProbeRetry:   2 * time.Minute,
 	}
 	var root, hermesHome, relayDir, mcpServers string
 	flags.StringVar(&root, "root", "", "finite state root")
@@ -711,6 +720,9 @@ func parseGatewayRestartOptions(args []string) (gatewayRestartOptions, error) {
 	flags.DurationVar(&options.EnsureRetry, "ensure-retry-timeout", options.EnsureRetry, "overall budget across fresh-boot attempts")
 	flags.DurationVar(&options.EnsurePoll, "ensure-poll", options.EnsurePoll, "wait between fresh-boot attempts")
 	flags.StringVar(&mcpServers, "mcp-servers", "spark,graphiti,rag", "MCP servers the verification gate requires (empty skips the gate)")
+	flags.StringVar(&options.MCPProbeProfile, "mcp-probe-profile", options.MCPProbeProfile, "worker seat the MCP gate probes through (its profile config must carry the required servers)")
+	flags.DurationVar(&options.MCPProbeTimeout, "mcp-probe-timeout", options.MCPProbeTimeout, "per-server `hermes mcp test` budget")
+	flags.DurationVar(&options.MCPProbeRetry, "mcp-probe-retry", options.MCPProbeRetry, "overall budget across MCP probe passes before the abort")
 	// Skip the leading subcommand word before flag parsing.
 	rest := args
 	if len(rest) > 0 && rest[0] == "restart" {
@@ -742,6 +754,12 @@ func parseGatewayRestartOptions(args []string) (gatewayRestartOptions, error) {
 	if options.EnsurePoll <= 0 || options.EnsureRetry < options.EnsurePoll {
 		return gatewayRestartOptions{}, fmt.Errorf("gateway restart: --ensure-retry-timeout must be at least one --ensure-poll")
 	}
+	if options.MCPProbeTimeout <= 0 {
+		return gatewayRestartOptions{}, fmt.Errorf("gateway restart: --mcp-probe-timeout must be positive")
+	}
+	if options.MCPProbeRetry < mcpProbePoll {
+		return gatewayRestartOptions{}, fmt.Errorf("gateway restart: --mcp-probe-retry must be at least one probe poll interval")
+	}
 	if strings.TrimSpace(options.GatewayProfile) == "" {
 		return gatewayRestartOptions{}, fmt.Errorf("gateway restart: --profile must not be empty")
 	}
@@ -753,6 +771,9 @@ func parseGatewayRestartOptions(args []string) (gatewayRestartOptions, error) {
 			return gatewayRestartOptions{}, fmt.Errorf("gateway restart: --mcp-servers: %w", err)
 		}
 		options.MCPServers = servers
+	}
+	if len(options.MCPServers) > 0 && strings.TrimSpace(options.MCPProbeProfile) == "" {
+		return gatewayRestartOptions{}, fmt.Errorf("gateway restart: --mcp-probe-profile is required while --mcp-servers is set")
 	}
 	return options, nil
 }

@@ -84,7 +84,7 @@ func newFakeGatewayDeps(states ...gatewayRuntimeState) *fakeGatewayDeps {
 		states:             states,
 		cmdlines:           map[int][]string{},
 		alive:              map[int]bool{},
-		mcp:                gatewayMCPCheck{SummaryLines: 1, Servers: map[string]int{}},
+		mcp:                gatewayMCPCheck{Servers: map[string]int{"spark": 1, "graphiti": 1, "rag": 1}},
 		ensureState:        "ready",
 		systemctlFailAfter: -1,
 		serveState:         "active",
@@ -192,7 +192,7 @@ func (f *fakeGatewayDeps) deps(logf func(string, ...any)) gatewayRestartDeps {
 			return f.alive[pid]
 		},
 		inServeCgroup: func() bool { return f.inCgroup },
-		mcpCheck: func(_ context.Context, _ time.Time) (gatewayMCPCheck, error) {
+		mcpCheck: func(_ context.Context) (gatewayMCPCheck, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()
 			return f.mcp, f.mcpErr
@@ -245,7 +245,8 @@ func gatewayRestartTestOptions() gatewayRestartOptions {
 		Root: "/disp/state", HermesHome: "/disp/hermes", RelayDir: "/disp/relay",
 		ServeUnit: "werkrby-finite-serve.service", DrainTimeout: time.Minute, DrainPoll: time.Second,
 		KillGrace: 5 * time.Second, EnsureTimeout: time.Minute, EnsureRetry: 2 * time.Minute, EnsurePoll: time.Second,
-		MCPServers: []string{"spark", "graphiti", "rag"},
+		MCPServers:      []string{"spark", "graphiti", "rag"},
+		MCPProbeProfile: "wk-finite-test", MCPProbeTimeout: 30 * time.Second, MCPProbeRetry: 2 * time.Minute,
 	}
 }
 
@@ -403,7 +404,7 @@ func TestGatewayRestartEscalatesToKillAfterGrace(t *testing.T) {
 func TestGatewayRestartVerificationGateKeepsServeOff(t *testing.T) {
 	for name, states := range map[string][]gatewayRuntimeState{
 		"mcp server missing": {gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(401)},
-		"mcp cooldown":       {gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(401)},
+		"mcp probe error":    {gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(401)},
 		"no fresh boot":      {gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(400)},
 		"no code sha":        {gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(401)},
 	} {
@@ -413,14 +414,11 @@ func TestGatewayRestartVerificationGateKeepsServeOff(t *testing.T) {
 			f.cmdlines[400] = []string{"/hermes/gateway", "gateway", "run", "--quiet"}
 			switch name {
 			case "mcp server missing":
-				f.mcp.Servers = map[string]int{"spark": 36, "graphiti": 4} // rag never registered
-			case "mcp cooldown":
-				f.mcp.Servers = map[string]int{"spark": 36, "graphiti": 4, "rag": 2}
-				f.mcp.CooldownLines = 2
+				f.mcp.Servers = map[string]int{"spark": 1, "graphiti": 1} // rag never passed
+			case "mcp probe error":
+				f.mcpErr = fmt.Errorf("probe rag: exit status 1 (connection refused)")
 			case "no fresh boot":
-				f.mcp.Servers = map[string]int{"spark": 36, "graphiti": 4, "rag": 2}
 			case "no code sha":
-				f.mcp.Servers = map[string]int{"spark": 36, "graphiti": 4, "rag": 2}
 				f.states[len(f.states)-1].CodeSHA = ""
 			}
 			deps := f.deps(func(string, ...any) {})
@@ -470,7 +468,7 @@ func TestGatewayRestartEnsureRetriesDrainingUntilReady(t *testing.T) {
 	f.alive[400] = true
 	f.cmdlines[400] = []string{"/hermes/gateway", "gateway", "run", "--quiet"}
 	f.ensureStates = []string{"draining", "ready"}
-	f.mcp.Servers = map[string]int{"spark": 36, "graphiti": 12, "rag": 2}
+	f.mcp.Servers = map[string]int{"spark": 1, "graphiti": 1, "rag": 1}
 	deps := f.deps(func(string, ...any) {})
 	result, err := runGatewayRestart(context.Background(), gatewayRestartTestOptions(), deps)
 	if err != nil {
@@ -665,6 +663,21 @@ argv = sys.argv[1:]
 if os.environ.get("GATEWAY_SIM_INVOCATIONS"):
     with open(os.environ["GATEWAY_SIM_INVOCATIONS"], "a") as handle:
         handle.write(" ".join(argv) + chr(10))
+# The MCP verification gate probes each required server through this same
+# binary: "--profile <seat> mcp test <server>" must exit 0 for every server
+# in GATEWAY_SIM_MCP_SERVERS, exit 3 (unknown server) otherwise, and with
+# GATEWAY_SIM_MCP_FAIL_ONCE_MARK exit 1 exactly once before passing.
+if len(argv) == 5 and argv[0] == "--profile" and argv[2:4] == ["mcp", "test"]:
+    allowed = [s for s in os.environ.get("GATEWAY_SIM_MCP_SERVERS", "").split(",") if s]
+    if argv[4] not in allowed:
+        print("unknown mcp server: %s" % argv[4], file=sys.stderr)
+        sys.exit(3)
+    fail_once = os.environ.get("GATEWAY_SIM_MCP_FAIL_ONCE_MARK", "")
+    if fail_once and not os.path.exists(fail_once):
+        open(fail_once, "w").close()
+        print("MCP server %s: connection refused" % argv[4], file=sys.stderr)
+        sys.exit(1)
+    sys.exit(0)
 required = ["--profile", "default", "gateway", "run", "--quiet", "--idle-exit"]
 if argv != required:
     print("unsupported invocation: %s" % " ".join(argv), file=sys.stderr)
@@ -951,16 +964,21 @@ func readSimInvocations(t *testing.T, sim *gatewaySim) []string {
 
 func assertClientStyleBoots(t *testing.T, invocations []string) {
 	t.Helper()
-	if len(invocations) == 0 {
-		t.Fatal("the simulated hermes was never invoked")
-	}
+	boots := 0
 	for _, invocation := range invocations {
-		if !strings.Contains(invocation, "gateway run --quiet --idle-exit") {
+		if !strings.Contains(invocation, "gateway run") {
+			continue // `mcp test` probe invocations are not boots
+		}
+		boots++
+		if !strings.Contains(invocation, "--quiet --idle-exit") {
 			t.Fatalf("boot invocation is not the client-style detached boot: %q", invocation)
 		}
 		if strings.Contains(invocation, "ensure") {
 			t.Fatalf("the boot used the ensure boundary: %q", invocation)
 		}
+	}
+	if boots == 0 {
+		t.Fatal("the simulated hermes was never invoked for a boot")
 	}
 }
 
@@ -1160,46 +1178,212 @@ func TestParseGatewayStateFile(t *testing.T) {
 	}
 }
 
-func TestMCPLogScanFindsRegistrationsAfterStart(t *testing.T) {
+// TestProbeMCPServersRunsHermesTestPerServer pins the probe's spawn shape:
+// one `<hermes> --profile <seat> mcp test <server>` per required server, run
+// with the fresh boot's HERMES_HOME so the probe inherits exactly the home,
+// profile config and environment the boot did.
+func TestProbeMCPServersRunsHermesTestPerServer(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the probe fake is a sh script")
+	}
 	dir := t.TempDir()
-	profile := filepath.Join(dir, "profiles", "wk-finite-test", "logs")
-	if err := os.MkdirAll(profile, 0o700); err != nil {
+	argvLog := filepath.Join(dir, "invocations.log")
+	envLog := filepath.Join(dir, "env.log")
+	bin := filepath.Join(dir, "hermes-fake")
+	script := fmt.Sprintf("#!/bin/sh\necho \"$@\" >> %q\necho \"HERMES_HOME=$HERMES_HOME\" >> %q\nexit 0\n", argvLog, envLog)
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.Join([]string{
-		"2026-11-01 17:00:00,000 INFO tools.mcp_tool: MCP server 'spark' (HTTP): registered 36 tool(s): a, b",
-		"2026-11-01 17:48:49,288 INFO tools.mcp_tool: MCP server 'spark' (HTTP): registered 36 tool(s): a, b",
-		"2026-11-01 17:48:49,290 INFO tools.mcp_tool: MCP server 'graphiti' (SSE): registered 4 tool(s): c",
-		"2026-11-01 17:48:49,291 INFO tools.mcp_tool: MCP server 'rag' (SSE): registered 2 tool(s): d",
-		"2026-11-01 17:48:49,334 INFO tools.mcp_tool:   MCP: 44 tool(s) from 7 server(s)",
-		"2026-11-01 17:48:50,000 INFO tools.other: unrelated",
-		"2026-11-01 17:48:51,000 INFO tools.mcp_tool: MCP: 0 tool(s) from 7 server(s) (1 failed: rag (not attempted (in retry cooldown)))",
-		"",
-	}, "\n")
-	if err := os.WriteFile(filepath.Join(profile, "agent.log"), []byte(lines), 0o600); err != nil {
-		t.Fatal(err)
+	check, err := probeMCPServers(context.Background(), bin, "wk-finite-test", "/sim/hermes", []string{"spark", "rag"}, 10*time.Second)
+	if err != nil {
+		t.Fatalf("probe failed: %v", err)
 	}
-	since := time.Date(2026, 11, 1, 17, 48, 0, 0, time.Local)
-	check, err := scanMCPLogs(dir, []string{"spark", "graphiti", "rag"}, since)
+	if check.Servers["spark"] != 1 || check.Servers["rag"] != 1 {
+		t.Fatalf("probe verdict = %+v", check.Servers)
+	}
+	if !check.allConnected([]string{"spark", "rag"}) {
+		t.Fatal("allConnected = false for probes that all passed")
+	}
+	content, err := os.ReadFile(argvLog)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if check.Servers["spark"] != 36 || check.Servers["graphiti"] != 4 || check.Servers["rag"] != 2 {
-		t.Fatalf("server registrations = %+v", check.Servers)
+	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("probe invocations = %d, want one per server: %v", len(lines), lines)
 	}
-	if check.SummaryLines != 1 {
-		t.Fatalf("healthy summary lines = %d, want 1 (the failed line must not count)", check.SummaryLines)
+	if lines[0] != "--profile wk-finite-test mcp test spark" || lines[1] != "--profile wk-finite-test mcp test rag" {
+		t.Fatalf("probe argv = %v", lines)
 	}
-	if check.CooldownLines != 1 {
-		t.Fatalf("cooldown lines = %d, want 1", check.CooldownLines)
+	envContent, err := os.ReadFile(envLog)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if check.allConnected([]string{"spark", "graphiti", "rag"}) {
-		t.Fatal("a cooldown line in the window must fail the MCP gate")
+	if !strings.Contains(string(envContent), "HERMES_HOME=/sim/hermes") {
+		t.Fatalf("the probe did not run with the boot's HERMES_HOME: %s", envContent)
 	}
-	healthy := check
-	healthy.CooldownLines = 0
-	if !healthy.allConnected([]string{"spark", "graphiti", "rag"}) {
-		t.Fatalf("check without cooldown lines = %+v, want all connected", healthy)
+}
+
+func TestProbeMCPServersFailureCarriesServerAndOutput(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the probe fake is a sh script")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "hermes-fake")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\necho \"unknown mcp server: rag\" >&2\nexit 3\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := probeMCPServers(context.Background(), bin, "wk-finite-test", "/sim/hermes", []string{"spark", "rag"}, 10*time.Second)
+	if err == nil {
+		t.Fatal("a failed server probe must fail the gate")
+	}
+	if !strings.Contains(err.Error(), "rag") || !strings.Contains(err.Error(), "unknown mcp server") {
+		t.Fatalf("abort does not name the failed server and its output: %v", err)
+	}
+}
+
+func TestProbeMCPServersTimesOut(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the probe fake is a sh script")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "hermes-fake")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	_, err := probeMCPServers(context.Background(), bin, "wk-finite-test", "/sim/hermes", []string{"spark"}, 300*time.Millisecond)
+	if err == nil {
+		t.Fatal("a hung probe must fail the gate")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("the probe waited %s for a 300ms budget", elapsed)
+	}
+}
+
+// TestGatewayRestartSimulatedMCPProbeGate is the live-abort regression: the
+// passive agent.log scan could never pass during a restart because with
+// dispatch stopped and intake off no profile agent initializes, so no
+// registration line is ever written (the 2026-11-03T09:02Z abort read zero
+// lines three seconds into a boot that wrote none in its whole idle life).
+// The gate must prove MCP connectivity itself, through the same hermes
+// binary, home and environment the fresh boot inherited, before serve
+// resumes.
+func TestGatewayRestartSimulatedMCPProbeGate(t *testing.T) {
+	sim := startGatewaySim(t, false)
+	oldPID := sim.gatewayPID
+	t.Setenv("GATEWAY_SIM_MCP_SERVERS", "spark,graphiti,rag")
+	// The probe inherits this process's environment (the boot records via its
+	// own extraEnv), so both must append to the one invocations file.
+	t.Setenv("GATEWAY_SIM_INVOCATIONS", filepath.Join(sim.base, "invocations.log"))
+	var log bytes.Buffer
+	options := sim.options(30 * time.Second)
+	options.MCPServers = []string{"spark", "graphiti", "rag"}
+	options.MCPProbeProfile = "wk-finite-test"
+	options.MCPProbeTimeout = 15 * time.Second
+	options.MCPProbeRetry = 20 * time.Second
+	options.HermesBin = sim.hermesBin
+	deps := sim.deps(t, options, &log)
+	result, err := runGatewayRestart(context.Background(), options, deps)
+	if err != nil {
+		t.Fatalf("simulated restart failed at the MCP probe gate: %v\n%s", err, log.String())
+	}
+	for _, server := range []string{"spark", "graphiti", "rag"} {
+		if result.MCPServers[server] != 1 {
+			t.Fatalf("server %s was not probed successfully: %+v", server, result.MCPServers)
+		}
+	}
+	invocations := readSimInvocations(t, sim)
+	probes := 0
+	for _, invocation := range invocations {
+		if strings.Contains(invocation, "mcp test") {
+			probes++
+			if !strings.Contains(invocation, "--profile wk-finite-test mcp test ") {
+				t.Fatalf("probe used the wrong profile or shape: %q", invocation)
+			}
+		}
+	}
+	if probes != 3 {
+		t.Fatalf("probe invocations = %d, want one per required server: %v", probes, invocations)
+	}
+	assertClientStyleBoots(t, invocations)
+	if serveState := readSimSystemdState(t, sim); serveState != "active" {
+		t.Fatalf("serve state after restart = %q", serveState)
+	}
+	if _, err := os.Stat(filepath.Join(sim.relay, "bridge.on")); err != nil {
+		t.Fatalf("intake was not restored: %v", err)
+	}
+	if procProcessAlive(context.Background(), oldPID) {
+		t.Fatal("the old gateway survived the restart")
+	}
+}
+
+func TestGatewayRestartSimulatedMCPProbeFailureAborts(t *testing.T) {
+	// One required server the probe cannot reach: the restart aborts with
+	// Werkrby off rather than resume dispatch onto an unverified gateway.
+	sim := startGatewaySim(t, false)
+	oldPID := sim.gatewayPID
+	t.Setenv("GATEWAY_SIM_MCP_SERVERS", "spark,graphiti") // rag is not answerable
+	t.Setenv("GATEWAY_SIM_INVOCATIONS", filepath.Join(sim.base, "invocations.log"))
+	var log bytes.Buffer
+	options := sim.options(30 * time.Second)
+	options.MCPServers = []string{"spark", "graphiti", "rag"}
+	options.MCPProbeProfile = "wk-finite-test"
+	options.MCPProbeTimeout = 5 * time.Second
+	options.MCPProbeRetry = 1 * time.Second // one pass, no recovery
+	options.HermesBin = sim.hermesBin
+	deps := sim.deps(t, options, &log)
+	_, err := runGatewayRestart(context.Background(), options, deps)
+	if err == nil {
+		t.Fatal("the restart resumed dispatch despite a failed MCP probe")
+	}
+	if !strings.Contains(err.Error(), "MCP gate failed") || !strings.Contains(err.Error(), "rag") {
+		t.Fatalf("abort does not name the failed probe: %v", err)
+	}
+	if serveState := readSimSystemdState(t, sim); serveState != "inactive" {
+		t.Fatalf("serve state after abort = %q, want inactive", serveState)
+	}
+	if _, err := os.Stat(filepath.Join(sim.relay, "bridge.on")); !os.IsNotExist(err) {
+		t.Fatalf("intake was restored after the abort: %v", err)
+	}
+	if procProcessAlive(context.Background(), oldPID) {
+		t.Fatal("the old gateway was left alive past the verify abort")
+	}
+}
+
+func TestGatewayRestartSimulatedMCPProbeRetryRecovers(t *testing.T) {
+	// One transient probe failure must not strand Werkrby off: the gate
+	// retries within its budget and completes when the server answers.
+	sim := startGatewaySim(t, false)
+	t.Setenv("GATEWAY_SIM_MCP_SERVERS", "spark,graphiti,rag")
+	t.Setenv("GATEWAY_SIM_MCP_FAIL_ONCE_MARK", filepath.Join(sim.base, "mcp-fail-once"))
+	t.Setenv("GATEWAY_SIM_INVOCATIONS", filepath.Join(sim.base, "invocations.log"))
+	var log bytes.Buffer
+	options := sim.options(30 * time.Second)
+	options.MCPServers = []string{"spark", "graphiti", "rag"}
+	options.MCPProbeProfile = "wk-finite-test"
+	options.MCPProbeTimeout = 15 * time.Second
+	options.MCPProbeRetry = 20 * time.Second
+	options.HermesBin = sim.hermesBin
+	deps := sim.deps(t, options, &log)
+	result, err := runGatewayRestart(context.Background(), options, deps)
+	if err != nil {
+		t.Fatalf("the restart did not recover from one failed probe pass: %v\n%s", err, log.String())
+	}
+	if result.MCPServers["spark"] != 1 {
+		t.Fatalf("spark verdict after recovery = %+v", result.MCPServers)
+	}
+	sparks := 0
+	for _, invocation := range readSimInvocations(t, sim) {
+		if strings.Contains(invocation, "mcp test spark") {
+			sparks++
+		}
+	}
+	if sparks < 2 {
+		t.Fatalf("spark was probed %d time(s); the failed pass was not retried", sparks)
+	}
+	if serveState := readSimSystemdState(t, sim); serveState != "active" {
+		t.Fatalf("serve state after restart = %q", serveState)
 	}
 }
 
@@ -1227,8 +1411,20 @@ func TestGatewayRestartParseOptionsDefaults(t *testing.T) {
 	if options.EnsureRetry != 10*time.Minute || options.EnsurePoll != 5*time.Second {
 		t.Fatalf("ensure retry defaults = %s/%s", options.EnsureRetry, options.EnsurePoll)
 	}
+	if options.MCPProbeProfile != "wk-finite-code" {
+		t.Fatalf("mcp probe profile default = %q", options.MCPProbeProfile)
+	}
+	if options.MCPProbeTimeout != 60*time.Second || options.MCPProbeRetry != 2*time.Minute {
+		t.Fatalf("mcp probe defaults = %s/%s", options.MCPProbeTimeout, options.MCPProbeRetry)
+	}
 	if strings.Join(options.MCPServers, ",") != "spark,graphiti,rag" {
 		t.Fatalf("mcp servers default = %v", options.MCPServers)
+	}
+	if _, err := parseGatewayRestartOptions([]string{"restart", "--root", filepath.Join(home, "werkrby-finite", "state"), "--mcp-probe-profile", ""}); err == nil {
+		t.Fatal("an empty probe profile must be refused while the MCP gate is requested")
+	}
+	if _, err := parseGatewayRestartOptions([]string{"restart", "--root", filepath.Join(home, "werkrby-finite", "state"), "--mcp-probe-retry", "1s"}); err == nil {
+		t.Fatal("a probe retry budget below one poll interval must be refused")
 	}
 	if _, err := parseGatewayRestartOptions([]string{"restart"}); err == nil {
 		t.Fatal("root is required")
