@@ -17,6 +17,18 @@ type Brief struct {
 	Staff           string
 	ReviewStaff     string
 	Body            string
+	// AcceptanceCheck is the optional declared acceptance check. The engine
+	// runs it outside the worker's run and records a shadow verdict; it never
+	// appears in a prompt.
+	AcceptanceCheck *AcceptanceCheck
+}
+
+// AcceptanceCheck is the command a brief declares as its acceptance check.
+// Command appears in prompts, so it must hold no secret.
+type AcceptanceCheck struct {
+	Command        string
+	Repo           string
+	TimeoutSeconds int
 }
 
 // JoeyAsk is the closed human-question contract used by a Joey wait.

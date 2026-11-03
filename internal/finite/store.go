@@ -3,6 +3,7 @@ package finite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -427,4 +428,51 @@ func (s *Store) CountOpenRuns(ctx context.Context) (int, error) {
 	var open int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM runs WHERE ended_at IS NULL`).Scan(&open)
 	return open, err
+}
+
+// AcceptanceEvent returns the shadow acceptance verdict recorded for one run,
+// whether one exists, and any read error. An absent event is not an error.
+func (s *Store) AcceptanceEvent(ctx context.Context, runID int64) (json.RawMessage, bool, error) {
+	var payload string
+	err := s.db.QueryRowContext(ctx, `SELECT payload_json FROM task_events WHERE event_id=?`,
+		acceptanceEventID(runID)).Scan(&payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return json.RawMessage(payload), true, nil
+}
+
+// RecordAcceptance writes the run's shadow acceptance verdict with
+// INSERT OR IGNORE, so the first record wins and a replay is a no-op. It
+// changes no task state, version, outbox row, or charge.
+func (s *Store) RecordAcceptance(ctx context.Context, taskID string, runID int64, payload []byte) (bool, error) {
+	inserted := false
+	err := s.withImmediateTx(ctx, func(tx txRunner) error {
+		task, err := getTaskTx(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		now := s.now().UTC()
+		result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_events(
+			event_id,task_id,run_id,kind,from_state,to_state,task_version,payload_json,created_at
+		) VALUES(?,?,?,?,?,?,?,?,?)`,
+			acceptanceEventID(runID), taskID, runID, "acceptance",
+			string(task.State), string(task.State), task.Version, string(payload), stamp(now))
+		if err != nil {
+			return fmt.Errorf("finite: record acceptance: %w", err)
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		inserted = affected == 1
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return inserted, nil
 }

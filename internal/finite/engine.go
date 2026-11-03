@@ -42,6 +42,7 @@ type engineHooks struct {
 	afterPIDPersist     func(Run, ProcessIdentity)
 	beforeSettlement    func(SettlementRequest)
 	afterSettlement     func(SettlementRequest)
+	afterAcceptance     func(runID int64, recorded bool)
 	beforeWake          func(Task)
 	afterWake           func(Task)
 	inspectRun          func(context.Context, int64, string) (RunProcesses, error)
@@ -273,13 +274,9 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 	}
 	runHarness := harnessForPhase(e.opts.Harness, parsedBrief, phase, seatModel)
 	sessionKey := fmt.Sprintf("finite:%s:%s", task.ID, phase)
-	dynamic := fmt.Sprintf("TASK BRIEF\ntitle: %s\n\n%s", task.Title, brief)
-	history, err := e.store.TaskHistory(ctx, task.ID)
+	dynamic, err := e.dispatchDynamic(ctx, task, phase, brief)
 	if err != nil {
-		return fmt.Errorf("finite: read task history for dispatch: %w", err)
-	}
-	if history != "" {
-		dynamic += "\n\nTASK HISTORY (earlier runs of this task, oldest first; act on Joey's answers and fix every review finding)\n" + history + "\n"
+		return err
 	}
 	promptRequest := PromptRequest{
 		TaskID: task.ID, RunID: 1, Phase: phase, Domains: e.opts.Domains,
@@ -362,6 +359,20 @@ func (e *Engine) dispatchTask(ctx context.Context, task Task, launchReason strin
 		e.signalWake()
 	}
 	return err
+}
+
+// dispatchDynamic builds the dynamic turn data for one dispatch: the brief and
+// the task history selected for the phase. It is prompt context only.
+func (e *Engine) dispatchDynamic(ctx context.Context, task Task, phase Phase, brief []byte) (string, error) {
+	dynamic := fmt.Sprintf("TASK BRIEF\ntitle: %s\n\n%s", task.Title, brief)
+	history, err := e.store.TaskHistory(ctx, task.ID)
+	if err != nil {
+		return "", fmt.Errorf("finite: read task history for dispatch: %w", err)
+	}
+	if history != "" {
+		dynamic += "\n\nTASK HISTORY (earlier runs of this task, oldest first; act on Joey's answers and fix every review finding)\n" + history + "\n"
+	}
+	return dynamic, nil
 }
 
 // briefChangedReason is the terminal failure recorded when a committed brief
