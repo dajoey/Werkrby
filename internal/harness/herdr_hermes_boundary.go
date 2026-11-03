@@ -77,13 +77,24 @@ func writeHermesBoundaryUsage(spec RunBoundarySpec, report *hermesBoundaryUsageR
 	return fsx.AtomicWriteFile(filepath.Join(spec.RunDir, "usage.json"), data, 0o600)
 }
 
-func hermesQuotaReset(failure string) (time.Time, bool) {
+// hermesQuotaWallFailure is the keyword gate a provider failure must pass to
+// read as a quota wall; the reset parser and the probe wall share it.
+func hermesQuotaWallFailure(failure string) bool {
 	lower := strings.ToLower(failure)
-	if !strings.Contains(lower, "429") && !strings.Contains(lower, "quota") && !strings.Contains(lower, "usage limit") && !strings.Contains(lower, "limit exhausted") {
+	return strings.Contains(lower, "429") || strings.Contains(lower, "quota") ||
+		strings.Contains(lower, "usage limit") || strings.Contains(lower, "limit exhausted")
+}
+
+// hermesWallProbeDelay is the provisional wake for a wall whose text names no
+// parseable reset; the engine's ladder re-probes and may extend it.
+const hermesWallProbeDelay = 15 * time.Minute
+
+func hermesQuotaReset(failure string) (time.Time, bool) {
+	if !hermesQuotaWallFailure(failure) {
 		return time.Time{}, false
 	}
 	marker := "reset at "
-	index := strings.Index(lower, marker)
+	index := strings.Index(strings.ToLower(failure), marker)
 	if index < 0 {
 		return time.Time{}, false
 	}
@@ -100,16 +111,25 @@ func writeHermesBoundaryWall(spec RunBoundarySpec, report *hermesBoundaryUsageRe
 	if report == nil {
 		return nil
 	}
-	reset, ok := hermesQuotaReset(report.Failure)
-	if !ok {
-		return nil
-	}
 	record := map[string]any{
 		"schema_version": 1,
 		"run_id":         spec.RunID,
 		"outcome":        "wall",
 		"error":          report.Failure,
-		"wall_wake_at":   reset.UTC().Format(time.RFC3339Nano),
+	}
+	reset, ok := hermesQuotaReset(report.Failure)
+	switch {
+	case ok:
+		// The provider printed a reset. It is read as UTC here, whatever zone
+		// it printed in; the engine corrects the zone from the roster pool.
+		record["wall_wake_at"] = reset.UTC().Format(time.RFC3339Nano)
+	case hermesQuotaWallFailure(report.Failure):
+		// The provider named a wall without a parseable reset: an uncharged
+		// probe wall on the engine's ladder, not a failed turn.
+		record["wall_wake_at"] = time.Now().UTC().Add(hermesWallProbeDelay).Format(time.RFC3339Nano)
+		record["wall_source"] = "probe"
+	default:
+		return nil
 	}
 	data, err := json.Marshal(record)
 	if err != nil {

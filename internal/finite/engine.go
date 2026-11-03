@@ -441,9 +441,9 @@ func (e *Engine) verifiedBrief(ctx context.Context, task Task) ([]byte, Brief, e
 	return brief, parsed, nil
 }
 
-// walkInputs derives the roster-walk origin and the pools this task's own
-// quota walls still wall. Slot mode (no roster) returns zero values and keeps
-// today's any-seat admission.
+// walkInputs derives the roster-walk origin and the pools a wall still walls.
+// A wall walls its whole pool for every task, whatever task hit it. Slot mode
+// (no roster) returns zero values and keeps today's any-seat admission.
 func (e *Engine) walkInputs(ctx context.Context, task Task, phase Phase, brief Brief, seats []Seat) (string, map[string]struct{}, error) {
 	if !e.opts.RosterSeats {
 		return "", nil, nil
@@ -455,26 +455,66 @@ func (e *Engine) walkInputs(ctx context.Context, task Task, phase Phase, brief B
 	if start == "" {
 		start = strings.TrimPrefix(e.opts.Harness.Model, "@")
 	}
-	deadlines, err := e.store.wallDeadlinesBySeat(ctx, task.ID)
+	lifts, err := e.store.poolWalls(ctx, seats, e.store.now().UTC())
 	if err != nil {
 		return "", nil, err
 	}
-	walled := make(map[string]struct{})
-	if len(deadlines) != 0 {
-		now := e.store.now().UTC()
-		poolOf := make(map[string]string, len(seats))
-		for _, seat := range seats {
-			poolOf[seat.Name] = seat.Pool
-		}
-		for seatName, deadline := range deadlines {
-			pool := poolOf[seatName]
-			if pool == "" || !deadline.After(now) {
-				continue // unknown seat, unmetered, or the wall has lifted
-			}
-			walled[pool] = struct{}{}
-		}
+	walled := make(map[string]struct{}, len(lifts))
+	for pool := range lifts {
+		walled[pool] = struct{}{}
 	}
 	return start, walled, nil
+}
+
+// resolveRunWall resolves one settled wall's true wake at the settle call
+// site: the roster reset when it knows one, else the provider text in the
+// pool's zone, else the harness wake, else the probe ladder. A roster that
+// cannot be read, or a seat it no longer names, never blocks settlement — the
+// rules run as if the seat were unknown, and the serve log says so.
+func (e *Engine) resolveRunWall(ctx context.Context, run Run, execution *engineExecutionRecord) (time.Time, WallSource, string) {
+	var pool string
+	var rosterReset *time.Time
+	seats, err := e.opts.Seats(ctx)
+	if err != nil {
+		e.reportWallRosterMiss(run, fmt.Errorf("read roster seats: %v", err))
+	} else {
+		for _, seat := range seats {
+			if seat.Name == run.Seat {
+				pool = seat.Pool
+				rosterReset = seat.QuotaReset
+				break
+			}
+		}
+		if pool == "" {
+			e.reportWallRosterMiss(run, fmt.Errorf("seat %q is not in the roster", run.Seat))
+		}
+	}
+	prior, err := e.store.priorProbeWalls(ctx, pool, seats)
+	if err != nil {
+		prior = 0 // an unreadable ladder re-probes from its first step
+	}
+	var harnessWake time.Time
+	if execution.WallWakeAt != nil {
+		harnessWake = *execution.WallWakeAt
+	}
+	wake, source := resolveWallWake(wallInputs{
+		Pool:         pool,
+		ErrorText:    execution.Error,
+		RosterReset:  rosterReset,
+		HarnessWake:  harnessWake,
+		HarnessProbe: execution.WallSource == string(WallSourceProbe),
+		PriorProbes:  prior,
+		SettleAt:     e.store.now().UTC(),
+	})
+	return wake, source, pool
+}
+
+// reportWallRosterMiss logs one serve line when a wall's wake resolves
+// without the roster, naming the run and the cause.
+func (e *Engine) reportWallRosterMiss(run Run, cause error) {
+	if e.opts.OnError != nil {
+		e.opts.OnError(fmt.Errorf("finite: run %d wall wake resolved without the roster: %v", run.ID, cause))
+	}
 }
 
 // latestEndedRunIsWall reports whether the task's most recent settled run

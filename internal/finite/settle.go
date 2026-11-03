@@ -192,7 +192,7 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		}
 		next, failureReason := settlementState(task, run, outcome, result, accounting)
 		newVersion := task.Version + 1
-		if err := updateSettlementTask(ctx, tx, task, next, newVersion, now, result, req.WallWakeAt, runError); err != nil {
+		if err := updateSettlementTask(ctx, tx, task, next, newVersion, now, result, settlementWallWake(req), runError); err != nil {
 			return err
 		}
 		if err := runSettlementFailpoint(SettlementAfterTaskUpdate); err != nil {
@@ -202,16 +202,26 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		settled.State = next
 		settled.Version = newVersion
 		settled.UpdatedAt = now
-		applySettlementWait(&settled, run, outcome, result, req.WallWakeAt, runError)
+		applySettlementWait(&settled, run, outcome, result, settlementWallWake(req), runError)
 		audit := map[string]any{
 			"request_sha256": fingerprint, "execution_outcome": outcome,
 			"result_outcome": resultOutcome(result), "error": runError,
 		}
 		if outcome == RunWall {
 			// The fallback walk reads the walled seat and the wall deadline
-			// from this payload; no schema column carries them.
+			// from this payload; no schema column carries them. wall_source
+			// and pool say how the wake was derived; a payload without a
+			// wall_source is a legacy row, re-read by the legacy rules.
 			audit["seat"] = run.Seat
-			audit["wall_wake_at"] = req.WallWakeAt.UTC().Format(time.RFC3339Nano)
+			if wake := settlementWallWake(req); wake != nil {
+				audit["wall_wake_at"] = wake.UTC().Format(time.RFC3339Nano)
+			}
+			if req.WallSource != "" {
+				audit["wall_source"] = req.WallSource
+			}
+			if req.WallPool != "" {
+				audit["pool"] = req.WallPool
+			}
 		}
 		if failureReason != "" {
 			audit["failure_reason"] = failureReason
@@ -282,6 +292,16 @@ func canonicalSettlementRequest(req SettlementRequest) SettlementRequest {
 	result.Wait = &wait
 	req.Result = &result
 	return req
+}
+
+// settlementWallWake returns the wake the settlement writes: the engine's
+// resolved value when one came with the request, else the harness value as
+// the request carried it.
+func settlementWallWake(req SettlementRequest) *time.Time {
+	if req.ResolvedWallWakeAt != nil {
+		return req.ResolvedWallWakeAt
+	}
+	return req.WallWakeAt
 }
 
 func settlementFingerprint(req SettlementRequest) (string, error) {
@@ -645,40 +665,6 @@ func (s *Store) WakeFallback(ctx context.Context, taskID string, expectedVersion
 		return nil
 	})
 	return completed, err
-}
-
-// wallDeadlinesBySeat derives, from SQLite alone, when each seat's latest
-// quota wall on this task lifts: seat -> that run's wall_wake_at. The settled
-// event payload written at settlement carries both facts.
-func (s *Store) wallDeadlinesBySeat(ctx context.Context, taskID string) (map[string]time.Time, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT r.seat, e.payload_json FROM task_events e
-		JOIN runs r ON r.id = e.run_id
-		WHERE e.task_id=? AND e.kind='settled' AND r.outcome='wall' AND r.seat <> ''`, taskID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	deadlines := make(map[string]time.Time)
-	for rows.Next() {
-		var seat, payload string
-		if err := rows.Scan(&seat, &payload); err != nil {
-			return nil, err
-		}
-		var audit struct {
-			WallWakeAt string `json:"wall_wake_at"`
-		}
-		if json.Unmarshal([]byte(payload), &audit) != nil || audit.WallWakeAt == "" {
-			continue
-		}
-		deadline, err := time.Parse(time.RFC3339Nano, audit.WallWakeAt)
-		if err != nil {
-			continue
-		}
-		if prior, exists := deadlines[seat]; !exists || deadline.After(prior) {
-			deadlines[seat] = deadline
-		}
-	}
-	return deadlines, rows.Err()
 }
 
 // AnswerJoey performs a matching-answer, task-only wait transition.

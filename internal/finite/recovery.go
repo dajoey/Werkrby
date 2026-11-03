@@ -157,6 +157,14 @@ func (e *Engine) recoverRun(ctx context.Context, run Run) error {
 		request.ExitCode = execution.ExitCode
 		request.WallWakeAt = execution.WallWakeAt
 		request.Error = execution.Error
+		if execution.Outcome == RunWall {
+			wake, source, pool := e.resolveRunWall(ctx, run, execution)
+			if !wake.IsZero() {
+				request.ResolvedWallWakeAt = &wake
+				request.WallSource = string(source)
+				request.WallPool = pool
+			}
+		}
 	} else if resultPresent {
 		request.ExecutionOutcome = RunOK
 		request.Error = ""
@@ -252,7 +260,11 @@ type engineExecutionRecord struct {
 	Error         string     `json:"error,omitempty"`
 	ExitCode      *int       `json:"exit_code,omitempty"`
 	WallWakeAt    *time.Time `json:"wall_wake_at,omitempty"`
-	CompletedAt   time.Time  `json:"completed_at,omitempty"`
+	// WallSource marks a wall whose harness wake is provisional: "probe"
+	// means the provider named a quota wall without a parseable reset, so the
+	// engine re-probes on its ladder. Absent on every older record.
+	WallSource  string    `json:"wall_source,omitempty"`
+	CompletedAt time.Time `json:"completed_at,omitempty"`
 }
 
 func readRecoveredExecution(run Run) (*engineExecutionRecord, error) {

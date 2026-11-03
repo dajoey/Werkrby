@@ -28,11 +28,22 @@ type liveControlledEndpoint struct {
 	holdStarted  chan struct{}
 	holdOnce     sync.Once
 	releaseHold  chan struct{}
+	// reset is the instant the endpoint's 429 names, whatever zone it is
+	// printed in; the wake checks compare against it exactly.
+	reset time.Time
 }
 
 func newLiveControlledEndpoint(t *testing.T) *liveControlledEndpoint {
+	return newLiveControlledEndpointZone(t, time.UTC)
+}
+
+// newLiveControlledEndpointZone builds the same controlled endpoint but prints
+// its reset in the given zone, so a provider whose wall text is not UTC can be
+// exercised end to end. The reset instant R is now plus two hours, truncated
+// to the second, and stays readable on the endpoint for exact wake checks.
+func newLiveControlledEndpointZone(t *testing.T, loc *time.Location) *liveControlledEndpoint {
 	t.Helper()
-	endpoint := &liveControlledEndpoint{holdStarted: make(chan struct{}), releaseHold: make(chan struct{})}
+	endpoint := &liveControlledEndpoint{holdStarted: make(chan struct{}), releaseHold: make(chan struct{}), reset: time.Now().Add(2 * time.Hour).Truncate(time.Second)}
 	endpoint.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {
 		case strings.Contains(req.URL.Path, "/wall/"):
@@ -41,7 +52,7 @@ func newLiveControlledEndpoint(t *testing.T) *liveControlledEndpoint {
 			endpoint.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
-			reset := time.Now().Add(2 * time.Hour).UTC().Format("2006-01-02 15:04:05")
+			reset := endpoint.reset.In(loc).Format("2006-01-02 15:04:05")
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "HTTP 429: quota exhausted. Your limit will reset at " + reset, "type": "rate_limit_error"}})
 		case strings.Contains(req.URL.Path, "/hold/"):
 			if req.Method != http.MethodPost || !strings.Contains(req.URL.Path, "chat/completions") {

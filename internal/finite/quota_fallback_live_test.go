@@ -21,7 +21,7 @@ import (
 
 // liveWallFallbackHomeProfiles are the disposable profiles the fallback wall
 // tests run; the home marker must list every one of them.
-var liveWallFallbackHomeProfiles = []string{"wk-finite-wall-a", "wk-finite-wall-b", "wk-finite-wall-closed-a", "wk-finite-wall-closed-b", "wk-finite-wall-expired-a", "wk-finite-wall-expired-b"}
+var liveWallFallbackHomeProfiles = []string{"wk-finite-wall-a", "wk-finite-wall-b", "wk-finite-wall-closed-a", "wk-finite-wall-closed-b", "wk-finite-wall-expired-a", "wk-finite-wall-expired-b", "wk-finite-wall-zone-a", "wk-finite-wall-zone-b"}
 
 func liveWallFallbackHome(t *testing.T) string {
 	t.Helper()
@@ -227,6 +227,58 @@ func setLiveAvailability(t *testing.T, path string, seatBAvailable bool) {
 		"  - name: seat-b\n    available: " + value + "\n    pool: pool-b\n"
 	if err := os.WriteFile(path, []byte(roster), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestFiniteLiveCompiledHermesQuotaWallProviderZone: a real Hermes turn whose
+// provider prints the reset in its own UTC+8 zone wakes at the printed
+// instant, not eight hours late.
+func TestFiniteLiveCompiledHermesQuotaWallProviderZone(t *testing.T) {
+	if os.Getenv("WERKRBY_FINITE_HERMES_LIVE") != "1" {
+		t.Skip("compiled live Hermes quota fallback requires explicit opt-in")
+	}
+	binary := liveBinary(t)
+	home := liveWallFallbackHome(t)
+	endpoint := newLiveControlledEndpointZone(t, time.FixedZone("UTC+8", 8*3600))
+	resetLiveProfile(t, home, "wk-finite-wall-zone-a")
+	resetLiveProfile(t, home, "wk-finite-wall-zone-b")
+	writeLiveFallbackProfile(t, home, "wk-finite-wall-zone-a", endpoint.URL+"/wall/v1")
+	writeLiveFallbackProfile(t, home, "wk-finite-wall-zone-b", endpoint.URL+"/wall/v1")
+	root := liveTestRoot(t, "compiled-wall-zone")
+	worker := writeLiveFallbackWorker(t, root, "wk-finite-wall-zone-a", "wk-finite-wall-zone-b")
+	availability := filepath.Join(root, "availability.yaml")
+	// The zone roster: seat-a spends the UTC+8 pool and carries no
+	// quota_reset, so only the provider text can date the wall.
+	roster := "seats:\n" +
+		"  - name: seat-a\n    available: true\n    fallback: seat-b\n    pool: zai-live\n" +
+		"  - name: seat-b\n    available: false\n    pool: pool-b\n"
+	if err := os.WriteFile(availability, []byte(roster), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	taskID := "compiled-wall-zone"
+	stateRoot := filepath.Join(root, "state")
+	brief := writeLiveFallbackBrief(t, root, taskID, "seat-a")
+	owner := startLiveCommand(t, binary, []string{
+		"serve", "--root", stateRoot, "--worker", worker, "--roster", availability,
+		"--harness", "herdr", "--model", "@seat-a", "--poll-interval", "25ms", "--stop-grace", "25ms",
+	}, liveEnv(home), filepath.Join(root, "owner.log"))
+	defer owner.terminate(t)
+	waitForFixture(t, func() bool { return fileExists(filepath.Join(stateRoot, "control.json")) }, "compiled owner control publication")
+	runLiveControl(t, binary, "intake", "--root", stateRoot, "--brief", brief)
+
+	status := waitLiveState(t, binary, stateRoot, taskID, StateWaiting, 2*time.Minute)
+	if status.WaitKind != WaitTime || status.WakeAt == nil {
+		t.Fatalf("zone wall status = %+v, want a timed provider wait", status)
+	}
+	runs := liveFallbackRuns(t, stateRoot)
+	if len(runs) != 1 || runs[0].Seat != "seat-a" || runs[0].Outcome != RunWall || !runs[0].Ended {
+		t.Fatalf("zone wall runs = %+v, want one settled wall on seat-a", runs)
+	}
+	if !status.WakeAt.Equal(endpoint.reset) {
+		t.Fatalf("zone wall wake = %s, want the printed reset %s, not the UTC misread %s", status.WakeAt, endpoint.reset, endpoint.reset.Add(8*time.Hour))
+	}
+	if wall, _ := endpoint.counts(); wall < 1 {
+		t.Fatal("controlled endpoint saw no real Hermes wall request")
 	}
 }
 

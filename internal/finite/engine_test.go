@@ -32,6 +32,12 @@ type engineFixtureBehavior struct {
 	WakeAt    string        `json:"wake_at,omitempty"`
 	SkipUsage bool          `json:"skip_usage,omitempty"`
 	ExitCode  *int          `json:"exit_code,omitempty"`
+	// WallError replaces the fake wall's error text, so a test can seed the
+	// provider wording the wake resolution reads.
+	WallError string `json:"wall_error,omitempty"`
+	// WallProbe writes wall_source "probe" with a provisional wake: the
+	// provider named a wall without a parseable reset.
+	WallProbe bool `json:"wall_probe,omitempty"`
 }
 
 type engineFixturePlan struct {
@@ -304,6 +310,13 @@ func (h *engineFixtureHarness) Send(ctx context.Context, sessionKey, prompt stri
 			execution["outcome"] = RunWall
 			execution["wall_wake_at"] = behavior.WakeAt
 			execution["error"] = "fake quota wall"
+			if behavior.WallError != "" {
+				execution["error"] = behavior.WallError
+			}
+			if behavior.WallProbe {
+				execution["wall_source"] = "probe"
+				execution["wall_wake_at"] = time.Now().UTC().Add(15 * time.Minute).Format(time.RFC3339Nano)
+			}
 		}
 		if behavior.ExitCode != nil {
 			execution["exit_code"] = *behavior.ExitCode

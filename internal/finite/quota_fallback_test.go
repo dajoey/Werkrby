@@ -263,6 +263,9 @@ func TestFiniteQuotaFallbackEarlyWakeRespectsMaxOpen(t *testing.T) {
 	seats := &[]Seat{
 		{Name: "seat-a", Available: true, Pool: "zai", Fallback: "seat-b"},
 		{Name: "seat-b", Available: false, Pool: "venice"}, // closed until the cap probe
+		// The hold task's own seat in its own pool: after the first wall the
+		// whole zai pool is walled, so the hold must not start there.
+		{Name: "seat-c", Available: true, Pool: "pool-c"},
 	}
 	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
 		"1": {NoResult: true, Wall: true, WakeAt: wake},
@@ -281,7 +284,7 @@ func TestFiniteQuotaFallbackEarlyWakeRespectsMaxOpen(t *testing.T) {
 	}
 	scanEngineUntil(t, engine, wallTask.ID, StateWaiting, 1)
 	// A second task now holds the single open-run slot with a blocked run.
-	holdTask, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "fallback-maxopen-hold", false, "seat-a", ""))
+	holdTask, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "fallback-maxopen-hold", false, "seat-c", ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,6 +498,197 @@ func TestFiniteRosterExpiredStartSeatWaits(t *testing.T) {
 		t.Fatalf("runs = %+v, want none while the start seat is expired", runs)
 	}
 	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+// TestFiniteQuotaWallBlocksPoolForOtherTasks: a wall is not the task's private
+// bad luck. Every task whose walk would spend the walled pool waits it out or
+// falls back, whatever task hit the wall.
+func TestFiniteQuotaWallBlocksPoolForOtherTasks(t *testing.T) {
+	clock := newEngineTestClock()
+	wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	seats := &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "zai", Fallback: "seat-b"},
+		{Name: "seat-b", Available: false, Pool: "pool-b"}, // closed, so the waller stays parked
+		{Name: "seat-b2", Available: true, Pool: "zai", Fallback: "seat-c"},
+		{Name: "seat-c", Available: true, Pool: "pool-c"},
+	}
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {NoResult: true, Wall: true, WakeAt: wake},
+		"2": {Result: ResultDone},
+	}}, seats)
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	waller, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "pool-wall-waller", false, "seat-a", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	scanEngineUntil(t, engine, waller.ID, StateWaiting, 1)
+	// A different task of the same pool skips the walled seat: its walk starts
+	// on the fallback, in another pool.
+	other, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "pool-wall-other", false, "seat-b2", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanEngineUntil(t, engine, other.ID, StateDone, 1)
+	run, _ := engine.store.GetRun(ctx, 2)
+	if run.Seat != "seat-c" {
+		t.Fatalf("other task run = %+v, want the fallback seat-c, not the walled pool", run)
+	}
+	// With that fallback closed too, the walled pool leaves the task queued
+	// with no run at all.
+	(*seats)[3].Available = false
+	closed, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "pool-wall-closed", false, "seat-b2", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := engine.ScanOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, _ := engine.store.GetTask(ctx, closed.ID)
+	closedRuns, _ := engine.store.ListRuns(ctx, closed.ID)
+	if current.State != StateTodo || len(closedRuns) != 0 {
+		t.Fatalf("closed-fallback task = %s with %d runs, want todo with none", current.State, len(closedRuns))
+	}
+	assertEngineInvariants(t, engine.store, waller.ID)
+	assertEngineInvariants(t, engine.store, other.ID)
+}
+
+// TestFiniteLegacyWallWakesAtCorrectedReset: a wall settled before wakes
+// carried a source reads its provider text in the pool's own zone, so the
+// parked task wakes at the real reset instead of the UTC misread.
+func TestFiniteLegacyWallWakesAtCorrectedReset(t *testing.T) {
+	clock := newEngineTestClock()
+	seats := &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "zai"},
+		{Name: "seat-b", Available: false, Pool: "pool-b"},
+	}
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {Result: ResultDone},
+	}}, seats)
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	stored := time.Date(2026, 11, 7, 2, 53, 12, 0, time.UTC)
+	task := seedLegacyWallRow(t, engine, "legacy-wake", "seat-a", stored, zaiWallText)
+	parked, err := engine.store.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parked.State != StateWaiting || parked.WakeAt == nil || !parked.WakeAt.Equal(stored) {
+		t.Fatalf("seeded task = %+v, want waiting on the stored misread %s", parked, stored)
+	}
+	// One minute before the real reset the corrected lift still walls the
+	// pool: the task keeps sleeping.
+	clock.now = time.Date(2026, 11, 6, 18, 52, 0, 0, time.UTC)
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	current, _ := engine.store.GetTask(ctx, task.ID)
+	if current.State != StateWaiting || current.Version != parked.Version {
+		t.Fatalf("task at 18:52 = %+v, want the wait unchanged (was %+v)", current, parked)
+	}
+	if got := fallbackWokeEvents(t, engine, task.ID); got != 0 {
+		t.Fatalf("fallback wake events at 18:52 = %d, want none", got)
+	}
+	// One minute after the real reset the pool is open again and the fallback
+	// wake fires, eight hours before the stored misread.
+	clock.now = time.Date(2026, 11, 6, 18, 54, 0, 0, time.UTC)
+	scanEngineUntil(t, engine, task.ID, StateDone, 2)
+	if got := fallbackWokeEvents(t, engine, task.ID); got != 1 {
+		t.Fatalf("fallback wake events = %d, want exactly one", got)
+	}
+	run, _ := engine.store.GetRun(ctx, 2)
+	if run.Seat != "seat-a" || run.LaunchReason != "wake" {
+		t.Fatalf("post-lift run = %+v, want seat-a with launch reason wake", run)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+// TestFiniteUnparsedWallSettlesUnchargedWithLadder: a 429 whose text names no
+// reset is a probe wall, never a charged failure, and re-probes at 15, then
+// 30, then 60 minutes.
+func TestFiniteUnparsedWallSettlesUnchargedWithLadder(t *testing.T) {
+	clock := newEngineTestClock()
+	seats := &[]Seat{{Name: "seat-a", Available: true, Pool: "zai"}}
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {NoResult: true, Wall: true, WallProbe: true},
+		"2": {NoResult: true, Wall: true, WallProbe: true},
+	}}, seats)
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	task, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "probe-ladder", false, "seat-a", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waiting := scanEngineUntil(t, engine, task.ID, StateWaiting, 1)
+	run, _ := engine.store.GetRun(ctx, 1)
+	if run.Outcome != RunWall {
+		t.Fatalf("unparsed 429 run = %s, want wall", run.Outcome)
+	}
+	accounting, _ := engine.store.DerivedAccounting(ctx, task.ID, PhaseImplementation)
+	if accounting.Failures != 0 {
+		t.Fatalf("accounting = %+v, want zero failures for a probe wall", accounting)
+	}
+	assertWallWakeNear(t, *waiting.WakeAt, clock.Now(), 15*time.Minute)
+	audit := settledWallPayload(t, engine, 1)
+	if audit["wall_source"] != "probe" {
+		t.Fatalf("first wall payload = %v, want wall_source probe", audit)
+	}
+	// Past the first probe the pool re-runs and walls again: the ladder climbs.
+	clock.Advance(20 * time.Minute)
+	scanEngineUntil(t, engine, task.ID, StateWaiting, 2)
+	accounting, _ = engine.store.DerivedAccounting(ctx, task.ID, PhaseImplementation)
+	if accounting.Failures != 0 {
+		t.Fatalf("accounting after second probe = %+v, want zero failures", accounting)
+	}
+	assertWallWakeNear(t, latestTaskWake(t, engine, task.ID), clock.Now(), 30*time.Minute)
+	audit = settledWallPayload(t, engine, 2)
+	if audit["wall_source"] != "probe" {
+		t.Fatalf("second wall payload = %v, want wall_source probe", audit)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+// assertWallWakeNear bounds a probe-ladder wake: the resolution clock is the
+// engine clock at settle, read a moment before the caller's.
+func assertWallWakeNear(t *testing.T, got time.Time, settle time.Time, delay time.Duration) {
+	t.Helper()
+	want := settle.Add(delay)
+	if got.Before(want.Add(-time.Minute)) || got.After(want.Add(time.Minute)) {
+		t.Fatalf("probe wake = %s, want within a minute of %s", got, want)
+	}
+}
+
+func settledWallPayload(t *testing.T, engine *Engine, runID int64) map[string]any {
+	t.Helper()
+	var payload string
+	if err := engine.store.db.QueryRow(`SELECT payload_json FROM task_events WHERE run_id=? AND kind='settled'`, runID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var audit map[string]any
+	if err := json.Unmarshal([]byte(payload), &audit); err != nil {
+		t.Fatal(err)
+	}
+	return audit
+}
+
+func latestTaskWake(t *testing.T, engine *Engine, taskID string) time.Time {
+	t.Helper()
+	task, err := engine.store.GetTask(context.Background(), taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.WakeAt == nil {
+		t.Fatalf("task %s has no wake", taskID)
+	}
+	return *task.WakeAt
 }
 
 func TestFiniteCLIRosterAcceptsFallbackAndPoolKeys(t *testing.T) {

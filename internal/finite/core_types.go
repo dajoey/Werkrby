@@ -130,7 +130,18 @@ type SettlementRequest struct {
 	ResultError         error
 	Usage               *Usage
 	WallWakeAt          *time.Time
-	Error               string
+	// ResolvedWallWakeAt is the engine's corrected wall wake: the roster reset
+	// when it knows one, else the provider text in the provider's zone, else
+	// the probe ladder. It never enters the settlement fingerprint; the
+	// fingerprint hashes WallWakeAt, the harness value, so a replay of an
+	// ended run still matches its stored settlement. Store-level callers that
+	// set only WallWakeAt settle exactly as before.
+	ResolvedWallWakeAt *time.Time
+	// WallSource and WallPool name how the resolved wake was derived and the
+	// roster pool of the walled seat. Both land in the settled event payload.
+	WallSource string
+	WallPool   string
+	Error      string
 }
 
 // PromptRequest separates the static provider bundle from dynamic turn data.
