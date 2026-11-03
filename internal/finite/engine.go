@@ -65,6 +65,15 @@ type Engine struct {
 
 	monitorMu sync.Mutex
 	monitors  map[int64]struct{}
+
+	// Acceptance shadow state: detached checks run outside the scan and
+	// outside the worker's run, one per run id, all awaited on Close.
+	acceptanceCtx      context.Context
+	acceptanceCancel   context.CancelFunc
+	acceptanceMu       sync.Mutex
+	acceptanceStopped  bool
+	acceptanceInflight map[int64]struct{}
+	acceptanceWG       sync.WaitGroup
 }
 
 // NewEngine acquires the owner lock before opening SQLite.
@@ -95,9 +104,12 @@ func NewEngine(cfg Config, opts EngineOptions) (*Engine, error) {
 		opts.Harness.Cwd = cfg.WorkerDir
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	acceptanceCtx, acceptanceCancel := context.WithCancel(ctx)
 	return &Engine{
 		cfg: cfg, opts: opts, store: store, lock: lock, ctx: ctx, cancel: cancel,
 		wake: make(chan struct{}, 1), monitors: make(map[int64]struct{}),
+		acceptanceCtx: acceptanceCtx, acceptanceCancel: acceptanceCancel,
+		acceptanceInflight: make(map[int64]struct{}),
 	}, nil
 }
 
@@ -584,8 +596,13 @@ func (e *Engine) signalWake() {
 	}
 }
 
-// Run performs bounded scans until cancellation.
+// Run performs bounded scans until cancellation. Startup first removes any
+// state a crashed acceptance check left behind, so no worktree or stray
+// process outlives its run.
 func (e *Engine) Run(ctx context.Context) error {
+	if err := cleanupAcceptanceLeftovers(ctx, e.cfg.Root); err != nil {
+		e.logError(fmt.Errorf("finite: acceptance leftover cleanup: %w", err))
+	}
 	interval := e.opts.PollInterval
 	if interval <= 0 {
 		interval = 250 * time.Millisecond
@@ -655,6 +672,8 @@ func (e *Engine) AnswerJoey(ctx context.Context, taskID string, expectedVersion 
 }
 
 // Close stops owner-side work, closes SQLite, and releases the owner lock.
+// Detached acceptance checks are cancelled and awaited before the store
+// closes, so a verdict record never races a closed database.
 func (e *Engine) Close() error {
 	if e == nil {
 		return nil
@@ -667,6 +686,11 @@ func (e *Engine) Close() error {
 	e.closed = true
 	e.cancel()
 	e.closeMu.Unlock()
+	e.acceptanceCancel()
+	e.acceptanceMu.Lock()
+	e.acceptanceStopped = true
+	e.acceptanceMu.Unlock()
+	e.acceptanceWG.Wait()
 	e.scanMu.Lock()
 	defer e.scanMu.Unlock()
 	return errors.Join(e.store.Close(), e.lock.Close())

@@ -22,16 +22,23 @@ const maxBriefBytes = 1024 * 1024
 
 var briefIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 
+type briefAcceptanceCheck struct {
+	Command        string `yaml:"command"`
+	Repo           string `yaml:"repo"`
+	TimeoutSeconds *int   `yaml:"timeout_seconds"`
+}
+
 type briefFrontMatter struct {
-	ID              string `yaml:"id"`
-	Title           string `yaml:"title"`
-	Risk            string `yaml:"risk"`
-	ReviewRequired  *bool  `yaml:"review_required"`
-	MaxRuns         *int   `yaml:"max_runs"`
-	MaxFailures     *int   `yaml:"max_failures"`
-	MaxReviewCycles *int   `yaml:"max_review_cycles"`
-	Staff           string `yaml:"staff"`
-	ReviewStaff     string `yaml:"review_staff"`
+	ID              string                `yaml:"id"`
+	Title           string                `yaml:"title"`
+	Risk            string                `yaml:"risk"`
+	ReviewRequired  *bool                 `yaml:"review_required"`
+	MaxRuns         *int                  `yaml:"max_runs"`
+	MaxFailures     *int                  `yaml:"max_failures"`
+	MaxReviewCycles *int                  `yaml:"max_review_cycles"`
+	Staff           string                `yaml:"staff"`
+	ReviewStaff     string                `yaml:"review_staff"`
+	AcceptanceCheck *briefAcceptanceCheck `yaml:"acceptance_check"`
 }
 
 // ParseBrief decodes the strict Markdown intake representation.
@@ -97,6 +104,24 @@ func ParseBrief(data []byte) (Brief, error) {
 	}
 	if brief.MaxRuns <= 0 || brief.MaxFailures <= 0 || brief.MaxReviewCycles <= 0 {
 		return Brief{}, fmt.Errorf("finite: run policy limits must be positive")
+	}
+	if front.AcceptanceCheck != nil {
+		// The strict decoder already rejected unknown sub-keys of the block.
+		check := front.AcceptanceCheck
+		if strings.TrimSpace(check.Command) == "" {
+			return Brief{}, fmt.Errorf("finite: acceptance_check command is required")
+		}
+		if !filepath.IsAbs(check.Repo) {
+			return Brief{}, fmt.Errorf("finite: acceptance_check repo must be an absolute path")
+		}
+		timeout := acceptanceDefaultTimeoutSeconds
+		if check.TimeoutSeconds != nil {
+			timeout = *check.TimeoutSeconds
+			if timeout < 1 || timeout > acceptanceMaxTimeoutSeconds {
+				return Brief{}, fmt.Errorf("finite: acceptance_check timeout_seconds must be within 1..%d", acceptanceMaxTimeoutSeconds)
+			}
+		}
+		brief.AcceptanceCheck = &AcceptanceCheck{Command: check.Command, Repo: check.Repo, TimeoutSeconds: timeout}
 	}
 	brief.Body = strings.Join(lines[closing+1:], "\n")
 	if strings.TrimSpace(brief.Body) == "" {

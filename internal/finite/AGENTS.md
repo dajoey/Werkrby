@@ -15,6 +15,11 @@
 - `supervise` is the internal per-run child entry point and never opens the workflow database. `test-receiver` is a test-only durable file receiver, never a production channel. Production `runSupervisorWithBoundary` normalizes the CLI argument shape and activates exact Hermes isolation only for `herdr`; fixture and other providers retain their original context. Production serve configures real Herdr owner recovery/stop across both OS and Hermes gateway liveness and passes the Engine to `ServeControlWithWorkflow`, serializing stops and answers through `scanMu`. There is no test-only composition escape.
 - Dependency direction is `cmd/werkrby-finite -> internal/finite -> internal/harness, internal/core, internal/fsx`. Never import `internal/cli`, `internal/app`, `internal/localapi`, `internal/instance`, `internal/updater`, `internal/orchestrator`, or `internal/runs`; `internal/harness` must not import this package.
 
+### Review prompts and the acceptance shadow
+
+- A review-phase prompt carries no text the implementer wrote about its own work: `TaskHistoryForPhase` renders a settled implementation run without its progress (findings, answers and error text stay), and `dispatchDynamic` cuts the review brief body from the first `## Progress so far (earlier runs` or `## Earlier attempt` heading to the end. Implementation-phase prompts keep the full history and body.
+- A brief may declare an `acceptance_check` (`command`, absolute `repo`, `timeout_seconds` 1..1800, default 120). When an implementation run settles `done` or `review`, the engine runs the command once, detached from the worker's run, in a git worktree under `<state root>/acceptance/<run-id>/`, and records one `acceptance` task event with a `pass`/`fail`/`verifier_failed` verdict keyed `acceptance:<run-id>`. In shadow mode the verdict changes no task state, version, outbox row or charge, and never reaches any prompt; every worktree is removed, and startup cleanup (`cleanupAcceptanceLeftovers`) kills stragglers and removes what a crashed check left. `acceptance_check.command` appears in prompts, so it must hold no secret.
+
 ### State and authority
 
 - Require an explicit disposable state root distinct from the worker target workdir and every legacy `.werkrby` tree. Never infer a root, share one with ordinary Werkrby, or initialize legacy configuration or workspace state.

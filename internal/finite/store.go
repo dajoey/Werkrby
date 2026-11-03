@@ -455,12 +455,11 @@ func (s *Store) RecordAcceptance(ctx context.Context, taskID string, runID int64
 		if err != nil {
 			return err
 		}
-		now := s.now().UTC()
 		result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO task_events(
 			event_id,task_id,run_id,kind,from_state,to_state,task_version,payload_json,created_at
 		) VALUES(?,?,?,?,?,?,?,?,?)`,
 			acceptanceEventID(runID), taskID, runID, "acceptance",
-			string(task.State), string(task.State), task.Version, string(payload), stamp(now))
+			string(task.State), string(task.State), task.Version, string(payload), stamp(s.now().UTC()))
 		if err != nil {
 			return fmt.Errorf("finite: record acceptance: %w", err)
 		}

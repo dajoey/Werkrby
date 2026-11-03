@@ -206,6 +206,9 @@ func (e *Engine) settleRecovered(ctx context.Context, request SettlementRequest)
 	if e.opts.hooks.afterSettlement != nil {
 		e.opts.hooks.afterSettlement(request)
 	}
+	// Shadow acceptance: a settled implementation run with a declared check
+	// gets its detached verdict. It changes no state here.
+	e.maybeStartAcceptance(ctx, task.ID, request.RunID)
 	if err := e.store.ProjectTask(ctx, task.ID); err != nil {
 		return task, err
 	}
