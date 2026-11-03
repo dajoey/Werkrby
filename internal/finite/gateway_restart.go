@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,15 +26,20 @@ type gatewayRestartOptions struct {
 	RelayDir       string        // relay directory holding bridge.on
 	ServeUnit      string        // systemd user unit owning dispatch
 	SystemctlBin   string        // systemctl executable
-	HermesBin      string        // hermes executable for `gateway ensure`
-	GatewayProfile string        // profile passed to `gateway ensure`
+	HermesBin      string        // hermes executable for the fresh gateway boot
+	GatewayProfile string        // profile passed to the fresh gateway boot
 	DrainTimeout   time.Duration // whole-drain budget before the abort
 	DrainPoll      time.Duration // drain poll interval
 	KillGrace      time.Duration // TERM-to-KILL grace on the old gateway
-	EnsureTimeout  time.Duration // per-attempt `gateway ensure` readiness timeout
-	EnsureRetry    time.Duration // overall budget across ensure attempts before the abort
-	EnsurePoll     time.Duration // wait between ensure attempts
+	EnsureTimeout  time.Duration // per-attempt fresh-boot readiness budget
+	EnsureRetry    time.Duration // overall budget across fresh-boot attempts before the abort
+	EnsurePoll     time.Duration // wait between fresh-boot attempts
 	MCPServers     []string      // servers the verification gate requires; empty skips the gate
+
+	// OldGatewayPID is set by runGatewayRestart just before the boot loop:
+	// the boot's readiness poll must ignore any state file still naming the
+	// signalled old gateway.
+	OldGatewayPID int
 }
 
 // gatewayRuntimeState is the subset of gateway_state.json the restart reads.
@@ -103,7 +107,7 @@ func (e *gatewayAbortError) Error() string {
 }
 
 // gatewayRestartDeps is the engine boundary of the restart: systemd, the
-// Hermes ensure command, the gateway state files, process signals, and the
+// fresh-gateway boot, the gateway state files, process signals, and the
 // profile log scan. Tests replace every member; the real constructors live in
 // gateway_restart_linux.go and this file.
 type gatewayRestartDeps struct {
@@ -235,21 +239,24 @@ func runGatewayRestart(ctx context.Context, options gatewayRestartOptions, deps 
 		}
 	}
 
-	// Start the fresh gateway through the machine-readable ensure boundary.
-	// A non-ready verdict is not automatically terminal: hermes answers
-	// "draining" while a gateway it found or just started shuts down (the
-	// live abort of 2026-11-02T01:43Z), and its documented client behaviour
-	// then is to wait the owner out and ensure again. Retry within the
-	// overall budget; the verification gate below still refuses anything but
-	// a proven fresh boot before serve ever resumes.
+	// Start the fresh gateway the way hermes's own clients start it: a
+	// detached `gateway run --quiet --idle-exit` whose readiness is the state
+	// file (Desktop's `gateway ensure` boot fatal-exits at startup in this
+	// environment while the untouched ~/.hermes gateway holds the telegram
+	// bot token and the api_server port — the 2026-11-02T06:46Z live abort).
+	// A boot that has not reached running yet is not terminal: a fresh owner
+	// that dies at startup leaves its exit_reason in the state file, so
+	// retry within the overall budget; the verification gate below still
+	// refuses anything but a proven fresh boot before serve ever resumes.
+	options.OldGatewayPID = oldPID
 	ensureStartedAt := deps.now()
 	ensureDeadline := deps.now().Add(options.EnsureRetry)
 	var lastVerdict, lastExitReason string
-	logf("ensuring a fresh gateway (attempt timeout %s, overall budget %s)", options.EnsureTimeout, options.EnsureRetry)
+	logf("starting a fresh gateway (client-style boot; attempt timeout %s, overall budget %s)", options.EnsureTimeout, options.EnsureRetry)
 	for {
 		ensureState, err := deps.ensureGateway(ctx, options)
 		if err != nil {
-			return abort("ensure", "gateway ensure failed: %v", err)
+			return abort("ensure", "fresh gateway boot failed: %v", err)
 		}
 		if ensureState == "ready" {
 			break
@@ -262,7 +269,7 @@ func runGatewayRestart(ctx context.Context, options gatewayRestartOptions, deps 
 			lastExitReason = observed.ExitReason
 		}
 		if !deps.now().Before(ensureDeadline) {
-			detail := fmt.Sprintf("gateway ensure never reported ready within %s (last verdict %q)",
+			detail := fmt.Sprintf("fresh gateway never reported running within %s (last verdict %q)",
 				options.EnsureRetry, lastVerdict)
 			if strings.TrimSpace(lastExitReason) != "" {
 				detail += fmt.Sprintf("; gateway_state exit_reason: %s", lastExitReason)
@@ -505,9 +512,21 @@ func gatewaySessionEnv() []string {
 	return extra
 }
 
-// ensureGatewayViaHermes runs `hermes --profile <p> gateway ensure --timeout N`
-// with HERMES_HOME pinned to the finite home and returns the reported state.
-func ensureGatewayViaHermes(ctx context.Context, options gatewayRestartOptions, hermesBin string, extraEnv []string) (string, error) {
+// startFreshGatewayViaHermes boots the fresh gateway the way hermes's own
+// clients start it: `gateway run --quiet --idle-exit`, detached in its own
+// session with stdio on the home's logs/gateway-stdio.log, and waits for
+// gateway_state.json to report the new owner. Desktop's `gateway ensure` —
+// the hand procedure's step — spawns a managed gateway without --idle-exit,
+// and in this environment that boot fatal-exits (code 78) on every attempt
+// while the untouched ~/.hermes gateway holds the telegram bot token and the
+// api_server port (live abort 2026-11-02T06:46Z, ten minutes of retries);
+// the client-style boot is what every production finite gateway has run on
+// since. Readiness is the state file: a running hermes-gateway whose pid is
+// not the signalled old one (a stale record of the old gateway must never
+// pass for a fresh boot). Verdicts: "ready", "booting" (no running state
+// within the attempt budget), "exited" (the boot process died before it
+// served; the state file carries its exit_reason when it wrote one).
+func startFreshGatewayViaHermes(ctx context.Context, options gatewayRestartOptions, hermesBin string, extraEnv []string) (string, error) {
 	if strings.TrimSpace(hermesBin) == "" {
 		resolved, err := exec.LookPath("hermes")
 		if err != nil {
@@ -515,55 +534,57 @@ func ensureGatewayViaHermes(ctx context.Context, options gatewayRestartOptions, 
 		}
 		hermesBin = resolved
 	}
-	timeout := int(options.EnsureTimeout / time.Second)
-	if timeout <= 0 {
-		timeout = int(options.EnsureTimeout / (time.Millisecond * 1000))
+	args := []string{"--profile", options.GatewayProfile, "gateway", "run", "--quiet", "--idle-exit"}
+	logsDir := filepath.Join(options.HermesHome, "logs")
+	if err := os.MkdirAll(logsDir, 0o700); err != nil {
+		return "", fmt.Errorf("create %s: %w", logsDir, err)
 	}
-	if timeout <= 0 {
-		timeout = 120
+	stdio, err := os.OpenFile(filepath.Join(logsDir, "gateway-stdio.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return "", fmt.Errorf("open the gateway stdio log: %w", err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, options.EnsureTimeout+30*time.Second)
-	defer cancel()
-	args := []string{"--profile", options.GatewayProfile, "gateway", "ensure", "--timeout", strconv.Itoa(timeout)}
-	command := exec.CommandContext(ctx, hermesBin, args...)
-	command.Env = append(os.Environ(), "HERMES_HOME="+options.HermesHome)
+	defer stdio.Close()
+	// A plain exec.Command, never CommandContext: the gateway must outlive
+	// this call (an operator interrupt mid-restart must not kill the fresh
+	// owner it just started).
+	command := exec.Command(hermesBin, args...)
+	command.Env = append(os.Environ(), "HERMES_HOME="+options.HermesHome, "HERMES_GATEWAY_DETACHED=1")
 	command.Env = append(command.Env, extraEnv...)
-	output, err := command.Output()
-	if err != nil && !errors.Is(err, context.DeadlineExceeded) && len(output) == 0 {
+	command.Stdin = nil
+	command.Stdout = stdio
+	command.Stderr = stdio
+	command.SysProcAttr = gatewayDetachSysProcAttr()
+	if err := command.Start(); err != nil {
 		return "", fmt.Errorf("%s %s: %w", hermesBin, strings.Join(args, " "), err)
 	}
-	state, parseErr := parseEnsureState(string(output))
-	if parseErr != nil {
-		if err != nil {
-			return "", fmt.Errorf("%s %s: %w (output: %s)", hermesBin, strings.Join(args, " "), err, strings.TrimSpace(string(output)))
+	exited := make(chan error, 1)
+	go func() { exited <- command.Wait() }()
+	statePath := filepath.Join(options.HermesHome, "gateway_state.json")
+	deadline := time.Now().Add(options.EnsureTimeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return "", err
 		}
-		return "", parseErr
+		if state, err := readGatewayStateFile(statePath); err == nil &&
+			state.running() && state.PID > 0 && state.PID != options.OldGatewayPID {
+			return "ready", nil
+		}
+		select {
+		case <-exited:
+			return "exited", nil
+		default:
+		}
+		if !time.Now().Before(deadline) {
+			return "booting", nil
+		}
+		timer := time.NewTimer(gatewayBootPoll)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", ctx.Err()
+		case <-timer.C:
+		}
 	}
-	return state, nil
-}
-
-// parseEnsureState reads the last JSON object line of the ensure output.
-func parseEnsureState(output string) (string, error) {
-	var state string
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	found := false
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "{") {
-			continue
-		}
-		var payload struct {
-			State string `json:"state"`
-		}
-		if err := json.Unmarshal([]byte(line), &payload); err == nil && payload.State != "" {
-			state = payload.State
-			found = true
-		}
-	}
-	if !found {
-		return "", fmt.Errorf("gateway ensure printed no state JSON (output: %s)", strings.TrimSpace(output))
-	}
-	return state, nil
 }
 
 func defaultGatewayRestartDeps() gatewayRestartDeps {
@@ -572,7 +593,7 @@ func defaultGatewayRestartDeps() gatewayRestartDeps {
 			return runGatewayHelper(ctx, "systemctl", args...)
 		},
 		ensureGateway: func(ctx context.Context, options gatewayRestartOptions) (string, error) {
-			return ensureGatewayViaHermes(ctx, options, options.HermesBin, nil)
+			return startFreshGatewayViaHermes(ctx, options, options.HermesBin, nil)
 		},
 		removeBridge: func(_ context.Context) error {
 			return nil // replaced by the resolved constructors in executeGatewayCommand
@@ -682,13 +703,13 @@ func parseGatewayRestartOptions(args []string) (gatewayRestartOptions, error) {
 	flags.StringVar(&options.ServeUnit, "serve-unit", options.ServeUnit, "systemd user unit owning dispatch")
 	flags.StringVar(&options.SystemctlBin, "systemctl", options.SystemctlBin, "systemctl executable")
 	flags.StringVar(&options.HermesBin, "hermes-bin", "", "hermes executable (default: look up hermes on PATH)")
-	flags.StringVar(&options.GatewayProfile, "profile", options.GatewayProfile, "profile passed to gateway ensure")
+	flags.StringVar(&options.GatewayProfile, "profile", options.GatewayProfile, "profile passed to the fresh gateway boot")
 	flags.DurationVar(&options.DrainTimeout, "drain-timeout", options.DrainTimeout, "drain budget before the abort")
 	flags.DurationVar(&options.DrainPoll, "drain-poll", options.DrainPoll, "drain poll interval")
 	flags.DurationVar(&options.KillGrace, "kill-grace", options.KillGrace, "TERM-to-KILL grace on the old gateway")
-	flags.DurationVar(&options.EnsureTimeout, "ensure-timeout", options.EnsureTimeout, "per-attempt gateway ensure readiness timeout")
-	flags.DurationVar(&options.EnsureRetry, "ensure-retry-timeout", options.EnsureRetry, "overall budget across gateway ensure attempts")
-	flags.DurationVar(&options.EnsurePoll, "ensure-poll", options.EnsurePoll, "wait between gateway ensure attempts")
+	flags.DurationVar(&options.EnsureTimeout, "ensure-timeout", options.EnsureTimeout, "per-attempt fresh-boot readiness budget")
+	flags.DurationVar(&options.EnsureRetry, "ensure-retry-timeout", options.EnsureRetry, "overall budget across fresh-boot attempts")
+	flags.DurationVar(&options.EnsurePoll, "ensure-poll", options.EnsurePoll, "wait between fresh-boot attempts")
 	flags.StringVar(&mcpServers, "mcp-servers", "spark,graphiti,rag", "MCP servers the verification gate requires (empty skips the gate)")
 	// Skip the leading subcommand word before flag parsing.
 	rest := args
