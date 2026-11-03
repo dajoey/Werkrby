@@ -53,6 +53,11 @@ type Seat struct {
 	// every seat of the same pool. Empty means unmetered. The engine never
 	// maps providers to plans; the availability roster carries the label.
 	Pool string
+	// AvailableUntil is the instant the roster reading that marked this seat
+	// available goes stale. At or after that instant the engine reads the
+	// seat unavailable, so a roster that stops being rewritten cannot keep
+	// an open seat open. Nil means the seat never expires.
+	AvailableUntil *time.Time
 }
 
 // AdmissionAction is the pure admission result vocabulary.

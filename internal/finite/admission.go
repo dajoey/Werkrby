@@ -47,6 +47,21 @@ func Admit(in AdmissionInput) AdmissionDecision {
 	return AdmissionDecision{Action: AdmissionWait, Reason: "no_available_seat", WakeAt: earliest}
 }
 
+// expireSeats closes every seat whose available_until the instant now has
+// reached or passed. The roster writer stamps each open balance seat with the
+// expiry of its own reading, so a relay that stops rewriting the roster can
+// never keep a paid seat open past its reading. The input slice is never
+// modified; a copy comes back.
+func expireSeats(seats []Seat, now time.Time) []Seat {
+	expired := append([]Seat(nil), seats...)
+	for i := range expired {
+		if expired[i].AvailableUntil != nil && !now.Before(*expired[i].AvailableUntil) {
+			expired[i].Available = false
+		}
+	}
+	return expired
+}
+
 // maxFallbackHops bounds the fallback walk, mirroring the legacy roster chain
 // limit: the start seat plus at most eight fallback links.
 const maxFallbackHops = 8

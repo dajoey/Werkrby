@@ -350,6 +350,153 @@ func TestFiniteQuotaFallbackClosedBalanceSeatNeverDispatched(t *testing.T) {
 	assertEngineInvariants(t, engine.store, task.ID)
 }
 
+// The roster seat expiry: a balance seat carries available_until, the reading
+// time plus BALANCE_STALE_S, and the engine closes it at that instant even if
+// the roster file never changes again.
+
+func TestFiniteQuotaFallbackExpiredSeatNeverDispatched(t *testing.T) {
+	clock := newEngineTestClock()
+	wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	expired := clock.Now().Add(-time.Minute).UTC()
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {NoResult: true, Wall: true, WakeAt: wake},
+		"2": {Result: ResultDone},
+	}}, &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "zai", Fallback: "seat-bal"},
+		{Name: "seat-bal", Available: true, Pool: "zai_balance", AvailableUntil: &expired},
+	})
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	task, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "fallback-expired-balance", false, "seat-a", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waiting := scanEngineUntil(t, engine, task.ID, StateWaiting, 1)
+	for i := 0; i < 3; i++ {
+		if err := engine.ScanOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, _ := engine.store.GetTask(ctx, task.ID)
+	runs, _ := engine.store.ListRuns(ctx, task.ID)
+	if current.State != StateWaiting || waiting.WakeAt == nil || len(runs) != 1 {
+		t.Fatalf("expired-balance task = %s with %d runs, want waiting for the wall reset with one run", current.State, len(runs))
+	}
+	if runs[0].Seat != "seat-a" {
+		t.Fatalf("runs = %+v, want the only run on seat-a", runs)
+	}
+	if got := fallbackWokeEvents(t, engine, task.ID); got != 0 {
+		t.Fatalf("fallback wake events = %d, want none while the balance seat is expired", got)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+func TestFiniteQuotaFallbackUnexpiredSeatDispatched(t *testing.T) {
+	clock := newEngineTestClock()
+	wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	unexpired := clock.Now().Add(15 * time.Minute).UTC()
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {NoResult: true, Wall: true, WakeAt: wake},
+		"2": {Result: ResultDone},
+	}}, &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "zai", Fallback: "seat-bal"},
+		{Name: "seat-bal", Available: true, Pool: "zai_balance", AvailableUntil: &unexpired},
+	})
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	task, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "fallback-unexpired-balance", false, "seat-a", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanEngineUntil(t, engine, task.ID, StateDone, 2)
+	run, _ := engine.store.GetRun(ctx, 2)
+	if run.Seat != "seat-bal" || run.LaunchReason != "wake" {
+		t.Fatalf("second run = %+v, want the unexpired balance seat with launch reason wake", run)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+func TestFiniteQuotaFallbackExpiredSeatNoEarlyWake(t *testing.T) {
+	clock := newEngineTestClock()
+	wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
+	expired := clock.Now().Add(-time.Minute).UTC()
+	seats := &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "zai", Fallback: "seat-bal"},
+		{Name: "seat-bal", Available: false, Pool: "zai_balance"}, // closed when the wall settles
+	}
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {NoResult: true, Wall: true, WakeAt: wake},
+		"2": {Result: ResultDone},
+	}}, seats)
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	task, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "fallback-expired-nowake", false, "seat-a", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waiting := scanEngineUntil(t, engine, task.ID, StateWaiting, 1)
+	// The roster changes under the waiting task: the balance seat now reads
+	// available, with an expiry the store clock has already passed.
+	(*seats)[1].Available = true
+	(*seats)[1].AvailableUntil = &expired
+	for i := 0; i < 3; i++ {
+		if err := engine.ScanOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, _ := engine.store.GetTask(ctx, task.ID)
+	runs, _ := engine.store.ListRuns(ctx, task.ID)
+	if current.State != StateWaiting || current.Version != waiting.Version ||
+		current.WakeAt == nil || waiting.WakeAt == nil || !current.WakeAt.Equal(*waiting.WakeAt) {
+		t.Fatalf("expired-nowake task = %+v, want the wall wait unchanged (was %+v)", current, waiting)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("runs = %+v, want exactly the one walled run", runs)
+	}
+	if got := fallbackWokeEvents(t, engine, task.ID); got != 0 {
+		t.Fatalf("fallback wake events = %d, want none for an expired balance seat", got)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+func TestFiniteRosterExpiredStartSeatWaits(t *testing.T) {
+	clock := newEngineTestClock()
+	expired := clock.Now().Add(-time.Minute).UTC()
+	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {Result: ResultDone},
+	}}, &[]Seat{
+		{Name: "seat-a", Available: true, Pool: "zai", AvailableUntil: &expired},
+	})
+	engine.store.now = clock.Now
+	ctx := context.Background()
+	task, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, "expired-start-seat", false, "seat-a", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := engine.store.GetTask(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := engine.store.GetTask(ctx, task.ID)
+	runs, _ := engine.store.ListRuns(ctx, task.ID)
+	if after.State != StateTodo || after.State != before.State || after.Version != before.Version {
+		t.Fatalf("expired start seat task = %+v, want todo with its version unchanged (was %+v)", after, before)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("runs = %+v, want none while the start seat is expired", runs)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
 func TestFiniteCLIRosterAcceptsFallbackAndPoolKeys(t *testing.T) {
 	base := t.TempDir()
 	path := filepath.Join(base, "availability.yaml")
@@ -395,6 +542,85 @@ func reset2(t *testing.T, value string) time.Time {
 		t.Fatal(err)
 	}
 	return parsed
+}
+
+func TestFiniteCLIRosterAvailableUntil(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "availability.yaml")
+	roster := "seats:\n" +
+		"  - name: seat-a\n" +
+		"    available: true\n" +
+		"    available_until: '2026-11-02T00:30:25Z'\n" + // the writer's yaml.safe_dump form
+		"  - name: seat-b\n" +
+		"    available: true\n" +
+		"    available_until: 2026-11-02T00:45:25Z\n"
+	if err := os.WriteFile(path, []byte(roster), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seats, err := loadCLIRoster(path)
+	if err != nil {
+		t.Fatalf("load roster with available_until: %v", err)
+	}
+	if len(seats) != 2 {
+		t.Fatalf("roster seats = %+v", seats)
+	}
+	quoted := time.Date(2026, 11, 2, 0, 30, 25, 0, time.UTC)
+	bare := time.Date(2026, 11, 2, 0, 45, 25, 0, time.UTC)
+	if seats[0].AvailableUntil == nil || !seats[0].AvailableUntil.Equal(quoted) {
+		t.Fatalf("seat-a = %+v, want the quoted available_until %s", seats[0], quoted)
+	}
+	if seats[1].AvailableUntil == nil || !seats[1].AvailableUntil.Equal(bare) {
+		t.Fatalf("seat-b = %+v, want the bare available_until %s", seats[1], bare)
+	}
+	notTime := filepath.Join(base, "not-a-time.yaml")
+	if err := os.WriteFile(notTime, []byte("seats:\n  - name: seat-a\n    available: true\n    available_until: soon\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCLIRoster(notTime); err == nil {
+		t.Fatalf("non-time available_until was accepted")
+	}
+	unknown := filepath.Join(base, "unknown.yaml")
+	if err := os.WriteFile(unknown, []byte("seats:\n  - name: seat-a\n    available: true\n    surprise: yes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCLIRoster(unknown); err == nil || !strings.Contains(err.Error(), "field surprise not found") {
+		t.Fatalf("unknown roster key error = %v, want the strict decoder to refuse it", err)
+	}
+}
+
+// TestFiniteCLIRosterLoadsWriterSample decodes the roster writer's real
+// availability.yaml with the engine's strict decoder. It is the roster read
+// proof for installs: every seat the writer stamped with available_until
+// carries one, and no other seat does.
+func TestFiniteCLIRosterLoadsWriterSample(t *testing.T) {
+	sample := os.Getenv("WERKRBY_FINITE_ROSTER_SAMPLE")
+	if sample == "" {
+		t.Skip("WERKRBY_FINITE_ROSTER_SAMPLE must name the writer's availability.yaml")
+	}
+	expiring := make(map[string]bool)
+	for _, name := range strings.Split(os.Getenv("WERKRBY_FINITE_ROSTER_SAMPLE_EXPIRING"), ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			expiring[name] = true
+		}
+	}
+	seats, err := loadCLIRoster(sample)
+	if err != nil {
+		t.Fatalf("load writer sample %s: %v", sample, err)
+	}
+	if len(seats) == 0 {
+		t.Fatalf("writer sample %s decoded no seats", sample)
+	}
+	for _, seat := range seats {
+		if expiring[seat.Name] {
+			if seat.AvailableUntil == nil {
+				t.Fatalf("seat %s = %+v, want the writer's available_until", seat.Name, seat)
+			}
+			continue
+		}
+		if seat.AvailableUntil != nil {
+			t.Fatalf("seat %s = %+v, want no available_until", seat.Name, seat)
+		}
+	}
 }
 
 func TestFiniteProjectionRunsTableShowsSeat(t *testing.T) {
