@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // gatewayRestartPlatformSupported: the drained restart drives a systemd user
@@ -101,4 +102,16 @@ func procInServeCgroup() bool {
 		}
 	}
 	return false
+}
+
+// gatewayBootPoll: how often the fresh-boot readiness poll reads the state
+// file. Boots report running within seconds; this only bounds the latency.
+const gatewayBootPoll = 500 * time.Millisecond
+
+// gatewayDetachSysProcAttr: the fresh gateway must outlive this command in
+// its own session, exactly like hermes's own client-side detached spawn.
+// The !linux build never reaches a boot (the restart refuses unsupported
+// platforms in preflight).
+func gatewayDetachSysProcAttr() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{Setsid: true}
 }

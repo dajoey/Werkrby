@@ -648,50 +648,52 @@ while time.time() < deadline:
 `
 
 const gatewaySimHermes = `#!/usr/bin/env python3
-"""fake hermes: only the machine-readable gateway ensure boundary exists; it
-starts a simulated gateway and reports ready only once a genuinely NEW pid has
-taken the state file (the old state must never pass for a fresh boot). With
-GATEWAY_SIM_DRAIN_MARK set, the first invocation answers "draining" (exit 6)
-without starting anything — the mid-shutdown owner the 2026-11-02 01:43Z live
-abort saw — and every later invocation runs the normal fresh-start path."""
-import json, os, subprocess, sys, time
+"""fake hermes: only the client-style gateway boot exists — the engine must
+spawn "--profile default gateway run --quiet --idle-exit", the detached boot
+every production finite gateway has run on. This invocation replaces the
+process with the simulated gateway (the way "hermes gateway run" is the
+gateway process itself), after removing any stale state file. With
+GATEWAY_SIM_BOOT_FATAL_MARK set and not yet present, this invocation
+fatal-exits at boot instead (exit 78, state file naming the exit_reason) —
+the dead boot the 2026-11-02T06:46Z live abort retried for ten minutes —
+and every later invocation runs the normal fresh-start path.
+GATEWAY_SIM_BOOT_FATAL_FOREVER keeps every boot fatal. Every invocation is
+appended to GATEWAY_SIM_INVOCATIONS so tests can pin the spawn shape."""
+import json, os, sys
 
 argv = sys.argv[1:]
-if "gateway" not in argv or "ensure" not in argv:
+if os.environ.get("GATEWAY_SIM_INVOCATIONS"):
+    with open(os.environ["GATEWAY_SIM_INVOCATIONS"], "a") as handle:
+        handle.write(" ".join(argv) + chr(10))
+required = ["--profile", "default", "gateway", "run", "--quiet", "--idle-exit"]
+if argv != required:
     print("unsupported invocation: %s" % " ".join(argv), file=sys.stderr)
     sys.exit(2)
 
-mark = os.environ.get("GATEWAY_SIM_DRAIN_MARK", "")
-if mark and not os.path.exists(mark):
-    open(mark, "w").close()
-    print('{"state":"draining"}')
-    sys.exit(6)
-
 state = os.environ["GATEWAY_SIM_STATE"]
+home = os.environ["GATEWAY_SIM_HOME"]
+fatal_reason = ("telegram: Telegram bot token already in use by the 'default' profile gateway "
+                "(PID 3748361).; api_server: Port 8642 already in use.")
+
+forever = os.environ.get("GATEWAY_SIM_BOOT_FATAL_FOREVER", "")
+mark = os.environ.get("GATEWAY_SIM_BOOT_FATAL_MARK", "")
+if forever or (mark and not os.path.exists(mark)):
+    if mark:
+        open(mark, "w").close()
+    payload = {"pid": 999999, "kind": "hermes-gateway", "hermes_home": home,
+               "gateway_state": "exited", "exit_reason": fatal_reason}
+    tmp = state + ".tmp"
+    with open(tmp, "w") as handle:
+        json.dump(payload, handle)
+    os.replace(tmp, state)
+    sys.exit(78)
+
 agent = os.environ["GATEWAY_SIM_AGENT"]
-old_pid = 0
-try:
-    old_pid = json.load(open(state))["pid"]
-except Exception:
-    pass
 try:
     os.remove(state)
 except FileNotFoundError:
     pass
-subprocess.Popen(["python3", agent], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                 stdin=subprocess.DEVNULL, start_new_session=True)
-deadline = time.time() + 5
-while time.time() < deadline:
-    try:
-        pid = json.load(open(state))["pid"]
-        if pid and pid != old_pid:
-            print('{"state":"ready"}')
-            sys.exit(0)
-    except Exception:
-        pass
-    time.sleep(0.05)
-print('{"state":"inaccessible"}')
-sys.exit(7)
+os.execv(sys.executable, [sys.executable, agent, "gateway", "run", "--quiet", "--idle-exit"])
 `
 
 const gatewaySimSystemctl = `#!/bin/sh
@@ -831,7 +833,8 @@ func (sim *gatewaySim) waitState(t *testing.T, timeout time.Duration) gatewayRun
 func (sim *gatewaySim) options(drainTimeout time.Duration) gatewayRestartOptions {
 	return gatewayRestartOptions{
 		Root: sim.root, HermesHome: sim.home, RelayDir: sim.relay,
-		ServeUnit: "werkrby-finite-serve.service", DrainTimeout: drainTimeout, DrainPoll: 200 * time.Millisecond,
+		ServeUnit: "werkrby-finite-serve.service", GatewayProfile: "default",
+		DrainTimeout: drainTimeout, DrainPoll: 200 * time.Millisecond,
 		KillGrace: 2 * time.Second, EnsureTimeout: 30 * time.Second, EnsureRetry: 30 * time.Second, EnsurePoll: 250 * time.Millisecond,
 		MCPServers: nil, // no profiles exist here: the MCP gate is not requested
 	}
@@ -870,12 +873,12 @@ func (sim *gatewaySim) deps(t *testing.T, options gatewayRestartOptions, log *by
 		return runGatewayHelper(ctx, sim.systemctlBin, args...)
 	}
 	deps.ensureGateway = func(ctx context.Context, options gatewayRestartOptions) (string, error) {
-		return ensureGatewayViaHermes(ctx, options, sim.hermesBin, []string{
+		return startFreshGatewayViaHermes(ctx, options, sim.hermesBin, []string{
 			"GATEWAY_SIM_STATE=" + sim.statePath,
 			"GATEWAY_SIM_AGENTS=" + sim.agentsPath,
 			"GATEWAY_SIM_HOME=" + sim.home,
 			"GATEWAY_SIM_AGENT=" + sim.agentPath,
-			"GATEWAY_SIM_DRAIN_MARK=" + filepath.Join(sim.base, "ensure-drain-mark"),
+			"GATEWAY_SIM_INVOCATIONS=" + filepath.Join(sim.base, "invocations.log"),
 		})
 	}
 	deps.logf = func(format string, args ...any) { fmt.Fprintf(log, format, args...) }
@@ -924,20 +927,57 @@ func TestGatewayRestartSimulatedDrainedRestart(t *testing.T) {
 	if result.DrainedSeconds < 400*time.Millisecond {
 		t.Fatalf("drain did not wait for the open work: %s", result.DrainedSeconds)
 	}
+	invocations := readSimInvocations(t, sim)
+	assertClientStyleBoots(t, invocations)
+	if len(invocations) != 1 {
+		t.Fatalf("boot invocations = %d, want exactly 1: %v", len(invocations), invocations)
+	}
 }
 
-func TestGatewayRestartSimulatedEnsureDrainingRetries(t *testing.T) {
-	// The simulated hermes answers "draining" once without starting anything
-	// (the 2026-11-02T01:43Z live abort), then runs the normal fresh-start
-	// path: the restart must ensure again and complete.
+func readSimInvocations(t *testing.T, sim *gatewaySim) []string {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(sim.base, "invocations.log"))
+	if err != nil {
+		t.Fatalf("the simulated hermes was never invoked: %v", err)
+	}
+	var invocations []string
+	for _, line := range strings.Split(string(content), "\n") {
+		if strings.TrimSpace(line) != "" {
+			invocations = append(invocations, line)
+		}
+	}
+	return invocations
+}
+
+func assertClientStyleBoots(t *testing.T, invocations []string) {
+	t.Helper()
+	if len(invocations) == 0 {
+		t.Fatal("the simulated hermes was never invoked")
+	}
+	for _, invocation := range invocations {
+		if !strings.Contains(invocation, "gateway run --quiet --idle-exit") {
+			t.Fatalf("boot invocation is not the client-style detached boot: %q", invocation)
+		}
+		if strings.Contains(invocation, "ensure") {
+			t.Fatalf("the boot used the ensure boundary: %q", invocation)
+		}
+	}
+}
+
+func TestGatewayRestartSimulatedBootFatalRetries(t *testing.T) {
+	// The first client-style boot fatal-exits at startup (exit 78, exit_reason
+	// in the state file — the dead boot the 2026-11-02T06:46Z live abort saw
+	// for ten minutes), then the retry boots fresh: the restart must complete
+	// with exactly the two client-style boots and no ensure boundary.
 	sim := startGatewaySim(t, false)
+	t.Setenv("GATEWAY_SIM_BOOT_FATAL_MARK", filepath.Join(sim.base, "boot-fatal-mark"))
 	oldPID := sim.gatewayPID
 	var log bytes.Buffer
 	options := sim.options(30 * time.Second)
 	deps := sim.deps(t, options, &log)
 	result, err := runGatewayRestart(context.Background(), options, deps)
 	if err != nil {
-		t.Fatalf("simulated restart failed after a draining ensure: %v\n%s", err, log.String())
+		t.Fatalf("simulated restart failed after a fatal boot: %v\n%s", err, log.String())
 	}
 	if result.OldPID != oldPID {
 		t.Fatalf("old pid = %d, want %d", result.OldPID, oldPID)
@@ -951,6 +991,50 @@ func TestGatewayRestartSimulatedEnsureDrainingRetries(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(sim.relay, "bridge.on")); err != nil {
 		t.Fatalf("intake was not restored: %v", err)
+	}
+	invocations := readSimInvocations(t, sim)
+	assertClientStyleBoots(t, invocations)
+	if len(invocations) != 2 {
+		t.Fatalf("boot invocations = %d, want exactly 2 (one fatal, one fresh): %v",
+			len(invocations), invocations)
+	}
+}
+
+func TestGatewayRestartSimulatedBootNeverReadyAborts(t *testing.T) {
+	// Every client-style boot fatal-exits with the token/port conflict: the
+	// restart must abort at ensure within the budget, name the dead boot's
+	// exit_reason for the operator, and leave Werkrby off.
+	t.Setenv("GATEWAY_SIM_BOOT_FATAL_FOREVER", "1")
+	sim := startGatewaySim(t, false)
+	oldPID := sim.gatewayPID
+	var log bytes.Buffer
+	options := sim.options(30 * time.Second)
+	options.EnsureTimeout = 500 * time.Millisecond
+	options.EnsureRetry = 3 * time.Second
+	deps := sim.deps(t, options, &log)
+	_, err := runGatewayRestart(context.Background(), options, deps)
+	if err == nil {
+		t.Fatal("the restart completed onto boots that never served")
+	}
+	if !strings.Contains(err.Error(), "never reported running") {
+		t.Fatalf("abort does not name the never-ready boot: %v", err)
+	}
+	if !strings.Contains(err.Error(), "Port 8642 already in use") {
+		t.Fatalf("abort does not carry the dead boot's exit_reason: %v", err)
+	}
+	if serveState := readSimSystemdState(t, sim); serveState != "inactive" {
+		t.Fatalf("serve state after abort = %q, want inactive", serveState)
+	}
+	if _, err := os.Stat(filepath.Join(sim.relay, "bridge.on")); !os.IsNotExist(err) {
+		t.Fatalf("intake was restored after the abort: %v", err)
+	}
+	invocations := readSimInvocations(t, sim)
+	assertClientStyleBoots(t, invocations)
+	if len(invocations) < 2 {
+		t.Fatalf("the fatal boot was not retried within the budget: %d invocation(s)", len(invocations))
+	}
+	if procProcessAlive(context.Background(), oldPID) {
+		t.Fatal("the old gateway was left alive past the ensure abort")
 	}
 }
 
