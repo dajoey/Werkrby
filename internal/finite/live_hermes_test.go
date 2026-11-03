@@ -524,3 +524,200 @@ func TestFiniteLiveCompiledHermesForceKillStopDelivery(t *testing.T) {
 	}
 	owner.terminate(t)
 }
+
+// readLiveGatewayState reads the subset of the hermes home's
+// gateway_state.json the live fault test needs: the gateway pid and its state.
+func readLiveGatewayState(t *testing.T, hermesHome string) (int, string) {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(hermesHome, "gateway_state.json"))
+	if err != nil {
+		t.Fatalf("read gateway_state.json: %v", err)
+	}
+	var state struct {
+		PID          int    `json:"pid"`
+		HermesHome   string `json:"hermes_home"`
+		GatewayState string `json:"gateway_state"`
+	}
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("decode gateway_state.json: %v", err)
+	}
+	return state.PID, state.GatewayState
+}
+
+func liveSettledPayload(t *testing.T, stateRoot string, runID int64) (map[string]any, string) {
+	t.Helper()
+	db, err := sql.Open("sqlite3", "file:"+filepath.ToSlash(filepath.Join(stateRoot, "engine.db"))+"?mode=ro&_pragma=busy_timeout(2000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var payload, endedAt string
+	if err := db.QueryRow(`SELECT e.payload_json, COALESCE(r.ended_at,'') FROM task_events e
+		JOIN runs r ON r.id=e.run_id WHERE e.run_id=? AND e.kind='settled'`, runID).Scan(&payload, &endedAt); err != nil {
+		t.Fatalf("run %d settled event: %v", runID, err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal([]byte(payload), &value); err != nil {
+		t.Fatalf("decode settled payload of run %d: %v", runID, err)
+	}
+	return value, endedAt
+}
+
+func liveEndedAt(t *testing.T, stateRoot string, runID int64) time.Time {
+	t.Helper()
+	db, err := sql.Open("sqlite3", "file:"+filepath.ToSlash(filepath.Join(stateRoot, "engine.db"))+"?mode=ro&_pragma=busy_timeout(2000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var ended string
+	if err := db.QueryRow(`SELECT COALESCE(ended_at,'') FROM runs WHERE id=?`, runID).Scan(&ended); err != nil {
+		t.Fatalf("run %d ended_at: %v", runID, err)
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, ended)
+	if err != nil {
+		t.Fatalf("parse ended_at %q of run %d: %v", ended, runID, err)
+	}
+	return parsed
+}
+
+func logLiveFaultDiagnostics(t *testing.T, run liveRunRow) {
+	t.Helper()
+	entries, err := os.ReadDir(run.RunDir)
+	if err == nil {
+		names := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			names = append(names, entry.Name())
+		}
+		t.Logf("run %d directory: %v", run.ID, names)
+	}
+	for _, name := range []string{"usage.json", "hermes-usage.json", "completion.json", "provider.json"} {
+		if data, err := os.ReadFile(filepath.Join(run.RunDir, name)); err == nil {
+			t.Logf("run %d %s: %s", run.ID, name, data)
+		}
+	}
+	observation, admissionErr := harness.InspectHermesRunBoundary(context.Background(), harness.RunBoundarySpec{RunID: run.ID, ProcessToken: run.ProcessToken, RunDir: run.RunDir})
+	t.Logf("run %d admission observation = %+v, %v", run.ID, observation, admissionErr)
+}
+
+// A compiled end-to-end proof on a real `hermes -z`: the disposable Hermes
+// gateway is SIGTERMed while a model request is in flight, the way the
+// November 1 engine gateway restart hit production runs 9 to 18. The run must
+// settle uncharged (interrupted, class hermes-no-spend) and wait on a backoff
+// timer about 30 s after it ended, never as a charged failure.
+func TestFiniteLiveCompiledHermesGatewayFaultUncharged(t *testing.T) {
+	if os.Getenv("WERKRBY_FINITE_HERMES_LIVE") != "1" {
+		t.Skip("compiled live Hermes gateway fault requires explicit opt-in")
+	}
+	binary := liveBinary(t)
+	home := liveHome(t, "WERKRBY_FINITE_HERMES_FAULT_HOME", "wk-finite-fault")
+	endpoint := newLiveControlledEndpoint(t)
+	writeLiveProfile(t, home, "wk-finite-fault", endpoint.URL+"/hold/v1")
+	root := liveTestRoot(t, "compiled-gateway-fault")
+	worker := writeLiveWorker(t, root, "wk-finite-fault")
+	taskID := "compiled-gateway-fault"
+	stateRoot := filepath.Join(root, "state")
+	brief := writeLiveBrief(t, root, taskID)
+	owner := startLiveServe(t, binary, stateRoot, worker, home, "", "owner.log")
+	runLiveControl(t, binary, "intake", "--root", stateRoot, "--brief", brief)
+	select {
+	case <-endpoint.holdStarted:
+	case <-time.After(2 * time.Minute):
+		t.Fatal("real Hermes hold request did not start")
+	}
+	runs := liveRuns(t, stateRoot)
+	if len(runs) != 1 || runs[0].Ended {
+		t.Fatalf("held runs = %+v, want one open run", runs)
+	}
+	providerData, err := os.ReadFile(filepath.Join(runs[0].RunDir, "hermes-provider.json"))
+	if err != nil {
+		t.Fatalf("open run has no hermes-provider.json: %v", err)
+	}
+	var provider struct {
+		HermesHome string `json:"hermes_home"`
+	}
+	if err := json.Unmarshal(providerData, &provider); err != nil || provider.HermesHome == "" {
+		t.Fatalf("hermes-provider.json hermes_home = %q, %v", provider.HermesHome, err)
+	}
+	gatewayPID, gatewayState := readLiveGatewayState(t, provider.HermesHome)
+	t.Logf("disposable gateway pid %d state %s", gatewayPID, gatewayState)
+	cmdline, cmdlineErr := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", gatewayPID))
+	if cmdlineErr != nil || !strings.Contains(string(cmdline), "gateway") {
+		t.Fatalf("pid %d is not the hermes gateway: cmdline=%q err=%v", gatewayPID, cmdline, cmdlineErr)
+	}
+	if err := syscall.Kill(gatewayPID, syscall.SIGTERM); err != nil {
+		t.Fatalf("SIGTERM gateway pid %d: %v", gatewayPID, err)
+	}
+	// Wait for the task to leave working, then branch on what the run shows.
+	deadline := time.Now().Add(5 * time.Minute)
+	var status ControlStatus
+	for time.Now().Before(deadline) {
+		status = waitLiveStatus(t, binary, stateRoot, taskID, time.Minute)
+		if status.State != StateWorking {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Logf("task left working into state %+v", status)
+	runs = liveRuns(t, stateRoot)
+	if len(runs) == 0 {
+		t.Fatal("no runs recorded")
+	}
+	first := runs[0]
+	if !first.Ended {
+		logLiveFaultDiagnostics(t, first)
+		t.Fatalf("first run %d never settled within the wait: %+v", first.ID, first)
+	}
+	if first.Outcome == RunInterrupted {
+		payload, _ := liveSettledPayload(t, stateRoot, first.ID)
+		if payload["failure_class"] != "hermes-no-spend" || payload["charged"] != false {
+			logLiveFaultDiagnostics(t, first)
+			t.Fatalf("run %d settled payload = %v, want hermes-no-spend uncharged", first.ID, payload)
+		}
+		if status.State != StateWaiting || status.WakeAt == nil {
+			logLiveFaultDiagnostics(t, first)
+			t.Fatalf("task status = %+v, want waiting on a timed backoff", status)
+		}
+		ended := liveEndedAt(t, stateRoot, first.ID)
+		delay := status.WakeAt.Sub(ended)
+		if delay < 25*time.Second || delay > 35*time.Second {
+			logLiveFaultDiagnostics(t, first)
+			t.Fatalf("backoff wake %s is %s after the run ended %s, want 25-35 s", status.WakeAt, delay, ended)
+		}
+	} else {
+		// The only other tolerable shape is a charged fail with proven spend;
+		// everything else means the no-spend signals do not cover this fault.
+		usage, usageErr := os.ReadFile(filepath.Join(first.RunDir, "usage.json"))
+		admitted := false
+		if os.IsNotExist(usageErr) {
+			if observation, admissionErr := harness.InspectHermesRunBoundary(context.Background(), harness.RunBoundarySpec{RunID: first.ID, ProcessToken: first.ProcessToken, RunDir: first.RunDir}); admissionErr == nil {
+				admitted = observation.Identity != nil
+			}
+		}
+		logLiveFaultDiagnostics(t, first)
+		if first.Outcome == RunFail && usageErr == nil && !liveUsageSpent(t, usage) {
+			t.Fatalf("run %d settled fail with an unspent usage record: %s", first.ID, usage)
+		}
+		if first.Outcome == RunFail && usageErr != nil && !admitted {
+			t.Fatalf("run %d settled fail with no usage record and a non-admitted prompt", first.ID)
+		}
+		t.Fatalf("run %d settled as %q: the no-spend signals do not hold for a gateway restart", first.ID, first.Outcome)
+	}
+	owner.terminate(t)
+	// Any gateway the disposable home still records is SIGTERMed on the way out.
+	if pid, state := readLiveGatewayState(t, provider.HermesHome); pid > 0 && state == "running" {
+		t.Logf("SIGTERM lingering disposable gateway pid %d", pid)
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+	}
+}
+
+func liveUsageSpent(t *testing.T, data []byte) bool {
+	t.Helper()
+	var record engineUsageRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		t.Fatalf("decode live usage.json: %v", err)
+	}
+	spent := func(v *int64) bool { return v != nil && *v != 0 }
+	return spent(record.FreshInputTokens) || spent(record.CacheReadTokens) || spent(record.CacheWriteTokens) ||
+		spent(record.OutputTokens) || spent(record.ReasoningTokens) || spent(record.APICalls) || spent(record.ToolCalls)
+}

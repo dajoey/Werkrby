@@ -122,14 +122,9 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 				}
 			}
 		}
-		outcome := req.ExecutionOutcome
-		if outcome == "" {
-			outcome = RunOK
-		}
-		if task.CancelRequested {
-			outcome = RunInterrupted
-		} else if result != nil {
-			outcome = RunOK
+		class, outcome, err := classifySettlement(task, result, req.FailureClass, req.ExecutionOutcome)
+		if err != nil {
+			return err
 		}
 		if !validRunOutcome(outcome) {
 			return fmt.Errorf("finite: invalid execution outcome %q", outcome)
@@ -190,9 +185,24 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		if err != nil {
 			return err
 		}
-		next, failureReason := settlementState(task, run, outcome, result, accounting)
+		retry := failureClassTable[class].Retry
+		var wait settlementWait
+		switch {
+		case retry == retryBackoff:
+			streak, err := hermesNoSpendStreak(ctx, tx, task.ID, run.Phase)
+			if err != nil {
+				return err
+			}
+			backoffWake := now.Add(backoffDelay(1 + streak))
+			wait = settlementWait{WakeAt: &backoffWake, Reason: "infra retry: " + firstLine(runError)}
+		case outcome == RunWall:
+			wait = settlementWait{WakeAt: req.WallWakeAt, Reason: runError}
+		default:
+			wait = settlementWait{Reason: runError}
+		}
+		next, failureReason := settlementState(task, run, outcome, result, accounting, retry)
 		newVersion := task.Version + 1
-		if err := updateSettlementTask(ctx, tx, task, next, newVersion, now, result, req.WallWakeAt, runError); err != nil {
+		if err := updateSettlementTask(ctx, tx, task, next, newVersion, now, result, wait); err != nil {
 			return err
 		}
 		if err := runSettlementFailpoint(SettlementAfterTaskUpdate); err != nil {
@@ -202,10 +212,11 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		settled.State = next
 		settled.Version = newVersion
 		settled.UpdatedAt = now
-		applySettlementWait(&settled, run, outcome, result, req.WallWakeAt, runError)
+		applySettlementWait(&settled, run, outcome, result, wait)
 		audit := map[string]any{
 			"request_sha256": fingerprint, "execution_outcome": outcome,
 			"result_outcome": resultOutcome(result), "error": runError,
+			"failure_class": class, "charged": failureClassTable[class].Charged,
 		}
 		if outcome == RunWall {
 			// The fallback walk reads the walled seat and the wall deadline
@@ -302,14 +313,15 @@ func settlementFingerprint(req SettlementRequest) (string, error) {
 		usage = encoded
 	}
 	value := struct {
-		Outcome    RunOutcome      `json:"outcome"`
-		ExitCode   *int            `json:"exit_code"`
-		Result     json.RawMessage `json:"result"`
-		Invalid    bool            `json:"invalid"`
-		Usage      json.RawMessage `json:"usage"`
-		WallWakeAt *time.Time      `json:"wall_wake_at"`
-		Error      string          `json:"error"`
-	}{req.ExecutionOutcome, req.ExitCode, result, req.ResultError != nil, usage, req.WallWakeAt, req.Error}
+		Outcome      RunOutcome      `json:"outcome"`
+		ExitCode     *int            `json:"exit_code"`
+		Result       json.RawMessage `json:"result"`
+		Invalid      bool            `json:"invalid"`
+		Usage        json.RawMessage `json:"usage"`
+		WallWakeAt   *time.Time      `json:"wall_wake_at"`
+		Error        string          `json:"error"`
+		FailureClass string          `json:"failure_class,omitempty"`
+	}{req.ExecutionOutcome, req.ExitCode, result, req.ResultError != nil, usage, req.WallWakeAt, req.Error, req.FailureClass}
 	encoded, err := json.Marshal(value)
 	if err != nil {
 		return "", err
@@ -337,7 +349,7 @@ func phaseQueue(phase Phase) State {
 
 // settlementState chooses the next task state and, when a run-policy cap is
 // what ends the task, names that cap.
-func settlementState(task Task, run Run, outcome RunOutcome, result *Result, accounting Accounting) (State, string) {
+func settlementState(task Task, run Run, outcome RunOutcome, result *Result, accounting Accounting, retry retryPolicy) (State, string) {
 	if task.CancelRequested {
 		return StateCancelled, ""
 	}
@@ -348,6 +360,9 @@ func settlementState(task Task, run Run, outcome RunOutcome, result *Result, acc
 	if outcome == RunWall || outcome == RunLost || outcome == RunInterrupted {
 		if runCapReached {
 			return StateFailed, "max_runs"
+		}
+		if retry == retryBackoff {
+			return StateWaiting, ""
 		}
 		if outcome == RunWall {
 			return StateWaiting, ""
@@ -396,7 +411,14 @@ func settlementState(task Task, run Run, outcome RunOutcome, result *Result, acc
 	}
 }
 
-func updateSettlementTask(ctx context.Context, tx txRunner, task Task, next State, version int64, now time.Time, result *Result, wallWake *time.Time, runError string) error {
+// settlementWait carries the durable wait a waiting settlement arms: the wake
+// deadline and the waiting reason the projection shows.
+type settlementWait struct {
+	WakeAt *time.Time
+	Reason string
+}
+
+func updateSettlementTask(ctx context.Context, tx txRunner, task Task, next State, version int64, now time.Time, result *Result, wait settlementWait) error {
 	var resume, kind, wake, waiting, ask any
 	if next == StateWaiting {
 		if task.State == StateReviewing {
@@ -404,7 +426,7 @@ func updateSettlementTask(ctx context.Context, tx txRunner, task Task, next Stat
 		} else {
 			resume = StateTodo
 		}
-		waiting = runError
+		waiting = wait.Reason
 		if result != nil && result.Outcome == ResultWait {
 			waiting = result.Wait.Reason
 			kind = result.Wait.Kind
@@ -416,8 +438,10 @@ func updateSettlementTask(ctx context.Context, tx txRunner, task Task, next Stat
 			}
 		} else {
 			kind = WaitTime
-			wake = stamp(*wallWake)
-			if strings.TrimSpace(runError) == "" {
+			if wait.WakeAt != nil {
+				wake = stamp(*wait.WakeAt)
+			}
+			if strings.TrimSpace(wait.Reason) == "" {
 				waiting = "provider quota wall"
 			}
 		}
@@ -433,7 +457,7 @@ func updateSettlementTask(ctx context.Context, tx txRunner, task Task, next Stat
 	return nil
 }
 
-func applySettlementWait(task *Task, run Run, outcome RunOutcome, result *Result, wallWake *time.Time, runError string) {
+func applySettlementWait(task *Task, run Run, outcome RunOutcome, result *Result, wait settlementWait) {
 	task.ResumeState = ""
 	task.WaitKind = ""
 	task.WakeAt = nil
@@ -443,7 +467,7 @@ func applySettlementWait(task *Task, run Run, outcome RunOutcome, result *Result
 		return
 	}
 	task.ResumeState = phaseQueue(run.Phase)
-	task.WaitingFor = runError
+	task.WaitingFor = wait.Reason
 	if result != nil && result.Outcome == ResultWait {
 		task.WaitKind = result.Wait.Kind
 		task.WaitingFor = result.Wait.Reason
@@ -456,7 +480,7 @@ func applySettlementWait(task *Task, run Run, outcome RunOutcome, result *Result
 		return
 	}
 	task.WaitKind = WaitTime
-	task.WakeAt = wallWake
+	task.WakeAt = wait.WakeAt
 	if task.WaitingFor == "" {
 		task.WaitingFor = "provider quota wall"
 	}

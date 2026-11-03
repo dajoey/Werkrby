@@ -114,6 +114,10 @@ type SettlementRequest struct {
 	Usage               *Usage
 	WallWakeAt          *time.Time
 	Error               string
+	// FailureClass pins the failure-class row when recovery has proven a
+	// more specific cause than the execution outcome alone. Empty derives the
+	// class from ExecutionOutcome; an unknown value is a settlement error.
+	FailureClass string
 }
 
 // PromptRequest separates the static provider bundle from dynamic turn data.

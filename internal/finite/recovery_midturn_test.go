@@ -49,6 +49,10 @@ func TestFiniteMidTurnSupervisorKillIsChargedAndBounded(t *testing.T) {
 		if settled.Outcome != RunFail || !strings.Contains(settled.Error, "provider turn") {
 			t.Fatalf("kill %d: mid-turn kill settled as %q (%q), want a charged failure", kill, settled.Outcome, settled.Error)
 		}
+		payload := gatewaySettledPayload(t, engine.store, current.ID)
+		if payload["failure_class"] != failureSupervisorDied || payload["charged"] != true {
+			t.Fatalf("kill %d: settled payload = %v, want failure_class %q charged true", kill, payload, failureSupervisorDied)
+		}
 		accounting, err := engine.store.DerivedAccounting(ctx, task.ID, PhaseImplementation)
 		if err != nil || accounting.Attempts != kill || accounting.Failures != kill {
 			t.Fatalf("kill %d: accounting = %+v, %v; want %d charged failures", kill, accounting, err, kill)

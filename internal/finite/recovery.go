@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/agent0ai/spynel/internal/harness"
 )
 
 // recoverOpenRuns reconciles each open run independently.
@@ -157,6 +159,24 @@ func (e *Engine) recoverRun(ctx context.Context, run Run) error {
 		request.ExitCode = execution.ExitCode
 		request.WallWakeAt = execution.WallWakeAt
 		request.Error = execution.Error
+		// A Hermes turn that failed without spending anything is a gateway
+		// fault, not an attempt: provable no-spend (all-null usage counters,
+		// or no usage record and a proven non-admission) downgrades the stored
+		// outcome to an uncharged interrupted run. Any unproven answer keeps
+		// the class empty, so the run stays charged exactly as today.
+		if execution.Outcome == RunFail {
+			if _, ok, staffErr := harness.HeadlessHermesStaff(run.RunDir); staffErr == nil && ok {
+				noSpend := false
+				if usage != nil {
+					noSpend = noTokenSpend(usage)
+				} else if admitted, admittedErr := hermesPromptAdmitted(ctx, run); admittedErr == nil {
+					noSpend = !admitted
+				}
+				if noSpend {
+					request.FailureClass = failureHermesNoSpend
+				}
+			}
+		}
 	} else if resultPresent {
 		request.ExecutionOutcome = RunOK
 		request.Error = ""
@@ -171,6 +191,7 @@ func (e *Engine) recoverRun(ctx context.Context, run Run) error {
 			// and let MaxFailures bound the retries.
 			request.ExecutionOutcome = RunFail
 			request.Error = "supervisor exited during the provider turn without a result"
+			request.FailureClass = failureSupervisorDied
 		}
 	}
 	_, err = e.settleRecovered(ctx, request)

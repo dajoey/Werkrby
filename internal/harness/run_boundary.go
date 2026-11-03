@@ -609,22 +609,37 @@ func specFromMetadata(meta hermesBoundaryMetadata) RunBoundarySpec {
 	return RunBoundarySpec{RunID: meta.RunID, ProcessToken: meta.ProcessToken}
 }
 
-// HermesRunHasAdmission checks for an exact prompt admission when the metadata
-// file is absent. Setup failures that precede any client start have no admission;
-// an unreadable or ambiguous ledger always fails closed.
-func HermesRunHasAdmission(ctx context.Context, spec RunBoundarySpec) (bool, error) {
-	data, err := os.ReadFile(filepath.Join(spec.RunDir, "supervisor.json"))
+// HeadlessHermesStaff expands the run's supervisor harness entry and reports
+// whether it names a headless Hermes roster staff seat. A supervisor.json read
+// or decode error is returned; any entry that is not an expandable headless
+// Hermes seat is (Staff{}, false, nil).
+func HeadlessHermesStaff(runDir string) (roster.Staff, bool, error) {
+	data, err := os.ReadFile(filepath.Join(runDir, "supervisor.json"))
 	if err != nil {
-		return false, err
+		return roster.Staff{}, false, err
 	}
 	var request struct {
 		Harness HarnessConfig `json:"harness"`
 	}
 	if err := json.Unmarshal(data, &request); err != nil {
-		return false, err
+		return roster.Staff{}, false, err
 	}
 	staff, ok, err := roster.ExpandStaff(filepath.Join(request.Harness.Cwd, roster.StateDirName), strings.TrimSpace(request.Harness.Model))
 	if err != nil || !ok || !staff.Headless || staff.Runner != "hermes" {
+		return roster.Staff{}, false, nil
+	}
+	return staff, true, nil
+}
+
+// HermesRunHasAdmission checks for an exact prompt admission when the metadata
+// file is absent. Setup failures that precede any client start have no admission;
+// an unreadable or ambiguous ledger always fails closed.
+func HermesRunHasAdmission(ctx context.Context, spec RunBoundarySpec) (bool, error) {
+	staff, ok, err := HeadlessHermesStaff(spec.RunDir)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
 		return false, nil
 	}
 	if strings.TrimSpace(os.Getenv("HERMES_HOME")) == "" {
