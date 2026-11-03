@@ -28,18 +28,18 @@ import (
 // and each message id is delivered at most once.
 
 const (
-	inboxSchemaVersion     = 1
-	inboxFile              = "inbox.jsonl"
-	inboxAckFile           = "inbox-ack.jsonl"
-	inboxKindMessage       = "message"
-	inboxKindInterrupt     = "interrupt"
-	maxInboxTextRunes      = 8000
-	maxInboxTextBytes      = 15 * 1024
-	maxInboxIDBytes        = 128
-	maxInboxMessages       = 256
-	maxInboxActivityRead   = 8 * 1024
-	maxInboxActivityLine   = 512
-	maxInboxAckFile  int64 = 64 * 1024
+	inboxSchemaVersion         = 1
+	inboxFile                  = "inbox.jsonl"
+	inboxAckFile               = "inbox-ack.jsonl"
+	inboxKindMessage           = "message"
+	inboxKindInterrupt         = "interrupt"
+	maxInboxTextRunes          = 8000
+	maxInboxTextBytes          = 15 * 1024
+	maxInboxIDBytes            = 128
+	maxInboxMessages           = 256
+	maxInboxActivityRead       = 8 * 1024
+	maxInboxActivityLine       = 512
+	maxInboxAckFile      int64 = 64 * 1024
 )
 
 // InboxMessage is one engine-delivered operator message in a run's inbox.

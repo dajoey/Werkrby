@@ -36,6 +36,7 @@ type fakeGatewayDeps struct {
 	// knobs
 	termIgnored        bool
 	ensureState        string
+	ensureStates       []string // sequenced verdicts; the last one repeats
 	ensureErr          error
 	systemctlFailAfter int
 	serveState         string
@@ -133,7 +134,14 @@ func (f *fakeGatewayDeps) deps(logf func(string, ...any)) gatewayRestartDeps {
 			defer f.mu.Unlock()
 			f.ensureCalls++
 			f.recordLocked("ensure")
-			return f.ensureState, f.ensureErr
+			verdict := f.ensureState
+			if len(f.ensureStates) > 0 {
+				verdict = f.ensureStates[0]
+				if len(f.ensureStates) > 1 {
+					f.ensureStates = f.ensureStates[1:]
+				}
+			}
+			return verdict, f.ensureErr
 		},
 		readGatewayState: func(_ context.Context) (gatewayRuntimeState, error) {
 			f.mu.Lock()
@@ -236,7 +244,8 @@ func gatewayRestartTestOptions() gatewayRestartOptions {
 	return gatewayRestartOptions{
 		Root: "/disp/state", HermesHome: "/disp/hermes", RelayDir: "/disp/relay",
 		ServeUnit: "werkrby-finite-serve.service", DrainTimeout: time.Minute, DrainPoll: time.Second,
-		KillGrace: 5 * time.Second, EnsureTimeout: time.Minute, MCPServers: []string{"spark", "graphiti", "rag"},
+		KillGrace: 5 * time.Second, EnsureTimeout: time.Minute, EnsureRetry: 2 * time.Minute, EnsurePoll: time.Second,
+		MCPServers: []string{"spark", "graphiti", "rag"},
 	}
 }
 
@@ -450,6 +459,81 @@ func TestGatewayRestartEnsureNotReadyKeepsServeOff(t *testing.T) {
 	}
 }
 
+func TestGatewayRestartEnsureRetriesDrainingUntilReady(t *testing.T) {
+	// The live abort of 2026-11-02T01:43Z: the gateway hermes ensure had just
+	// started fatal-exited at boot and ensure answered "draining" (the
+	// mid-shutdown owner). Hermes's contract for a draining owner is to wait
+	// it out and ensure again; one non-ready verdict must not leave Werkrby
+	// off when the next ensure would report ready.
+	states := []gatewayRuntimeState{gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(401)}
+	f := newFakeGatewayDeps(states...)
+	f.alive[400] = true
+	f.cmdlines[400] = []string{"/hermes/gateway", "gateway", "run", "--quiet"}
+	f.ensureStates = []string{"draining", "ready"}
+	f.mcp.Servers = map[string]int{"spark": 36, "graphiti": 12, "rag": 2}
+	deps := f.deps(func(string, ...any) {})
+	result, err := runGatewayRestart(context.Background(), gatewayRestartTestOptions(), deps)
+	if err != nil {
+		t.Fatalf("restart failed on a draining-then-ready ensure: %v", err)
+	}
+	if f.ensureCalls != 2 {
+		t.Fatalf("ensure calls = %d, want 2 (one retry after draining)", f.ensureCalls)
+	}
+	if result.NewPID != 401 {
+		t.Fatalf("new pid = %d, want the fresh gateway 401", result.NewPID)
+	}
+	started := false
+	for _, op := range f.systemctlOps {
+		if strings.Contains(op, " start ") {
+			started = true
+		}
+	}
+	if !started {
+		t.Fatalf("serve was never resumed: %v", f.systemctlOps)
+	}
+	if !f.bridgeTouched {
+		t.Fatal("intake was not restored after the retried ensure reported ready")
+	}
+}
+
+func TestGatewayRestartEnsureNeverReadyAbortsAfterBudget(t *testing.T) {
+	// Forever-draining ensure: the restart keeps Werkrby off but must retry
+	// within the overall budget and carry the operator evidence (the dead
+	// boot's exit_reason) in the abort.
+	states := []gatewayRuntimeState{
+		gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(400),
+		{PID: 3295507, Kind: "hermes-gateway", HermesHome: "/disp/hermes", GatewayState: "startup_failed",
+			ExitReason: "telegram: Telegram bot token already in use by the 'default' profile gateway (PID 1660).; api_server: Port 8642 already in use."},
+	}
+	f := newFakeGatewayDeps(states...)
+	f.alive[400] = true
+	f.cmdlines[400] = []string{"/hermes/gateway", "gateway", "run", "--quiet"}
+	f.ensureState = "draining"
+	deps := f.deps(func(string, ...any) {})
+	_, err := runGatewayRestart(context.Background(), gatewayRestartTestOptions(), deps)
+	if err == nil {
+		t.Fatal("the restart accepted a gateway that never reported ready")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, `last verdict "draining"`) {
+		t.Fatalf("abort does not name the last ensure verdict: %v", err)
+	}
+	if !strings.Contains(msg, "exit_reason") || !strings.Contains(msg, "Port 8642") {
+		t.Fatalf("abort carries no exit_reason evidence for the operator: %v", err)
+	}
+	if f.ensureCalls < 2 {
+		t.Fatalf("ensure was not retried before the abort: %d call(s)", f.ensureCalls)
+	}
+	for _, op := range f.systemctlOps {
+		if strings.Contains(op, " start ") {
+			t.Fatalf("serve was started despite ensure never reporting ready: %v", f.systemctlOps)
+		}
+	}
+	if f.bridgeTouched {
+		t.Fatal("intake was restored despite ensure never reporting ready")
+	}
+}
+
 func TestGatewayRestartResultJSON(t *testing.T) {
 	states := []gatewayRuntimeState{gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(400), gatewayFakeState(401)}
 	f := newFakeGatewayDeps(states...)
@@ -566,13 +650,22 @@ while time.time() < deadline:
 const gatewaySimHermes = `#!/usr/bin/env python3
 """fake hermes: only the machine-readable gateway ensure boundary exists; it
 starts a simulated gateway and reports ready only once a genuinely NEW pid has
-taken the state file (the old state must never pass for a fresh boot)."""
+taken the state file (the old state must never pass for a fresh boot). With
+GATEWAY_SIM_DRAIN_MARK set, the first invocation answers "draining" (exit 6)
+without starting anything — the mid-shutdown owner the 2026-11-02 01:43Z live
+abort saw — and every later invocation runs the normal fresh-start path."""
 import json, os, subprocess, sys, time
 
 argv = sys.argv[1:]
 if "gateway" not in argv or "ensure" not in argv:
     print("unsupported invocation: %s" % " ".join(argv), file=sys.stderr)
     sys.exit(2)
+
+mark = os.environ.get("GATEWAY_SIM_DRAIN_MARK", "")
+if mark and not os.path.exists(mark):
+    open(mark, "w").close()
+    print('{"state":"draining"}')
+    sys.exit(6)
 
 state = os.environ["GATEWAY_SIM_STATE"]
 agent = os.environ["GATEWAY_SIM_AGENT"]
@@ -739,7 +832,7 @@ func (sim *gatewaySim) options(drainTimeout time.Duration) gatewayRestartOptions
 	return gatewayRestartOptions{
 		Root: sim.root, HermesHome: sim.home, RelayDir: sim.relay,
 		ServeUnit: "werkrby-finite-serve.service", DrainTimeout: drainTimeout, DrainPoll: 200 * time.Millisecond,
-		KillGrace: 2 * time.Second, EnsureTimeout: 30 * time.Second,
+		KillGrace: 2 * time.Second, EnsureTimeout: 30 * time.Second, EnsureRetry: 30 * time.Second, EnsurePoll: 250 * time.Millisecond,
 		MCPServers: nil, // no profiles exist here: the MCP gate is not requested
 	}
 }
@@ -782,6 +875,7 @@ func (sim *gatewaySim) deps(t *testing.T, options gatewayRestartOptions, log *by
 			"GATEWAY_SIM_AGENTS=" + sim.agentsPath,
 			"GATEWAY_SIM_HOME=" + sim.home,
 			"GATEWAY_SIM_AGENT=" + sim.agentPath,
+			"GATEWAY_SIM_DRAIN_MARK=" + filepath.Join(sim.base, "ensure-drain-mark"),
 		})
 	}
 	deps.logf = func(format string, args ...any) { fmt.Fprintf(log, format, args...) }
@@ -829,6 +923,34 @@ func TestGatewayRestartSimulatedDrainedRestart(t *testing.T) {
 	}
 	if result.DrainedSeconds < 400*time.Millisecond {
 		t.Fatalf("drain did not wait for the open work: %s", result.DrainedSeconds)
+	}
+}
+
+func TestGatewayRestartSimulatedEnsureDrainingRetries(t *testing.T) {
+	// The simulated hermes answers "draining" once without starting anything
+	// (the 2026-11-02T01:43Z live abort), then runs the normal fresh-start
+	// path: the restart must ensure again and complete.
+	sim := startGatewaySim(t, false)
+	oldPID := sim.gatewayPID
+	var log bytes.Buffer
+	options := sim.options(30 * time.Second)
+	deps := sim.deps(t, options, &log)
+	result, err := runGatewayRestart(context.Background(), options, deps)
+	if err != nil {
+		t.Fatalf("simulated restart failed after a draining ensure: %v\n%s", err, log.String())
+	}
+	if result.OldPID != oldPID {
+		t.Fatalf("old pid = %d, want %d", result.OldPID, oldPID)
+	}
+	state := sim.waitState(t, 10*time.Second)
+	if state.PID == oldPID {
+		t.Fatalf("the gateway pid did not change: %d", state.PID)
+	}
+	if serveState := readSimSystemdState(t, sim); serveState != "active" {
+		t.Fatalf("serve state after restart = %q", serveState)
+	}
+	if _, err := os.Stat(filepath.Join(sim.relay, "bridge.on")); err != nil {
+		t.Fatalf("intake was not restored: %v", err)
 	}
 }
 
@@ -1017,6 +1139,9 @@ func TestGatewayRestartParseOptionsDefaults(t *testing.T) {
 	}
 	if options.DrainTimeout != time.Hour || options.KillGrace != 180*time.Second || options.EnsureTimeout != 120*time.Second {
 		t.Fatalf("time defaults = %s/%s/%s", options.DrainTimeout, options.KillGrace, options.EnsureTimeout)
+	}
+	if options.EnsureRetry != 10*time.Minute || options.EnsurePoll != 5*time.Second {
+		t.Fatalf("ensure retry defaults = %s/%s", options.EnsureRetry, options.EnsurePoll)
 	}
 	if strings.Join(options.MCPServers, ",") != "spark,graphiti,rag" {
 		t.Fatalf("mcp servers default = %v", options.MCPServers)
