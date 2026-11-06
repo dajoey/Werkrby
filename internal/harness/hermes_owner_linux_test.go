@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/agent0ai/spynel/internal/roster"
 )
@@ -263,6 +264,86 @@ func (f *ownerFixture) observation(t *testing.T) HermesBoundaryObservation {
 		t.Fatalf("inspect: %v", err)
 	}
 	return observation
+}
+
+func TestHermesSymlinkedHomeResolvedMatchStillChecksGateway(t *testing.T) {
+	// A relocated state root leaves a symlink where the home was, and the
+	// gateway record names the resolved path. Resolving both sides must not
+	// hide a dead gateway: the check still applies.
+	f := newOwnerFixture(t, "started", 11)
+	real := f.home + "-real"
+	if err := os.Rename(f.home, real); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, f.home); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := filepath.EvalSymlinks(f.home)
+	if err != nil || filepath.Clean(resolved) != filepath.Clean(real) {
+		t.Fatalf("symlink home resolved to %q, %v; want %q", resolved, err, real)
+	}
+	writeOwnerTestRecord(t, f.home, real, ownerTestReapedPID(t), 43465815)
+	if got := f.observation(t); got.Liveness != BoundaryAbsent {
+		t.Fatalf("dead gateway behind a symlinked home = %+v, want absent", got)
+	}
+}
+
+func TestHermesUnresolvedRecordHomeStaysLive(t *testing.T) {
+	// A record whose hermes_home no longer resolves proves nothing about the
+	// gateway: doubt keeps the turn live.
+	f := newOwnerFixture(t, "started", 11)
+	writeOwnerTestRecord(t, f.home, filepath.Join(f.home, "gone", "moved"), ownerTestReapedPID(t), 43465815)
+	if got := f.observation(t); got.Liveness != BoundaryLive {
+		t.Fatalf("dead gateway record naming an unresolvable home = %+v, want live", got)
+	}
+}
+
+func TestHermesZombieGatewayIsGone(t *testing.T) {
+	// A gateway that exited but was never reaped keeps a /proc entry whose
+	// state letter is Z. It can never run again, so it is gone.
+	f := newOwnerFixture(t, "started", 11)
+	cmd := exec.Command("true")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Wait() })
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		data, err := os.ReadFile("/proc/" + strconv.Itoa(cmd.Process.Pid) + "/stat")
+		if os.IsNotExist(err) {
+			t.Skip("child was reaped before it could be observed as a zombie")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		fields := bytes.Fields(data[bytes.LastIndexByte(data, ')')+1:])
+		if len(fields) > 0 && string(fields[0]) == "Z" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child never became a zombie")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	start := ownerTestStartTicks(t, cmd.Process.Pid)
+	writeOwnerTestRecord(t, f.home, f.home, cmd.Process.Pid, start)
+	if got := f.observation(t); got.Liveness != BoundaryAbsent {
+		t.Fatalf("zombie gateway = %+v, want absent", got)
+	}
+}
+
+func TestHermesOrphanedOwnTurnWithLinkedTurnAndWorkerStaysLive(t *testing.T) {
+	// Every ledger read happens inside one transaction: the epoch, the exact
+	// admission, the linked admissions, and the workers. A linked started turn
+	// whose gateway is also gone is skipped, and the run's own running worker
+	// keeps the turn live.
+	f := newOwnerFixture(t, "started", 11)
+	f.writeGatewayPID(t, ownerTestReapedPID(t), 43465815)
+	f.addAdmission(t, "child-turn", "api", "local-child", []string{boundaryTestSession, "local-child"}, "started", 11, int64(8), 2)
+	f.addWorker(t, boundaryTestSession, 11, 7, "running")
+	if got := f.observation(t); got.Liveness != BoundaryLive {
+		t.Fatalf("orphaned own turn with a linked turn and a running worker = %+v, want live", got)
+	}
 }
 
 func TestHermesDeadGatewayOrphansItsOwnTurn(t *testing.T) {

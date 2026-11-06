@@ -1,8 +1,6 @@
 package harness
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -38,19 +36,18 @@ const (
 // once its owner is gone: the next gateway marks it unknown. The owner is gone
 // when a later epoch has taken over the ledger, or when the ledger is still at
 // ownerEpoch, no gateway.pid record in any of homes names a live gateway, and
-// at least one names a gateway process that has ended (a dead PID, or a PID
-// reused with a different start time, as after a reboot). Every error or
-// unreadable record is doubt and returns false, so the caller keeps failing
-// closed exactly as it did before this check existed.
-func hermesOwnerGone(ctx context.Context, db *sql.DB, homes []string, ownerEpoch int64) bool {
-	var current int64
-	if err := db.QueryRowContext(ctx, `SELECT epoch FROM runtime_epoch WHERE singleton=1`).Scan(&current); err != nil {
+// at least one names a gateway process that has ended (a dead PID, a PID
+// reused with a different start time, or an unreaped zombie, as after a
+// reboot). Every unreadable record is doubt and returns false, so the caller
+// keeps failing closed exactly as it did before this check existed.
+func hermesOwnerGone(epoch int64, known bool, homes []string, ownerEpoch int64) bool {
+	if !known {
 		return false
 	}
-	if current > ownerEpoch {
+	if epoch > ownerEpoch {
 		return true
 	}
-	if current < ownerEpoch {
+	if epoch < ownerEpoch {
 		return false
 	}
 	sawDead := false
@@ -84,7 +81,7 @@ func hermesGatewayRecordState(home string) hermesGatewayState {
 	if err := json.Unmarshal(data, &record); err != nil || record.PID <= 0 || record.StartTime == nil {
 		return hermesGatewayDoubt
 	}
-	if record.HermesHome != "" && filepath.Clean(record.HermesHome) != filepath.Clean(home) {
+	if record.HermesHome != "" && !hermesSameHome(record.HermesHome, home) {
 		return hermesGatewayDoubt
 	}
 	switch gone, known := hermesProcessGenerationGone(record.PID, *record.StartTime); {
@@ -97,13 +94,28 @@ func hermesGatewayRecordState(home string) hermesGatewayState {
 	}
 }
 
+// hermesSameHome resolves both homes through symlinks before comparing them,
+// so a relocated state root (a symlinked home) keeps its gateway record
+// checkable. Any resolution failure is doubt, never a mismatch.
+func hermesSameHome(recorded, home string) bool {
+	resolvedRecorded, err := filepath.EvalSymlinks(recorded)
+	if err != nil {
+		return false
+	}
+	resolvedHome, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(resolvedRecorded) == filepath.Clean(resolvedHome)
+}
+
 // hermesAdmissionOrphaned reports whether an admission's non-terminal status
 // can no longer describe a running turn because its owning gateway is gone.
 // A queued admission is never orphaned: the next gateway may still start it.
-func hermesAdmissionOrphaned(ctx context.Context, db *sql.DB, homes []string, row hermesAdmissionRow) bool {
+func hermesAdmissionOrphaned(epoch int64, known bool, homes []string, row hermesAdmissionRow) bool {
 	switch row.status {
 	case "started", "unknown":
-		return hermesOwnerGone(ctx, db, homes, row.ownerEpoch)
+		return hermesOwnerGone(epoch, known, homes, row.ownerEpoch)
 	default:
 		return false
 	}

@@ -368,8 +368,8 @@ func (row hermesAdmissionRow) prompt() (string, error) {
 	return payload.Text, nil
 }
 
-func findExactHermesAdmission(ctx context.Context, db *sql.DB, spec RunBoundarySpec, prompt string) (*HermesTurnIdentity, error) {
-	rows, err := db.QueryContext(ctx, `SELECT `+hermesAdmissionColumns+` FROM session_admissions WHERE json_extract(payload_json,'$.text')=? ORDER BY seq`, prompt)
+func findExactHermesAdmission(ctx context.Context, q hermesLedgerQuerier, spec RunBoundarySpec, prompt string) (*HermesTurnIdentity, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+hermesAdmissionColumns+` FROM session_admissions WHERE json_extract(payload_json,'$.text')=? ORDER BY seq`, prompt)
 	if err != nil {
 		return nil, err
 	}
@@ -405,8 +405,8 @@ func findExactHermesAdmission(ctx context.Context, db *sql.DB, spec RunBoundaryS
 	return &identities[0], nil
 }
 
-func readExactHermesAdmission(ctx context.Context, db *sql.DB, identity HermesTurnIdentity, prompt string) (hermesAdmissionRow, error) {
-	rows, err := db.QueryContext(ctx, `SELECT `+hermesAdmissionColumns+` FROM session_admissions WHERE admission_id=?`, identity.AdmissionID)
+func readExactHermesAdmission(ctx context.Context, q hermesLedgerQuerier, identity HermesTurnIdentity, prompt string) (hermesAdmissionRow, error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+hermesAdmissionColumns+` FROM session_admissions WHERE admission_id=?`, identity.AdmissionID)
 	if err != nil {
 		return hermesAdmissionRow{}, err
 	}
@@ -500,12 +500,39 @@ func terminalHermesOutcome(outcome string) bool {
 	return false
 }
 
+// hermesLedgerQuerier is the read surface of the Hermes ledger, satisfied by
+// both *sql.DB and an open read-only *sql.Tx.
+type hermesLedgerQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// readHermesRuntimeEpoch reads the ledger's owner epoch once per observation.
+// known is false when the epoch cannot be read: doubt keeps the turn live.
+func readHermesRuntimeEpoch(ctx context.Context, q hermesLedgerQuerier) (epoch int64, known bool) {
+	var current int64
+	if err := q.QueryRowContext(ctx, `SELECT epoch FROM runtime_epoch WHERE singleton=1`).Scan(&current); err != nil {
+		return 0, false
+	}
+	return current, true
+}
+
 func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBoundaryMetadata, runDir, prompt string) (HermesBoundaryObservation, error) {
+	// Every ledger read below happens inside one read-only transaction, so
+	// the epoch, the exact admission, the linked admissions, and the workers
+	// describe one ledger snapshot. The handle allows one connection: no
+	// helper may query the pool while this transaction is open, and no query
+	// may run while another rows cursor is open.
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return HermesBoundaryObservation{Liveness: BoundaryUnknown, Identity: meta.Identity}, errors.Join(errHermesBoundaryUnknown, err)
+	}
+	defer tx.Rollback()
 	unknown := func(err error) (HermesBoundaryObservation, error) {
 		return HermesBoundaryObservation{Liveness: BoundaryUnknown, Identity: meta.Identity}, errors.Join(errHermesBoundaryUnknown, err)
 	}
 	if meta.Identity == nil {
-		identity, err := findExactHermesAdmission(ctx, db, specFromMetadata(meta), prompt)
+		identity, err := findExactHermesAdmission(ctx, tx, specFromMetadata(meta), prompt)
 		if err != nil {
 			return unknown(err)
 		}
@@ -521,7 +548,7 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 			return unknown(err)
 		}
 	}
-	row, err := readExactHermesAdmission(ctx, db, *meta.Identity, prompt)
+	row, err := readExactHermesAdmission(ctx, tx, *meta.Identity, prompt)
 	if err != nil {
 		return unknown(err)
 	}
@@ -531,9 +558,11 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 	}
 	observation := HermesBoundaryObservation{Identity: &identity, Status: row.status, Outcome: row.outcome}
 	// A started or unknown turn whose owning gateway is gone (for example
-	// killed by a reboot) is not running and is never replayed.
+	// killed by a reboot) is not running and is never replayed. The epoch is
+	// read once and reused for the run's own admission and every linked one.
+	epoch, epochKnown := readHermesRuntimeEpoch(ctx, tx)
 	homes := []string{meta.Home, meta.GatewayHome}
-	ownOrphaned := hermesAdmissionOrphaned(ctx, db, homes, row)
+	ownOrphaned := hermesAdmissionOrphaned(epoch, epochKnown, homes, row)
 	switch row.status {
 	case "queued", "started":
 		if !ownOrphaned {
@@ -554,7 +583,7 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 		return unknown(fmt.Errorf("unrecognized Hermes admission status %q", row.status))
 	}
 
-	pending, err := db.QueryContext(ctx, `SELECT `+hermesAdmissionColumns+` FROM session_admissions WHERE status IN ('queued','started','unknown') ORDER BY seq`)
+	pending, err := tx.QueryContext(ctx, `SELECT `+hermesAdmissionColumns+` FROM session_admissions WHERE status IN ('queued','started','unknown') ORDER BY seq`)
 	if err != nil {
 		return unknown(err)
 	}
@@ -581,7 +610,7 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 	// every linked turn skipped below because its gateway is gone.
 	workerChecks := []hermesAdmissionRow{row}
 	for _, other := range linkedPending {
-		if hermesAdmissionOrphaned(ctx, db, homes, other) {
+		if hermesAdmissionOrphaned(epoch, epochKnown, homes, other) {
 			workerChecks = append(workerChecks, other)
 			continue
 		}
@@ -604,7 +633,7 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 		if checked.generation == nil {
 			continue
 		}
-		live, err := linkedHermesWorkerLive(ctx, db, checked, identity.SessionID)
+		live, err := linkedHermesWorkerLive(ctx, tx, checked, identity.SessionID)
 		if err != nil {
 			return unknown(err)
 		}
@@ -622,8 +651,8 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 
 // linkedHermesWorkerLive reports whether a worker of the given turn's epoch
 // and generation, on a session linked to sessionID, may still be running.
-func linkedHermesWorkerLive(ctx context.Context, db *sql.DB, turn hermesAdmissionRow, sessionID string) (bool, error) {
-	workers, err := db.QueryContext(ctx, `SELECT session_id,status FROM worker_executions WHERE owner_epoch=? AND generation=? AND status!='terminal'`, turn.ownerEpoch, *turn.generation)
+func linkedHermesWorkerLive(ctx context.Context, q hermesLedgerQuerier, turn hermesAdmissionRow, sessionID string) (bool, error) {
+	workers, err := q.QueryContext(ctx, `SELECT session_id,status FROM worker_executions WHERE owner_epoch=? AND generation=? AND status!='terminal'`, turn.ownerEpoch, *turn.generation)
 	if err != nil {
 		return false, err
 	}

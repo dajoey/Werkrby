@@ -30,6 +30,11 @@ func hermesProcessGenerationGone(pid int, recordedStart int64) (gone, known bool
 	if len(fields) < 20 {
 		return false, false
 	}
+	// The state letter is the first field after the command name. Z marks a
+	// gateway that ended but was never reaped: it can never run again.
+	if string(fields[0]) == "Z" {
+		return true, true
+	}
 	current, err := strconv.ParseInt(string(fields[19]), 10, 64)
 	if err != nil {
 		return false, false
