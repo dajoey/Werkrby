@@ -202,7 +202,8 @@ func (s *Store) poolWalls(ctx context.Context, seats []Seat, now time.Time) (map
 
 // priorProbeWalls counts the settled probe walls a pool spent since its last
 // productive run, so the uncharged re-probe ladder climbs 15, 30, then 60
-// minutes. Every task counts. On a query error the count is 0.
+// minutes. Only the pool's own rows count: a probe another pool spent never
+// moves this pool's ladder. Every task counts. On a query error the count is 0.
 func (s *Store) priorProbeWalls(ctx context.Context, pool string, seats []Seat) (int, error) {
 	if pool == "" {
 		return 0, nil
@@ -230,6 +231,7 @@ func (s *Store) priorProbeWalls(ctx context.Context, pool string, seats []Seat) 
 		if err != nil {
 			continue
 		}
+		probe := false
 		rowPool := ""
 		if RunOutcome(outcome) == RunWall {
 			var audit wallPayload
@@ -237,14 +239,15 @@ func (s *Store) priorProbeWalls(ctx context.Context, pool string, seats []Seat) 
 				continue
 			}
 			rowPool = wallPoolOf(audit, seat, rosterPool)
-			if audit.WallSource == string(WallSourceProbe) {
-				probes = append(probes, rowEnded)
-			}
+			probe = audit.WallSource == string(WallSourceProbe)
 		} else {
 			rowPool = rosterPool[seat]
 		}
 		if rowPool != pool {
-			continue
+			continue // another pool's rows never move this pool's ladder
+		}
+		if probe {
+			probes = append(probes, rowEnded)
 		}
 		if RunOutcome(outcome) != RunWall && rowEnded.After(boundary) {
 			boundary = rowEnded

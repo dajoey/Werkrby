@@ -124,6 +124,65 @@ func TestPoolWallsLegacyRowIsStable(t *testing.T) {
 	}
 }
 
+// seedResolvedWallRun settles one run on seat the way recoverRun does once the
+// engine resolves the wake: the settled payload carries wall_source and pool.
+func seedResolvedWallRun(t *testing.T, engine *Engine, id, seat string, wake time.Time, source WallSource, pool, errorText string) {
+	t.Helper()
+	ctx := context.Background()
+	task, err := engine.store.IntakeBrief(ctx, writeFallbackBrief(t, id, false, seat, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.store.db.Exec(`UPDATE tasks SET state='working' WHERE id=?`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	runDir := filepath.Join(t.TempDir(), "run-dir-"+id)
+	if _, err := engine.store.db.Exec(`INSERT INTO runs(task_id,phase,task_version,seat,session_key,launch_reason,run_dir,created_at) VALUES(?,?,?,?,?,?,?,?)`,
+		task.ID, "implementation", task.Version, seat, "finite:"+task.ID+":implementation", "initial", runDir, stamp(engine.store.now())); err != nil {
+		t.Fatal(err)
+	}
+	var runID int64
+	if err := engine.store.db.QueryRow(`SELECT id FROM runs WHERE run_dir=?`, runDir).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.store.SettleRun(ctx, SettlementRequest{RunID: runID, ExpectedTaskVersion: task.Version, ExecutionOutcome: RunWall, WallWakeAt: &wake, WallSource: string(source), WallPool: pool, Error: errorText}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestPriorProbeWallsCountsOnlyItsOwnPool: a pool's probe ladder counts that
+// pool's own probe walls. Probes another pool spent must not climb this pool's
+// ladder, or a fresh pool waits 30 or 60 minutes instead of its first 15.
+func TestPriorProbeWallsCountsOnlyItsOwnPool(t *testing.T) {
+	engine := newEngineFixture(t, engineFixturePlan{})
+	ctx := context.Background()
+	seats := []Seat{
+		{Name: "seat-a", Pool: "zai"},
+		{Name: "seat-b", Pool: "zai_balance"},
+	}
+	// Pool zai spent no probes. Pool zai_balance spent two, on another seat,
+	// after everything: their payload carries the pool, as every resolved
+	// wall's does.
+	first := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+	second := first.Add(20 * time.Minute)
+	seedResolvedWallRun(t, engine, "probe-other-1", "seat-b", first, WallSourceProbe, "zai_balance", "HTTP 429: rate limit exceeded")
+	seedResolvedWallRun(t, engine, "probe-other-2", "seat-b", second, WallSourceProbe, "zai_balance", "HTTP 429: rate limit exceeded")
+	own, err := engine.store.priorProbeWalls(ctx, "zai", seats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if own != 0 {
+		t.Fatalf("priorProbeWalls(zai) = %d, want 0: another pool's probes must not climb this pool's ladder", own)
+	}
+	spent, err := engine.store.priorProbeWalls(ctx, "zai_balance", seats)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spent != 2 {
+		t.Fatalf("priorProbeWalls(zai_balance) = %d, want its own two probes", spent)
+	}
+}
+
 // TestReplayLiveWalls re-reads the live engine's settled wall rows through the
 // legacy lift and prints what each wakes at now. It is read-only and asserts
 // nothing; it exists so a deploy can be checked against real rows first.
