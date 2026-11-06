@@ -25,7 +25,7 @@ func (h terminalCLIHarness) Interrupt(ctx context.Context, key string) (bool, er
 	h.mu.Unlock()
 	ok, err := h.heldCLIHarness.Interrupt(ctx, key)
 	if ok {
-		emit(core.Event{Kind: core.EventError, Text: "synthetic interruption", Done: true})
+		emit(core.Event{Kind: core.EventError, Text: "synthetic interruption", Done: true, Local: true})
 	}
 	return ok, err
 }

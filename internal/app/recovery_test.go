@@ -332,8 +332,10 @@ func TestHarnessSendFailureRollsBackNewConversationCorrelation(t *testing.T) {
 	failing := &failingServiceHarness{serviceHarness: target, err: errors.New("send failed")}
 	service.Harness = failing
 	message := core.Message{Channel: "cli", Conversation: "send-failure", SourceMessageID: "local:send-failure", Text: "request"}
-	if err := service.dispatchHarnessPrompt(context.Background(), message, "prompt", nil); err == nil {
-		t.Fatal("harness send failure was not returned")
+	// The failure is fenced: the caller gets no raw error, one plain sentence is the terminal
+	// record, and the raw provider text stays in the runtime log.
+	if err := service.dispatchHarnessPrompt(context.Background(), message, "prompt", nil); err != nil {
+		t.Fatal(err)
 	}
 	if service.conversationInFlight(sessionKey(message)) {
 		t.Fatal("harness send failure left conversation correlation in flight")
@@ -342,8 +344,17 @@ func TestHarnessSendFailureRollsBackNewConversationCorrelation(t *testing.T) {
 		t.Fatalf("harness send failure left runtime job active: %#v", service.Runtime.Status())
 	}
 	archived, output, err := service.Runtime.ArchivedJob(1)
-	if err != nil || archived.State != "error" || !strings.Contains(output, "send failed") {
-		t.Fatalf("failed new dispatch must retain a settled error archive: %#v, %v", archived, err)
+	if err != nil || archived.State != "error" || !strings.Contains(output, chatTurnErrorSentence()) || strings.Contains(output, "send failed") {
+		t.Fatalf("failed new dispatch must archive only the fenced sentence: %#v, %v", archived, err)
+	}
+	rawLogged := false
+	for _, entry := range service.Runtime.Logs() {
+		if entry.Event == "turn_failed" && strings.Contains(entry.Text, "send failed") {
+			rawLogged = true
+		}
+	}
+	if !rawLogged {
+		t.Fatal("the raw send failure never reached the runtime log")
 	}
 }
 
@@ -419,8 +430,10 @@ func TestFailedFollowupKeepsGlobalJobLiveAndRollsBackOnlyItsSource(t *testing.T)
 	before, _ := service.Runtime.JobForSession(key)
 	check(1)
 	second := core.Message{Channel: first.Channel, Conversation: first.Conversation, SourceMessageID: "local:second", Text: "second"}
-	if err := service.Handle(ctx, second, nil); err == nil {
-		t.Fatal("follow-up send failure was not returned")
+	// The rejected follow-up is fenced: the caller gets no raw error, its source is rolled
+	// back alone, and the older execution keeps running untouched.
+	if err := service.Handle(ctx, second, nil); err != nil {
+		t.Fatal(err)
 	}
 	check(1)
 	job, exists := service.Runtime.JobForSession(key)
@@ -428,8 +441,17 @@ func TestFailedFollowupKeepsGlobalJobLiveAndRollsBackOnlyItsSource(t *testing.T)
 		t.Fatalf("failed steering changed the original live execution: before=%#v after=%#v", before, job)
 	}
 	archived, output, err := service.Runtime.ArchivedJob(job.StableID)
-	if err != nil || archived.State != "reconnecting" || !strings.Contains(output, "provider rejected follow-up") {
-		t.Fatalf("request failure must remain inspectable without settling the archive: %#v, %v", archived, err)
+	if err != nil || archived.State != "reconnecting" || !strings.Contains(output, chatTurnErrorSentence()) || strings.Contains(output, "provider rejected follow-up") {
+		t.Fatalf("rejected follow-up must archive only the fenced sentence without settling: %#v, %v", archived, err)
+	}
+	rawLogged := false
+	for _, entry := range service.Runtime.Logs() {
+		if entry.Event == "turn_failed" && strings.Contains(entry.Text, "provider rejected follow-up") {
+			rawLogged = true
+		}
+	}
+	if !rawLogged {
+		t.Fatal("the raw follow-up rejection never reached the runtime log")
 	}
 	if !service.conversationInFlight(key) {
 		t.Fatal("failed follow-up removed the older active execution correlation")
@@ -544,7 +566,7 @@ func TestRecoveredTurnIgnoresDuplicateLateTerminalBeforeDurableAppend(t *testing
 	service, _, _ := newRecoveryTestService(t)
 	message := core.Message{Channel: "tui", Conversation: "duplicate-terminal", Sender: "recovery", SourceMessageID: "local:duplicate-terminal"}
 	events := make([]core.Event, 0, 2)
-	emit := service.wrapEmit(message, 1, func(event core.Event) { events = append(events, event) })
+	emit, _ := service.wrapEmit(message, 1, func(event core.Event) { events = append(events, event) })
 	emit(core.Event{Kind: core.EventFinal, Text: "one answer", Done: true})
 	emit(core.Event{Kind: core.EventFinal, Text: "one answer", Done: true})
 

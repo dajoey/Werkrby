@@ -32,6 +32,10 @@ const (
 	hermesPartialTurnNotice = "This turn did not complete. Some actions may already have run; verify their effects before resending."
 	// hermesCompactionPrefix opens the summary row context compression writes; it is never an answer.
 	hermesCompactionPrefix = "[CONTEXT COMPACTION"
+	// hermesDisconnectTurnCopy is the exact copy Hermes prints when a pane client's gateway link
+	// drops mid-turn (hermes_cli/gateway_connection.py DISCONNECTED): the turn's outcome is
+	// unknown, not failed, because the root gateway may still finish it and record the answer.
+	hermesDisconnectTurnCopy = "Gateway disconnected; turn outcome is unknown."
 
 	// HermesUnresolvedTurn is the detail of the verdict judgeHermesTurn emits when a delivered
 	// turn wrote rows but ended with neither an answer row nor a failed-turn boundary row inside
@@ -56,6 +60,12 @@ const (
 	// defaultHermesInflightBudget bounds the wait for the ending of a turn whose prompt landed
 	// (or whose first assistant row landed) after herdr had already called it finished.
 	defaultHermesInflightBudget = 10 * time.Minute
+	// defaultHermesDisconnectWait bounds how long a turn re-reads the launch profile's ledger
+	// after the pane client printed the disconnect copy: the gateway is still running the turn
+	// and its answer or failed-turn row still lands in state.db (2026-10-30: the wk-chat client
+	// dropped at 15:09:23 and the gateway recorded the answer at 15:12:10).
+	defaultHermesDisconnectWait = 10 * time.Minute
+	hermesDisconnectPoll        = 2 * time.Second
 	hermesLedgerPoll            = 250 * time.Millisecond
 	hermesCompressionHops       = 8
 )
@@ -545,16 +555,79 @@ func (h *Herdr) readWorkerScreen(target string) string {
 	return string(out)
 }
 
+// hermesDisconnectDetail reports whether a screen error panel carries the gateway-disconnect
+// copy, whose outcome is unknown rather than failed.
+func hermesDisconnectDetail(detail string) bool {
+	return strings.Contains(detail, hermesDisconnectTurnCopy)
+}
+
+// hermesDisconnectedNoOutcome is the plain sentence a turn fails with when the disconnect wait
+// ran out without the ledger recording an outcome.
+func hermesDisconnectedNoOutcome() error {
+	return hermesTurnFailed("the worker's gateway link dropped mid-turn and no answer was recorded before the wait ended")
+}
+
+// awaitDisconnectedHermesTurn re-reads the launch profile's ledger until the gateway records the
+// dropped turn's outcome or the disconnect wait runs out. The pane client printed the disconnect
+// copy, so the prompt reached the gateway: its user row and its final answer or failed-turn row
+// still land in state.db even though the pane never saw the turn end. The work is never resent.
+func (h *Herdr) awaitDisconnectedHermesTurn(ctx context.Context, launchArgs []string, prompt string, since time.Time) hermesVerdict {
+	wait := h.hermesDisconnectWait
+	if wait == 0 {
+		wait = defaultHermesDisconnectWait
+	}
+	if wait < 0 {
+		return hermesVerdict{delivered: true, ledger: true, err: hermesDisconnectedNoOutcome()}
+	}
+	path, err := h.hermesLedgerFile(launchArgs)
+	if err != nil {
+		return hermesVerdict{delivered: true, ledger: true, err: hermesDisconnectedNoOutcome()}
+	}
+	deadline := time.Now().Add(wait)
+	for {
+		turn, readErr := readHermesTurn(ctx, path, prompt, since)
+		if readErr == nil && turn.ended() {
+			if turn.Final != "" {
+				return hermesVerdict{delivered: true, ledger: true, final: turn.Final}
+			}
+			return hermesVerdict{delivered: true, ledger: true, err: hermesTurnFailed(turn.Failure)}
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		delay := hermesDisconnectPoll
+		if remaining < delay {
+			delay = remaining
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(delay):
+		}
+	}
+	return hermesVerdict{delivered: true, ledger: true, err: hermesDisconnectedNoOutcome()}
+}
+
 // judgeHermesTurn decides a Hermes turn that herdr reports finished. The ledger decides when it
 // holds the turn: its answer is the reply (a gated draft is superseded by its rewrite), and a
 // failed-turn row, or a turn that wrote rows but no answer, is a turn error. Otherwise the screen
 // decides: a newest turn ending in the error panel is a turn error, and a reply box or panel on
-// screen is evidence the prompt landed.
+// screen is evidence the prompt landed. A disconnect panel is the one exception: the turn's
+// outcome is unknown, so the ledger is re-read for a bounded wait instead of failing the turn.
 func (h *Herdr) judgeHermesTurn(ctx context.Context, target string, launchArgs []string, prompt string, since time.Time) hermesVerdict {
 	turn, err := h.readHermesLedger(ctx, launchArgs, prompt, since)
 	if err == nil && !turn.ended() && !turn.SawAssistant {
 		// Herdr called the turn finished, but the ledger holds no row of it past the prompt (or
 		// not even the prompt): the turn has not run yet. Wait on the ledger, never the screen.
+		if detail, ok := hermesScreenTurnError(h.readWorkerScreen(target)); ok && hermesDisconnectDetail(detail) {
+			// The newest turn ended in the disconnect panel: the client's gateway link dropped
+			// and the gateway may still be running the turn. One bounded wait covers the prompt
+			// row landing and the ending; the inflight wait's own budgets do not apply.
+			return h.awaitDisconnectedHermesTurn(ctx, launchArgs, prompt, since)
+		}
 		turn, err = h.readHermesInflightTurn(ctx, launchArgs, prompt, since)
 		if ctx.Err() != nil {
 			return hermesVerdict{err: ctx.Err()}
@@ -567,6 +640,11 @@ func (h *Herdr) judgeHermesTurn(ctx context.Context, target string, launchArgs [
 			// Never delivered: an error panel the newest turn drew is the cause; otherwise the
 			// caller's new-pane re-send may still run. Nothing on the screen is this turn's reply.
 			if detail, ok := hermesScreenTurnError(h.readWorkerScreen(target)); ok {
+				if hermesDisconnectDetail(detail) {
+					// The pane client dropped before the gateway recorded the prompt: no
+					// answer exists to recover, and the raw disconnect copy is never an error.
+					return hermesVerdict{ledger: true, delivered: true, err: hermesDisconnectedNoOutcome()}
+				}
 				return hermesVerdict{ledger: true, delivered: true, err: hermesTurnFailed(detail)}
 			}
 			return hermesVerdict{ledger: true}
@@ -581,6 +659,12 @@ func (h *Herdr) judgeHermesTurn(ctx context.Context, target string, launchArgs [
 			v.err = hermesTurnFailed(turn.Failure)
 		default:
 			if detail, ok := hermesScreenTurnError(h.readWorkerScreen(target)); ok {
+				if hermesDisconnectDetail(detail) {
+					// The pane client dropped mid-turn and the gateway is still running it:
+					// wait for its ending in the ledger instead of the short late-ending
+					// grace or the unresolved verdict (the work is never resent).
+					return h.awaitDisconnectedHermesTurn(ctx, launchArgs, prompt, since)
+				}
 				v.err = hermesTurnFailed(detail)
 			} else if turn.SawAssistant {
 				// The ending row can land past the settle window (a provider storm
@@ -609,6 +693,11 @@ func (h *Herdr) judgeHermesTurn(ctx context.Context, target string, launchArgs [
 	v := hermesVerdict{delivered: hermesScreenShowsReply(screen)}
 	if detail, ok := hermesScreenTurnError(screen); ok {
 		v.delivered = true
+		if hermesDisconnectDetail(detail) {
+			// The disconnect copy is the one screen error whose outcome is unknown: the root
+			// gateway may still finish the turn and record the answer; wait for it.
+			return h.awaitDisconnectedHermesTurn(ctx, launchArgs, prompt, since)
+		}
 		v.err = hermesTurnFailed(detail)
 	}
 	return v

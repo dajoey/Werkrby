@@ -79,6 +79,10 @@ type Herdr struct {
 	// defaultHermesBlockedPoll).
 	hermesBlockedWait time.Duration
 	hermesBlockedPoll time.Duration
+	// hermesDisconnectWait bounds how long a turn re-reads the launch profile's ledger for the
+	// gateway's outcome after the pane client printed the gateway-disconnect copy (zero means
+	// defaultHermesDisconnectWait, negative means no wait).
+	hermesDisconnectWait time.Duration
 
 	// submitted is the last prompt herdr accepted for each worker and when it was sent, so a turn
 	// that finds the worker still running that prompt's turn can judge it from the ledger. A

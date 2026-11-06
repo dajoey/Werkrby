@@ -726,7 +726,7 @@ func cancelQueuedRequests(queue ...pendingSend) {
 		if next.preserveEmitter {
 			continue
 		}
-		event := core.Event{Kind: core.EventError, Text: "Queued follow-up cancelled before provider dispatch", Done: true}
+		event := core.Event{Kind: core.EventError, Text: "Queued follow-up cancelled before provider dispatch", Done: true, Local: true}
 		for _, emit := range next.release {
 			emit(event)
 		}
