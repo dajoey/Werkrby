@@ -526,13 +526,23 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 		return unknown(err)
 	}
 	observation := HermesBoundaryObservation{Identity: &identity, Status: row.status, Outcome: row.outcome}
+	// A started or unknown turn whose owning gateway is gone (for example
+	// killed by a reboot) is not running and is never replayed.
+	ownOrphaned, err := hermesAdmissionOrphaned(ctx, db, meta.Home, row)
+	if err != nil {
+		return unknown(err)
+	}
 	switch row.status {
 	case "queued", "started":
-		observation.Liveness = BoundaryLive
-		return observation, nil
+		if !ownOrphaned {
+			observation.Liveness = BoundaryLive
+			return observation, nil
+		}
 	case "unknown":
-		observation.Liveness = BoundaryUnknown
-		return observation, errHermesBoundaryUnknown
+		if !ownOrphaned {
+			observation.Liveness = BoundaryUnknown
+			return observation, errHermesBoundaryUnknown
+		}
 	case "terminal":
 		if !terminalHermesOutcome(row.outcome) {
 			observation.Liveness = BoundaryLive
@@ -556,7 +566,16 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 		if err != nil {
 			return unknown(err)
 		}
-		if !linked {
+		if !linked || other.admissionID == row.admissionID {
+			continue
+		}
+		orphaned, err := hermesAdmissionOrphaned(ctx, db, meta.Home, other)
+		if err != nil {
+			return unknown(err)
+		}
+		// A queued turn on the orphaned turn's own session can never start:
+		// the next gateway marks the orphaned turn unknown, which blocks it.
+		if orphaned || other.status == "queued" && ownOrphaned && other.sessionID == row.sessionID {
 			continue
 		}
 		if other.status == "unknown" {
