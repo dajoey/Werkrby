@@ -208,6 +208,8 @@ func (h *Herdr) sendHeadlessHermesRunBoundary(ctx context.Context, key, prompt, 
 		return "", false, err
 	}
 	turn.cmd = cmd
+	// The disconnect recovery matches ledger rows by this turn's start time.
+	turnStart := time.Now()
 	if err := cmd.Start(); err != nil {
 		startErr := fmt.Errorf("start finite headless Hermes: %w", err)
 		emitHeadlessError(emit, "", startErr.Error())
@@ -290,9 +292,6 @@ func (h *Herdr) sendHeadlessHermesRunBoundary(ctx context.Context, key, prompt, 
 
 	observation, boundaryInspectErr := InspectHermesRunBoundary(ctx, spec)
 	if reportErr != nil || report == nil || report.Failed || !report.Completed {
-		if boundaryInspectErr == nil && observation.Liveness == BoundaryLive {
-			boundaryInspectErr = stopHermesBoundaryAfterClientExit(spec)
-		}
 		detail := hermesHeadlessFailureDetail(nil, result.String(), stderr.String(), waitErr)
 		if report != nil {
 			detail = hermesHeadlessFailureDetail(&hermesUsageReport{
@@ -301,6 +300,37 @@ func (h *Herdr) sendHeadlessHermesRunBoundary(ctx context.Context, key, prompt, 
 			}, result.String(), stderr.String(), waitErr)
 		} else if reportErr != nil && waitErr == nil {
 			detail = "hermes -z ended without a readable usage report: " + reportErr.Error()
+		}
+		// A client that died on the gateway-disconnect panel leaves the turn's outcome
+		// unknown, not failed: the prompt reached the gateway, which goes on and records
+		// the turn's answer (or failed-turn row) in the profile ledger. Wait for that
+		// ledger BEFORE stopping the live detached turn — stopping first cancels the
+		// very work the wait is for — and never let the raw disconnect copy become the
+		// run error. Main's judgeHermesTurn holds the same recovery for the pane path;
+		// this is the finite headless path (2026-11-06 finite run 803).
+		if hermesDisconnectDetail(detail) || hermesDisconnectDetail(stderr.String()) {
+			verdict := h.awaitDisconnectedHermesTurn(turnContext, args, prompt, turnStart)
+			stopErr := boundaryInspectErr
+			if boundaryInspectErr == nil && observation.Liveness == BoundaryLive {
+				stopErr = stopHermesBoundaryAfterClientExit(spec)
+			}
+			if verdict.err != nil {
+				emitHeadlessError(emit, "", verdict.err.Error())
+				return "", false, errors.Join(verdict.err, stopErr, boundaryErr)
+			}
+			threadID := ""
+			if observation.Identity != nil {
+				threadID = observation.Identity.SessionID
+				h.rememberSession(boundary.sessionKey, threadID)
+			}
+			finalText := strings.TrimSpace(verdict.final)
+			if emit != nil {
+				emit(core.Event{Kind: core.EventFinal, Text: finalText, FinalText: &finalText, ThreadID: threadID, Done: true, Execution: &core.ExecutionStatus{State: "finishing"}})
+			}
+			return threadID, false, boundaryErr
+		}
+		if boundaryInspectErr == nil && observation.Liveness == BoundaryLive {
+			boundaryInspectErr = stopHermesBoundaryAfterClientExit(spec)
 		}
 		emitHeadlessError(emit, "", detail)
 		return "", false, errors.Join(fmt.Errorf("runner turn failed: %s", detail), boundaryInspectErr, boundaryErr)
