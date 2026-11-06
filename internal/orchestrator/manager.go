@@ -3490,6 +3490,15 @@ func isQuotaError(err error) bool {
 		strings.Contains(msg, "quota will reset")
 }
 
+// IsQuotaError reports whether a harness turn error names a provider quota or rate-limit wall.
+// The chat delivery path classifies the same walls the orchestrator parks task turns on.
+func IsQuotaError(err error) bool { return isQuotaError(err) }
+
+// ParseQuotaResetTime extracts when a provider quota error says its wall lifts.
+func ParseQuotaResetTime(errMsg string, now time.Time) (time.Time, bool) {
+	return parseQuotaResetTime(errMsg, now)
+}
+
 func resolveRunnerName(document Document, lease Lease) string {
 	if a := stringField(document, "agent"); a != "" {
 		return a

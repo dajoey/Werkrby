@@ -1065,8 +1065,10 @@ func TestOfflineCLIExtensionCanHandleMessageWithoutAHarness(t *testing.T) {
 	if output.String() != "handled without harness\n" {
 		t.Fatalf("offline extension output = %q", output.String())
 	}
-	if err := runMessageMode(cfg.Path, "offline", "requires a harness", "test", messageRunOptions{Output: &bytes.Buffer{}}); err == nil || !strings.Contains(err.Error(), "harness unavailable") {
-		t.Fatalf("unhandled offline message error = %v", err)
+	// A message that needs a harness fails fenced: one plain sentence to the channel, the raw
+	// "harness unavailable" detail in the runtime log.
+	if err := runMessageMode(cfg.Path, "offline", "requires a harness", "test", messageRunOptions{Output: &bytes.Buffer{}}); err == nil || !strings.Contains(err.Error(), "chat turn failed") {
+		t.Fatalf("offline message without a harness = %v, want the fenced plain sentence", err)
 	}
 }
 
