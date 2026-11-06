@@ -115,3 +115,9 @@ const gatewayBootPoll = 500 * time.Millisecond
 func gatewayDetachSysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Setsid: true}
 }
+
+// signalPID sends a signal to a pid; the restart uses it to stop a drained
+// supervisor that outlived its grace period.
+func signalPID(pid int, sig syscall.Signal) error {
+	return syscall.Kill(pid, sig)
+}

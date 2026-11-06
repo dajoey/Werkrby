@@ -662,7 +662,7 @@ func resolveGatewayRestartDeps(options gatewayRestartOptions) (gatewayRestartDep
 		return len(pids), nil
 	}
 	deps.signalProcess = func(pid int, sig syscall.Signal) error {
-		return syscall.Kill(pid, sig)
+		return signalPID(pid, sig)
 	}
 	deps.processCmdline = procProcessCmdline
 	deps.processAlive = procProcessAlive

@@ -1,4 +1,4 @@
-//go:build !linux
+//go:build windows
 
 package finite
 
@@ -21,8 +21,10 @@ func procProcessCmdline(_ context.Context, pid int) ([]string, error) {
 	return nil, fmt.Errorf("/proc/%d/cmdline: unsupported platform", pid)
 }
 
-func procProcessAlive(_ context.Context, pid int) bool {
-	return syscall.Kill(pid, 0) == nil
+// procProcessAlive: there is no procfs signal-0 probe on Windows; nothing
+// reads as alive, so every wait-for-exit loop stays terminal.
+func procProcessAlive(_ context.Context, _ int) bool {
+	return false
 }
 
 func procInServeCgroup() bool { return false }
@@ -33,3 +35,8 @@ const gatewayBootPoll = 500 * time.Millisecond
 
 // gatewayDetachSysProcAttr: detached-spawn attributes. Only Linux restarts.
 func gatewayDetachSysProcAttr() *syscall.SysProcAttr { return nil }
+
+// signalPID: process signaling is unsupported on Windows.
+func signalPID(_ int, _ syscall.Signal) error {
+	return fmt.Errorf("signal: unsupported platform")
+}
