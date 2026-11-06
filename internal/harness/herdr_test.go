@@ -460,6 +460,35 @@ esac
 	if !waitForEvent("tab-closed", 5*time.Second) {
 		t.Fatal("tab was not closed after interrupt: worker pane left open")
 	}
+
+	// A failed orchestrator turn spawns a second stopWorkerAfterFailedTurn
+	// teardown whose send-keys, tab close, and rename appends land after the
+	// first teardown's events. Returning while those are still appending raced
+	// TempDir's RemoveAll and flaked with "directory not empty". Wait until the
+	// events file has stopped growing after the worker was cleared, so every
+	// trailing writer has finished before the TempDir cleanup runs.
+	quietDeadline := time.Now().Add(10 * time.Second)
+	lastGrowth := time.Now()
+	var lastSize int64 = -1
+	cleared := false
+	for time.Now().Before(quietDeadline) {
+		info, err := os.Stat(eventsFile)
+		if err == nil {
+			if info.Size() != lastSize {
+				lastSize = info.Size()
+				lastGrowth = time.Now()
+			}
+			data, _ := os.ReadFile(eventsFile)
+			cleared = strings.Contains(string(data), "agent-cleared")
+			if cleared && time.Since(lastGrowth) >= 500*time.Millisecond {
+				break
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if !cleared {
+		t.Fatal("teardown did not clear the worker after interrupt: agent rename left pending")
+	}
 }
 
 func TestTeardownWorkerForceClosesTabEvenWhenTurnIsActive(t *testing.T) {
