@@ -544,7 +544,7 @@ func TestRecoveredTurnIgnoresDuplicateLateTerminalBeforeDurableAppend(t *testing
 	service, _, _ := newRecoveryTestService(t)
 	message := core.Message{Channel: "tui", Conversation: "duplicate-terminal", Sender: "recovery", SourceMessageID: "local:duplicate-terminal"}
 	events := make([]core.Event, 0, 2)
-	emit := service.wrapEmit(message, 1, func(event core.Event) { events = append(events, event) })
+	emit, _ := service.wrapEmit(message, 1, func(event core.Event) { events = append(events, event) })
 	emit(core.Event{Kind: core.EventFinal, Text: "one answer", Done: true})
 	emit(core.Event{Kind: core.EventFinal, Text: "one answer", Done: true})
 

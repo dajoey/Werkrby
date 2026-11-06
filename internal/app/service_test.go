@@ -670,8 +670,19 @@ func TestAcceptedErrorsAndCommandsRemainInHistoryAndAgentContext(t *testing.T) {
 			service := New(cfg, &failingServiceHarness{serviceHarness: target, err: errors.New("provider failed to start")})
 			defer service.Close()
 			message := core.Message{Channel: channelName, Conversation: "history-parity", Text: "first request"}
-			if err := service.Handle(context.Background(), message, nil); err == nil {
-				t.Fatal("expected failed provider admission")
+			// A failed provider turn is fenced: one plain sentence reaches the channel and
+			// history, and the raw provider text stays in the runtime log.
+			if err := service.Handle(context.Background(), message, nil); err != nil {
+				t.Fatal(err)
+			}
+			rawLogged := false
+			for _, entry := range service.Runtime.Logs() {
+				if entry.Event == "turn_failed" && strings.Contains(entry.Text, "provider failed to start") {
+					rawLogged = true
+				}
+			}
+			if !rawLogged {
+				t.Fatal("the raw provider failure never reached the runtime log")
 			}
 			message.Text = "/extension remove ../escape"
 			if err := service.Handle(context.Background(), message, nil); err == nil {
@@ -684,7 +695,7 @@ func TestAcceptedErrorsAndCommandsRemainInHistoryAndAgentContext(t *testing.T) {
 			}
 			want := []core.ChatEntry{
 				{Role: "user", Text: "first request"},
-				{Role: "error", Text: "provider failed to start"},
+				{Role: "error", Text: chatTurnErrorSentence()},
 				{Role: "user", Text: "/extension remove ../escape"},
 				{Role: "error", Text: "invalid extension name"},
 				{Role: "user", Text: "/help about"},
@@ -824,7 +835,8 @@ func TestRemoteFinalResponseExtractsOutboundAttachment(t *testing.T) {
 	message := core.Message{Channel: "telegram", Conversation: "TG-7"}
 	var got core.Event
 	finalText := "Ready.\n\n[Send attachment](<" + path + ">)"
-	service.wrapEmit(message, 0, func(event core.Event) { got = event })(core.Event{
+	emit, _ := service.wrapEmit(message, 0, func(event core.Event) { got = event })
+	emit(core.Event{
 		Kind: core.EventFinal, Text: "Progress update.\n[Send attachment](<" + progressPath + ">)\n" + finalText, FinalText: &finalText, Done: true,
 	})
 	if got.Text != "Progress update.\nReady." || len(got.Attachments) != 1 || got.Attachments[0].Path != path {
@@ -858,7 +870,7 @@ func TestNonterminalDoneEventDoesNotEndActiveJob(t *testing.T) {
 	}
 	service := New(cfg, newServiceHarness())
 	jobID := service.Runtime.BeginJob("chat:telegram:TG-7", "telegram", "TG-7", "first message")
-	emit := service.wrapEmit(core.Message{Channel: "telegram", Conversation: "TG-7"}, jobID, nil)
+	emit, _ := service.wrapEmit(core.Message{Channel: "telegram", Conversation: "TG-7"}, jobID, nil)
 	emit(core.Event{Kind: core.EventStatus, Done: true})
 	if service.Runtime.Status().Jobs != 1 {
 		t.Fatal("transport handoff ended the active harness job")
@@ -893,7 +905,7 @@ func TestQueuedRequestTerminalPreservesActiveExecution(t *testing.T) {
 	}
 	service.streamText[key] = "active partial"
 	var events []core.Event
-	emit := service.wrapEmit(queued, jobID, func(event core.Event) { events = append(events, event) })
+	emit, _ := service.wrapEmit(queued, jobID, func(event core.Event) { events = append(events, event) })
 	event := core.Event{Kind: core.EventError, Text: "Queued follow-up cancelled before provider dispatch", Done: true}
 	emit(event)
 	emit(event) // A repeated terminal must not duplicate history or delivery.
@@ -915,7 +927,8 @@ func TestQueuedRequestTerminalPreservesActiveExecution(t *testing.T) {
 		t.Fatalf("queued terminal history records = %d", terminals)
 	}
 	delete(target.active, key)
-	service.wrapEmit(first, jobID, nil)(core.Event{Kind: core.EventError, Text: "provider interrupted", Done: true})
+	emit, _ = service.wrapEmit(first, jobID, nil)
+	emit(core.Event{Kind: core.EventError, Text: "provider interrupted", Done: true})
 	if service.Runtime.Status().Jobs != 0 || service.recoveryExecution[key] != nil || service.streamText[key] != "" {
 		t.Fatal("provider terminal did not settle shared execution")
 	}
@@ -2040,16 +2053,30 @@ func TestSynchronousChatHarnessFailureIsCapturedInArchivedOutput(t *testing.T) {
 	service := New(cfg, target)
 
 	err := service.Handle(context.Background(), core.Message{Channel: "cli", Conversation: "failure", Text: "inspect failure"}, func(core.Event) {})
-	if err == nil || !strings.Contains(err.Error(), "provider terminated abruptly") {
-		t.Fatalf("chat failure = %v", err)
+	// The failure is fenced: the caller gets no raw error, the archive records one plain
+	// sentence, and the raw provider text stays in the runtime log.
+	if err != nil {
+		t.Fatalf("chat failure = %v, want a fenced turn", err)
 	}
 	jobs, archiveErr := service.Runtime.RecentArchivedJobs(1)
 	if archiveErr != nil || len(jobs) != 1 || jobs[0].State != string(JobError) {
 		t.Fatalf("failed archive metadata = %#v, %v", jobs, archiveErr)
 	}
 	_, output, archiveErr := service.Runtime.ArchivedJob(jobs[0].ID)
-	if archiveErr != nil || !strings.Contains(output, "provider terminated abruptly") || !strings.Contains(output, string(core.EventError)) {
+	if archiveErr != nil || !strings.Contains(output, chatTurnErrorSentence()) || !strings.Contains(output, string(core.EventError)) {
 		t.Fatalf("failed archive output = %q, %v", output, archiveErr)
+	}
+	if strings.Contains(output, "provider terminated abruptly") {
+		t.Fatalf("raw provider text reached the archived job output: %q", output)
+	}
+	rawLogged := false
+	for _, entry := range service.Runtime.Logs() {
+		if entry.Event == "turn_failed" && strings.Contains(entry.Text, "provider terminated abruptly") {
+			rawLogged = true
+		}
+	}
+	if !rawLogged {
+		t.Fatal("the raw provider failure never reached the runtime log")
 	}
 }
 
@@ -4055,7 +4082,8 @@ func TestOversizeTerminalReplyKeepsConversationUsable(t *testing.T) {
 	service := New(cfg, newServiceHarness())
 	message := core.Message{Channel: "telegram", Conversation: "TG-big", SourceMessageID: "src-1"}
 	reply := strings.Repeat("r", 2300*1000)
-	service.wrapEmit(message, 0, func(core.Event) {})(core.Event{Kind: core.EventFinal, Text: reply, FinalText: &reply, Done: true})
+	emit, _ := service.wrapEmit(message, 0, func(core.Event) {})
+	emit(core.Event{Kind: core.EventFinal, Text: reply, FinalText: &reply, Done: true})
 	if _, err := service.History.HasUserSourceID("telegram", "TG-big", "src-2"); err != nil {
 		t.Fatalf("a later message is rejected after an oversize reply: %v", err)
 	}

@@ -104,6 +104,8 @@ type Service struct {
 	recoveryIntake         map[string]int
 	recoveryStatus         RecoveryStatus
 	recoveryOwnershipFence func(func() error) (bool, error)
+	heldRequeueMu          sync.Mutex
+	heldRequeues           map[string]*time.Timer
 }
 
 const jobCancellationGrace = 30 * time.Second
@@ -158,6 +160,7 @@ func NewWithRuntime(cfg config.Config, target harness.Harness, runtime *Runtime)
 		recoveryExecution:     map[string]*recoveryExecution{},
 		recoveryIntake:        map[string]int{},
 		conversationActivity:  map[string]int{},
+		heldRequeues:          map[string]*time.Timer{},
 	}
 	manager.Cleanup = service.runAutomaticCleanup
 	manager.Log = func(message string) { runtime.LogEvent("info", "orchestrator", "lifecycle", message) }
@@ -647,7 +650,7 @@ func (s *Service) dispatchHarnessPrompt(ctx context.Context, message core.Messag
 	activity := newChatActivityEmitter(emit)
 	s.trackChatActivity(jobID, activity)
 	activity.start()
-	wrapped := s.wrapEmit(message, jobID, activity.emit)
+	wrapped, terminalDelivered := s.wrapEmit(message, jobID, activity.emit)
 	var threadID string
 	var steered bool
 	if sender, ok := s.Harness.(harness.ConversationSender); ok {
@@ -656,16 +659,37 @@ func (s *Service) dispatchHarnessPrompt(ctx context.Context, message core.Messag
 		threadID, steered, err = s.Harness.Send(ctx, key, prompt, wrapped)
 	}
 	if err != nil {
+		// The raw provider detail stays in the runtime log; what a channel receives is fenced.
+		s.Runtime.LogEvent("error", "harness", "turn_failed", err.Error())
 		activity.stop()
-		s.rollbackRecoveryReservation(message, reservation)
-		s.Runtime.RecordJobEvent(jobID, core.Event{Kind: core.EventError, Text: err.Error(), Done: true})
+		if terminalDelivered() {
+			// The wrapped emitter already delivered one fenced sentence and recorded the
+			// terminal event; returning the error would make the channel print the raw text.
+			return nil
+		}
+		if message.Sender == "recovery" {
+			s.rollbackRecoveryReservation(message, reservation)
+			s.Runtime.RecordJobEvent(jobID, core.Event{Kind: core.EventError, Text: err.Error(), Done: true})
+			s.Runtime.LogEvent("error", "harness", "start_failed", "Harness turn failed to start ("+harnessFailureEvidence(err)+")")
+			// A rejected follow-up does not end the original provider execution.
+			if !s.Harness.IsActive(key) {
+				s.Runtime.UpdateJob(jobID, core.ExecutionStatus{State: string(JobError), Detail: err.Error()})
+				s.Runtime.EndJob(jobID)
+			}
+			return err
+		}
+		if s.retryChatTurnDownChain(ctx, message, key, prompt, jobID, threadID, err, wrapped, emit) {
+			return nil
+		}
+		sentence := chatTurnErrorSentence()
+		s.Runtime.RecordJobEvent(jobID, core.Event{Kind: core.EventError, Text: sentence, Done: true})
 		s.Runtime.LogEvent("error", "harness", "start_failed", "Harness turn failed to start ("+harnessFailureEvidence(err)+")")
-		// A rejected follow-up does not end the original provider execution.
 		if !s.Harness.IsActive(key) {
-			s.Runtime.UpdateJob(jobID, core.ExecutionStatus{State: string(JobError), Detail: err.Error()})
+			s.Runtime.UpdateJob(jobID, core.ExecutionStatus{State: string(JobError), Detail: sentence})
 			s.Runtime.EndJob(jobID)
 		}
-		return err
+		s.deliverChatTurnFailure(message, sentence, emit)
+		return nil
 	}
 	actualAdmission := "new"
 	if steered {
@@ -752,10 +776,15 @@ func (s *Service) chatPrompt(message core.Message) (string, error) {
 	return prompt, nil
 }
 
-func (s *Service) wrapEmit(message core.Message, jobID int, downstream core.Emit) core.Emit {
+func (s *Service) wrapEmit(message core.Message, jobID int, downstream core.Emit) (core.Emit, func() bool) {
 	var terminalMu sync.Mutex
 	terminalDelivered := false
-	return func(event core.Event) {
+	delivered := func() bool {
+		terminalMu.Lock()
+		defer terminalMu.Unlock()
+		return terminalDelivered
+	}
+	emit := func(event core.Event) {
 		terminal := event.Done && !event.Continues && (event.Kind == core.EventFinal || event.Kind == core.EventError)
 		if terminal {
 			terminalMu.Lock()
@@ -765,6 +794,11 @@ func (s *Service) wrapEmit(message core.Message, jobID int, downstream core.Emit
 			}
 			terminalDelivered = true
 			terminalMu.Unlock()
+		}
+		// A terminal chat error reaches a channel as one plain sentence; the raw harness text
+		// (a provider wall, a disconnect copy) stays in the runtime log.
+		if terminal && event.Kind == core.EventError {
+			event.Text = chatTurnErrorSentence()
 		}
 		key := sessionKey(message)
 		// A queued request can be cancelled while the shared provider turn is
@@ -888,6 +922,7 @@ func (s *Service) wrapEmit(message core.Message, jobID int, downstream core.Emit
 			s.Runtime.EndJob(jobID)
 		}
 	}
+	return emit, delivered
 }
 
 func replaceFinalAssistantItem(aggregate, previous, replacement string) string {
@@ -898,6 +933,137 @@ func replaceFinalAssistantItem(aggregate, previous, replacement string) string {
 		return strings.TrimSuffix(aggregate, previous) + replacement
 	}
 	return aggregate
+}
+
+// chatChainMaxHops bounds the seats one chat turn may try down the roster fallback chain; the
+// roster itself walks at most this many links.
+const chatChainMaxHops = 8
+
+// chatTurnErrorSentence is the one plain sentence any terminal chat failure delivers: no stack
+// and no provider text; the raw detail stays in the runtime log (harness turn_failed).
+func chatTurnErrorSentence() string {
+	return "The chat turn failed before it could answer; the technical detail is in the Werkrby log."
+}
+
+// chatHoldSentence is the one plain sentence a fully walled chat turn delivers, with the reset
+// time the provider error names when it parses (else the bounded blind-hour fallback).
+func chatHoldSentence(err error) (string, time.Time) {
+	now := time.Now()
+	reset, ok := orchestrator.ParseQuotaResetTime(err.Error(), now)
+	if !ok {
+		reset = now.Add(defaultChatHoldRetry)
+	}
+	return "Your question is held: every chat seat is out of quota, and it will be answered after " + reset.Local().Format("3:04 PM MST") + ".", reset
+}
+
+// nextChatSeat returns the chat role's next seat after `from` (empty: the role's own seat
+// first), walking the fallback chain past seats that are stopped, at their daily cap, or held.
+func (s *Service) nextChatSeat(stateDir, from string) (string, bool) {
+	staffing, err := roster.Load(stateDir)
+	if err != nil || staffing == nil {
+		return "", false
+	}
+	seat := staffing.ForRole("chat")
+	if seat == "" {
+		return "", false
+	}
+	if from != "" {
+		staff, ok := staffing.Staff[from]
+		if !ok || staff.Fallback == "" {
+			return "", false
+		}
+		seat = staff.Fallback
+	}
+	now := time.Now()
+	for hop := 0; hop < chatChainMaxHops; hop++ {
+		landing, _ := staffing.LandingTrail(stateDir, seat, now)
+		if landing == "" || landing == from {
+			return "", false
+		}
+		if until, _, held := roster.HeldUntil(stateDir, landing, now); held && now.Before(until) {
+			next, ok := staffing.Staff[landing]
+			if !ok || next.Fallback == "" {
+				return "", false
+			}
+			seat = next.Fallback
+			continue
+		}
+		return landing, true
+	}
+	return "", false
+}
+
+// retryChatTurnDownChain re-dispatches a quota-walled chat turn down the chat role's roster
+// chain in the same turn: each seat that answers with another quota wall advances the walk. A
+// quota wall with no seat left holds the question for the reset with one scheduled requeue. It
+// reports whether the failure was fully handled (retried successfully, or held); false leaves
+// the failure to the caller's plain-sentence path.
+func (s *Service) retryChatTurnDownChain(ctx context.Context, message core.Message, key, prompt string, jobID int, threadID string, firstErr error, wrapped, rawEmit core.Emit) bool {
+	if !orchestrator.IsQuotaError(firstErr) {
+		return false
+	}
+	dispatcher, ok := s.Harness.(harness.ModelDispatcher)
+	if !ok {
+		return false
+	}
+	stateDir := s.Config.StatePath()
+	// The failed dispatch landed on the chat role's chain head; the walk starts past it, since
+	// that seat just proved quota-dead.
+	from := ""
+	if seat, ok := s.nextChatSeat(stateDir, ""); ok {
+		from = seat
+	}
+	err := firstErr
+	for hop := 0; hop < chatChainMaxHops; hop++ {
+		seat, ok := s.nextChatSeat(stateDir, from)
+		if !ok {
+			break
+		}
+		from = seat
+		s.Runtime.LogEvent("info", "harness", "chat_quota_chain_move", "Chat turn moved to the next seat after a quota wall")
+		_, _, sendErr := dispatcher.SendWithModel(ctx, key, prompt, roster.StaffPrefix+seat, wrapped)
+		if sendErr == nil {
+			s.Runtime.SetJobRunningIfStarting(jobID)
+			if rawEmit != nil {
+				rawEmit(core.Event{Kind: core.EventStatus, Text: "Chat turn moved to the next seat after a quota wall", ThreadID: threadID})
+			}
+			return true
+		}
+		s.Runtime.LogEvent("error", "harness", "turn_failed", sendErr.Error())
+		err = sendErr
+		if !orchestrator.IsQuotaError(err) {
+			return false
+		}
+	}
+	sentence, reset := chatHoldSentence(err)
+	s.scheduleHeldChatRequeue(message, reset)
+	s.finishRecoveryExecution(message, "terminal_error")
+	s.settleFencedChatFailure(jobID, key, message, sentence, rawEmit)
+	return true
+}
+
+// settleFencedChatFailure records the failed chat job with its fenced sentence and delivers
+// that sentence to the channel; the raw error is already in the runtime log.
+func (s *Service) settleFencedChatFailure(jobID int, key string, message core.Message, sentence string, rawEmit core.Emit) {
+	s.Runtime.RecordJobEvent(jobID, core.Event{Kind: core.EventError, Text: sentence, Done: true})
+	if !s.Harness.IsActive(key) {
+		s.Runtime.UpdateJob(jobID, core.ExecutionStatus{State: string(JobError), Detail: sentence})
+		s.Runtime.EndJob(jobID)
+	}
+	s.deliverChatTurnFailure(message, sentence, rawEmit)
+}
+
+// deliverChatTurnFailure persists the fenced sentence as the turn's terminal history entry and
+// delivers it to the channel on the raw emitter, the way a local reply is delivered.
+func (s *Service) deliverChatTurnFailure(message core.Message, text string, rawEmit core.Emit) {
+	if _, err := s.History.Append(message.Channel, message.Conversation, history.Entry{
+		At: time.Now().UTC(), Role: "error", Content: text, SourceMessageID: message.SourceMessageID, Terminal: true,
+	}); err != nil {
+		s.Runtime.LogEvent("error", "history", "terminal_append_failed", fmt.Sprintf("Persist terminal history failed (%T)", err))
+	}
+	if rawEmit != nil {
+		rawEmit(core.Event{Kind: core.EventError, Text: text, Done: true, Local: true})
+	}
 }
 
 func (s *Service) handleCommand(ctx context.Context, message core.Message, emit core.Emit) error {

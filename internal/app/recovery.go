@@ -582,6 +582,49 @@ func (s *Service) recoveryFailure(origin orchestrator.Origin, _ error) {
 	}
 }
 
+// defaultChatHoldRetry bounds a held question's requeue when the provider error names no reset
+// time; the orchestrator's own quota parks wait the same blind hour.
+const defaultChatHoldRetry = time.Hour
+
+// scheduleHeldChatRequeue arranges one re-dispatch of a held question at its quota reset. A
+// later hold for the same source replaces the earlier timer, so a question is never re-sent
+// twice.
+func (s *Service) scheduleHeldChatRequeue(message core.Message, at time.Time) {
+	if !at.After(time.Now().Add(time.Minute)) {
+		return
+	}
+	key := message.Channel + "/" + message.Conversation + "/" + message.SourceMessageID
+	origin := orchestrator.Origin{Channel: message.Channel, Conversation: message.Conversation}
+	sourceID, text := message.SourceMessageID, message.Text
+	s.heldRequeueMu.Lock()
+	defer s.heldRequeueMu.Unlock()
+	if previous := s.heldRequeues[key]; previous != nil {
+		previous.Stop()
+	}
+	s.heldRequeues[key] = time.AfterFunc(time.Until(at), func() {
+		s.heldRequeueMu.Lock()
+		delete(s.heldRequeues, key)
+		s.heldRequeueMu.Unlock()
+		s.redispatchHeldChatQuestion(origin, sourceID, text)
+	})
+}
+
+// redispatchHeldChatQuestion re-dispatches one held question through the ordinary recovery
+// path, which re-reserves the source and rebuilds the conversation prompt; its delivery and
+// failure handling are the recovery path's own.
+func (s *Service) redispatchHeldChatQuestion(origin orchestrator.Origin, sourceID, text string) {
+	defer func() { _ = recover() }()
+	if s.conversationInFlight(sessionKey(core.Message{Channel: origin.Channel, Conversation: origin.Conversation})) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	candidate := recoveryCandidate{entry: history.Entry{SourceMessageID: sourceID, Content: text, At: time.Now().UTC()}}
+	if !s.dispatchRecovery(ctx, origin, []recoveryCandidate{candidate}) {
+		s.Runtime.LogEvent("error", "recovery", "held_requeue_failed", "A held question's scheduled requeue did not run")
+	}
+}
+
 func (s *Service) publishRecoveryStatus(status RecoveryStatus) {
 	s.recoveryMu.Lock()
 	s.recoveryStatus = status
