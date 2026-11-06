@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,11 +29,16 @@ type hermesBoundaryFixture struct {
 	spec   RunBoundarySpec
 	ledger *hermesTestLedger
 	prompt string
+	// stopCalls counts admissions the gateway-stop double has settled.
+	stopCalls atomic.Int64
 }
 
 func newHermesBoundaryFixture(t *testing.T, fakeHermes, prompt string) *hermesBoundaryFixture {
 	t.Helper()
 	h, root := hermesHeadlessFixture(t, fakeHermes)
+	// Fail the test — and kill what it leaked — if a Hermes gateway is still
+	// running from this fixture's disposable home when the test ends.
+	t.Cleanup(func() { requireNoGatewayUnder(t, root) })
 	rosterBody := "staff:\n  pilot:\n    runner: hermes\n    headless: true\n    args: [\"-p\", \"wk-finite-test\", \"--model\", \"zai/glm-5.3-flash\", \"--reasoning\", \"high\"]\n"
 	if err := os.WriteFile(filepath.Join(root, ".werkrby", "roster.yaml"), []byte(rosterBody), 0o600); err != nil {
 		t.Fatal(err)
@@ -92,10 +98,23 @@ CREATE TABLE worker_executions (
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &hermesBoundaryFixture{
+	f := &hermesBoundaryFixture{
 		h: h, root: root, ledger: ledger, prompt: prompt,
 		spec: RunBoundarySpec{RunID: 1, ProcessToken: strings.Repeat("a", 43), RunDir: runDir},
 	}
+	// A fixture turn that ends in a failure path stops its gateway admission
+	// through the real Hermes client, whose connect_gateway() leaves a detached
+	// gateway running from this disposable home. Replace the stop with a double
+	// that records its call and settles the admission terminal so the caller can
+	// prove absence; a test that needs the real stop sets it back itself.
+	oldStop := stopHermesGatewayAdmission
+	stopHermesGatewayAdmission = func(_ context.Context, _ string, _ HermesTurnIdentity) error {
+		f.stopCalls.Add(1)
+		f.settle(t, "terminal", "failed")
+		return nil
+	}
+	t.Cleanup(func() { stopHermesGatewayAdmission = oldStop })
+	return f
 }
 
 func (f *hermesBoundaryFixture) settle(t *testing.T, status, outcome string) {
