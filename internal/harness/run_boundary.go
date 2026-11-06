@@ -528,10 +528,8 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 	observation := HermesBoundaryObservation{Identity: &identity, Status: row.status, Outcome: row.outcome}
 	// A started or unknown turn whose owning gateway is gone (for example
 	// killed by a reboot) is not running and is never replayed.
-	ownOrphaned, err := hermesAdmissionOrphaned(ctx, db, meta.Home, row)
-	if err != nil {
-		return unknown(err)
-	}
+	homes := []string{meta.Home, meta.GatewayHome}
+	ownOrphaned := hermesAdmissionOrphaned(ctx, db, homes, row)
 	switch row.status {
 	case "queued", "started":
 		if !ownOrphaned {
@@ -557,6 +555,7 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 		return unknown(err)
 	}
 	defer pending.Close()
+	var linkedPending []hermesAdmissionRow
 	for pending.Next() {
 		other, err := scanHermesAdmission(pending)
 		if err != nil {
@@ -566,16 +565,28 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 		if err != nil {
 			return unknown(err)
 		}
-		if !linked || other.admissionID == row.admissionID {
+		if linked && other.admissionID != row.admissionID {
+			linkedPending = append(linkedPending, other)
+		}
+	}
+	if err := pending.Err(); err != nil {
+		return unknown(err)
+	}
+	pending.Close()
+	// Turns whose workers must still be proven absent: this run's own, and
+	// every linked turn skipped below because its gateway is gone.
+	workerChecks := []hermesAdmissionRow{row}
+	for _, other := range linkedPending {
+		if hermesAdmissionOrphaned(ctx, db, homes, other) {
+			workerChecks = append(workerChecks, other)
 			continue
 		}
-		orphaned, err := hermesAdmissionOrphaned(ctx, db, meta.Home, other)
-		if err != nil {
-			return unknown(err)
-		}
-		// A queued turn on the orphaned turn's own session can never start:
-		// the next gateway marks the orphaned turn unknown, which blocks it.
-		if orphaned || other.status == "queued" && ownOrphaned && other.sessionID == row.sessionID {
+		// A queued turn on the orphaned turn's own session cannot start on
+		// its own: the next gateway marks the orphaned turn unknown, and an
+		// unknown turn blocks the session's queue. Only an explicit Discard
+		// of that unknown turn in Hermes releases it; the engine never
+		// discards a finite session's turn.
+		if other.status == "queued" && ownOrphaned && other.sessionID == row.sessionID {
 			continue
 		}
 		if other.status == "unknown" {
@@ -584,44 +595,54 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 		observation.Liveness = BoundaryLive
 		return observation, nil
 	}
-	if err := pending.Err(); err != nil {
-		return unknown(err)
-	}
 
-	if identity.Generation != nil {
-		workers, err := db.QueryContext(ctx, `SELECT session_id,status FROM worker_executions WHERE owner_epoch=? AND generation=? AND status!='terminal'`, identity.OwnerEpoch, *identity.Generation)
+	for _, checked := range workerChecks {
+		if checked.generation == nil {
+			continue
+		}
+		live, err := linkedHermesWorkerLive(ctx, db, checked, identity.SessionID)
 		if err != nil {
 			return unknown(err)
 		}
-		defer workers.Close()
-		for workers.Next() {
-			var sessionID, status string
-			if err := workers.Scan(&sessionID, &status); err != nil {
-				return unknown(err)
-			}
-			linked, err := linkedHermesSession(row.lineageJSON, sessionID, identity.SessionID)
-			if err != nil {
-				return unknown(err)
-			}
-			if !linked {
-				continue
-			}
-			switch status {
-			case "registered", "running":
-				observation.Liveness = BoundaryLive
-				return observation, nil
-			case "unknown":
-				return unknown(fmt.Errorf("linked Hermes worker is unknown"))
-			default:
-				return unknown(fmt.Errorf("unrecognized Hermes worker status %q", status))
-			}
-		}
-		if err := workers.Err(); err != nil {
-			return unknown(err)
+		if live {
+			observation.Liveness = BoundaryLive
+			return observation, nil
 		}
 	}
 	observation.Liveness = BoundaryAbsent
 	return observation, nil
+}
+
+// linkedHermesWorkerLive reports whether a worker of the given turn's epoch
+// and generation, on a session linked to sessionID, may still be running.
+func linkedHermesWorkerLive(ctx context.Context, db *sql.DB, turn hermesAdmissionRow, sessionID string) (bool, error) {
+	workers, err := db.QueryContext(ctx, `SELECT session_id,status FROM worker_executions WHERE owner_epoch=? AND generation=? AND status!='terminal'`, turn.ownerEpoch, *turn.generation)
+	if err != nil {
+		return false, err
+	}
+	defer workers.Close()
+	for workers.Next() {
+		var workerSession, status string
+		if err := workers.Scan(&workerSession, &status); err != nil {
+			return false, err
+		}
+		linked, err := linkedHermesSession(turn.lineageJSON, workerSession, sessionID)
+		if err != nil {
+			return false, err
+		}
+		if !linked {
+			continue
+		}
+		switch status {
+		case "registered", "running":
+			return true, nil
+		case "unknown":
+			return false, fmt.Errorf("linked Hermes worker is unknown")
+		default:
+			return false, fmt.Errorf("unrecognized Hermes worker status %q", status)
+		}
+	}
+	return false, workers.Err()
 }
 
 func specFromMetadata(meta hermesBoundaryMetadata) RunBoundarySpec {
