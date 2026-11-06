@@ -65,6 +65,11 @@ type RunProcesses struct {
 	Liveness   Liveness
 	Supervisor *ProcessIdentity
 	Processes  []ProcessIdentity
+	// ProviderOrphaned reports an absent combined boundary caused by the
+	// death of the owning Hermes gateway (reboot, crash, OOM, kill): the
+	// provider turn died with its platform, not with a task failure. Only a
+	// reliable absent observation may set it.
+	ProviderOrphaned bool
 	// group is the verified process-group id of the run, or zero. Stop loops
 	// signal the whole group so a member forked after the scan is covered.
 	group int

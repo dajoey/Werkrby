@@ -69,6 +69,10 @@ type HermesBoundaryObservation struct {
 	Identity *HermesTurnIdentity
 	Status   string
 	Outcome  string
+	// Orphaned reports a proven-absent observation caused by the death of the
+	// gateway that owned the run's own turn (reboot, crash, OOM, kill): a
+	// platform fault, not a task failure. Linked admissions never set it.
+	Orphaned bool
 }
 
 const (
@@ -610,6 +614,9 @@ func observeExactHermesAdmission(ctx context.Context, db *sql.DB, meta hermesBou
 		}
 	}
 	observation.Liveness = BoundaryAbsent
+	// Only the run's own orphaned admission marks the observation: a death of
+	// its own gateway is a platform fault, not this task's failure.
+	observation.Orphaned = ownOrphaned
 	return observation, nil
 }
 

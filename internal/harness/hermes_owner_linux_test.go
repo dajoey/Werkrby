@@ -254,3 +254,43 @@ func TestHermesQueuedTurnOfDeadGatewayStaysLive(t *testing.T) {
 		t.Fatalf("queued turn of a dead gateway = %v, want live", got)
 	}
 }
+
+// observation reads the complete boundary observation, not just its liveness.
+func (f *ownerFixture) observation(t *testing.T) HermesBoundaryObservation {
+	t.Helper()
+	observation, err := InspectHermesRunBoundary(context.Background(), f.spec)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	return observation
+}
+
+func TestHermesDeadGatewayOrphansItsOwnTurn(t *testing.T) {
+	// A proven-absent observation caused by the death of the run's own
+	// gateway is an orphan: recovery must not charge the turn.
+	f := newOwnerFixture(t, "started", 11)
+	f.writeGatewayPID(t, ownerTestReapedPID(t), 43465815)
+	if got := f.observation(t); got.Liveness != BoundaryAbsent || !got.Orphaned {
+		t.Fatalf("dead gateway own turn = %+v, want absent and orphaned", got)
+	}
+}
+
+func TestHermesOrphanedLinkedTurnDoesNotOrphanFinishedOwnTurn(t *testing.T) {
+	// Only the run's own admission orphans its observation: an orphaned
+	// linked turn on the same session must not.
+	f := newOwnerFixture(t, "terminal", 11)
+	f.settle(t, "terminal", "completed")
+	f.writeGatewayPID(t, ownerTestReapedPID(t), 43465815)
+	f.addAdmission(t, "later-turn", "api", boundaryTestSession, []string{boundaryTestSession}, "started", 11, int64(8), 2)
+	if got := f.observation(t); got.Liveness != BoundaryAbsent || got.Orphaned {
+		t.Fatalf("finished own turn with an orphaned linked turn = %+v, want absent and not orphaned", got)
+	}
+}
+
+func TestHermesLiveGatewayTurnIsNotOrphaned(t *testing.T) {
+	f := newOwnerFixture(t, "started", 11)
+	f.writeGatewayPID(t, os.Getpid(), ownerTestStartTicks(t, os.Getpid()))
+	if got := f.observation(t); got.Liveness != BoundaryLive || got.Orphaned {
+		t.Fatalf("live gateway own turn = %+v, want live and not orphaned", got)
+	}
+}

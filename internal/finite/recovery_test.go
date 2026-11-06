@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -131,6 +132,123 @@ func TestFiniteRecoveryResultPublicationRace(t *testing.T) {
 	settled, _ := engine.store.GetRun(context.Background(), run.ID)
 	if current.State != StateDone || settled.Outcome != RunOK || settled.Error != "" {
 		t.Fatalf("result published during absence scan was lost: task=%+v run=%+v", current, settled)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+// A provider turn whose owning Hermes gateway died mid-turn (reboot, crash,
+// OOM, kill) is a platform fault: recovery settles it interrupted, the task
+// returns to its queue, and no failure attempt is spent.
+func TestFiniteGatewayDeathMidTurnSettlesInterruptedUncharged(t *testing.T) {
+	engine := newEngineFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {Block: true}, "2": {Block: true},
+	}})
+	ctx := context.Background()
+	task := intakeTestTask(t, engine.store, "gateway-death-interrupted", false)
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitEngineInvocationCount(t, engine, 1)
+	runs, err := engine.store.ListRuns(ctx, task.ID)
+	if err != nil || len(runs) != 1 || runs[0].ProcessToken == "" {
+		t.Fatalf("gateway-death setup did not launch one bound run: %+v, %v", runs, err)
+	}
+	run := runs[0]
+	if _, err := os.Stat(filepath.Join(run.RunDir, "supervisor-started.json")); err != nil {
+		t.Fatalf("provider turn did not record its start: %v", err)
+	}
+	engine.opts.hooks.inspectRun = func(context.Context, int64, string) (RunProcesses, error) {
+		return RunProcesses{Liveness: LivenessAbsent, ProviderOrphaned: true}, nil
+	}
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatalf("recovery scan: %v", err)
+	}
+	engine.opts.hooks.inspectRun = nil
+	settled, err := engine.store.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.Outcome != RunInterrupted || settled.EndedAt == nil {
+		t.Fatalf("gateway-death run = %+v, want a settled interrupted run", settled)
+	}
+	if settled.Error != "Hermes gateway ended during the provider turn; not charged" {
+		t.Fatalf("gateway-death run error = %q", settled.Error)
+	}
+	// The task went straight back to its queue: a replacement provider turn
+	// was dispatched without the gateway's death spending anything.
+	waitEngineInvocationCount(t, engine, 2)
+	allRuns, err := engine.store.ListRuns(ctx, task.ID)
+	if err != nil || len(allRuns) != 2 {
+		t.Fatalf("runs after gateway death = %+v, %v; want the interrupted run and one replacement", allRuns, err)
+	}
+	accounting, err := engine.store.DerivedAccounting(ctx, task.ID, PhaseImplementation)
+	if err != nil || accounting.Attempts != 0 || accounting.Failures != 0 || accounting.Runs != 2 {
+		t.Fatalf("gateway death was charged: %+v, %v; want two uncharged runs", accounting, err)
+	}
+	// Let the replacement turn finish, so the task proves it kept working.
+	if err := os.WriteFile(filepath.Join(allRuns[1].RunDir, "release"), []byte("release"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacement := waitRunSettled(t, engine, allRuns[1].ID)
+	current, err := engine.store.GetTask(ctx, task.ID)
+	if err != nil || current.State != StateDone || replacement.Outcome != RunOK {
+		t.Fatalf("task after the replacement turn = %+v run=%+v %v; want done", current, replacement, err)
+	}
+	assertEngineInvariants(t, engine.store, task.ID)
+}
+
+// The same dead boundary without the orphan signal is still the charged
+// providerTurnStarted failure it was before the orphaned outcome existed.
+func TestFiniteMidTurnDeathWithoutOrphanSignalStaysChargedFail(t *testing.T) {
+	engine := newEngineFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
+		"1": {Block: true}, "2": {Block: true},
+	}})
+	ctx := context.Background()
+	task := intakeTestTask(t, engine.store, "gateway-death-charged", false)
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	waitEngineInvocationCount(t, engine, 1)
+	runs, err := engine.store.ListRuns(ctx, task.ID)
+	if err != nil || len(runs) != 1 || runs[0].ProcessToken == "" {
+		t.Fatalf("charged-death setup did not launch one bound run: %+v, %v", runs, err)
+	}
+	run := runs[0]
+	if _, err := os.Stat(filepath.Join(run.RunDir, "supervisor-started.json")); err != nil {
+		t.Fatalf("provider turn did not record its start: %v", err)
+	}
+	engine.opts.hooks.inspectRun = func(context.Context, int64, string) (RunProcesses, error) {
+		return RunProcesses{Liveness: LivenessAbsent, ProviderOrphaned: false}, nil
+	}
+	if err := engine.ScanOnce(ctx); err != nil {
+		t.Fatalf("recovery scan: %v", err)
+	}
+	engine.opts.hooks.inspectRun = nil
+	settled, err := engine.store.GetRun(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.Outcome != RunFail || settled.EndedAt == nil || !strings.Contains(settled.Error, "provider turn") {
+		t.Fatalf("boundary death without orphan signal = %+v, want the charged providerTurnStarted failure", settled)
+	}
+	// The charged failure still allowed exactly the retry MaxFailures bounds:
+	// a replacement turn is dispatched with one failure on the books.
+	waitEngineInvocationCount(t, engine, 2)
+	allRuns, err := engine.store.ListRuns(ctx, task.ID)
+	if err != nil || len(allRuns) != 2 {
+		t.Fatalf("runs after the charged death = %+v, %v; want the failed run and one replacement", allRuns, err)
+	}
+	accounting, err := engine.store.DerivedAccounting(ctx, task.ID, PhaseImplementation)
+	if err != nil || accounting.Attempts != 1 || accounting.Failures != 1 || accounting.Runs != 2 {
+		t.Fatalf("boundary death without orphan signal = %+v, %v; want one charged failure over two runs", accounting, err)
+	}
+	if err := os.WriteFile(filepath.Join(allRuns[1].RunDir, "release"), []byte("release"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	replacement := waitRunSettled(t, engine, allRuns[1].ID)
+	current, err := engine.store.GetTask(ctx, task.ID)
+	if err != nil || current.State != StateDone || replacement.Outcome != RunOK {
+		t.Fatalf("task after the replacement turn = %+v run=%+v %v; want done", current, replacement, err)
 	}
 	assertEngineInvariants(t, engine.store, task.ID)
 }

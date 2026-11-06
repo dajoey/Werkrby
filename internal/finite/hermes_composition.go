@@ -54,6 +54,11 @@ func configureFiniteHermesOwner(engine *Engine, provider harness.HarnessConfig) 
 		if processes.Liveness == LivenessLive || provider.Liveness == harness.BoundaryLive {
 			processes.Liveness = LivenessLive
 		}
+		// An absent combined boundary whose Hermes owner is gone is a
+		// platform fault; recovery must not charge the turn.
+		if processes.Liveness == LivenessAbsent {
+			processes.ProviderOrphaned = provider.Orphaned
+		}
 		return processes, nil
 	}
 	engine.opts.hooks.stopRun = func(ctx context.Context, runID int64, token string, grace time.Duration) (Liveness, error) {

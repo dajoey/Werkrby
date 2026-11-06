@@ -174,11 +174,20 @@ func (e *Engine) recoverRun(ctx context.Context, run Run) error {
 			return err
 		}
 		if started {
-			// The provider turn began and its boundary died without a result or
-			// execution record: that turn was spent, so charge it as a failure
-			// and let MaxFailures bound the retries.
-			request.ExecutionOutcome = RunFail
-			request.Error = "supervisor exited during the provider turn without a result"
+			if observation.ProviderOrphaned {
+				// The owning Hermes gateway died during the turn (reboot,
+				// crash, OOM, kill): a platform fault, not a task failure.
+				// The task returns to its queue uncharged, and MaxRuns still
+				// bounds the repeats.
+				request.ExecutionOutcome = RunInterrupted
+				request.Error = "Hermes gateway ended during the provider turn; not charged"
+			} else {
+				// The provider turn began and its boundary died without a
+				// result or execution record: that turn was spent, so charge
+				// it as a failure and let MaxFailures bound the retries.
+				request.ExecutionOutcome = RunFail
+				request.Error = "supervisor exited during the provider turn without a result"
+			}
 		}
 	}
 	_, err = e.settleRecovered(ctx, request)
