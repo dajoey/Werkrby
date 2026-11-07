@@ -50,7 +50,14 @@ type Accounting struct {
 	Attempts     int
 	Failures     int
 	ReviewCycles int
-	Runs         int
+	// Runs counts the runs that consumed the phase's run budget: every
+	// outcome except a provider-side wall. A wall spends nothing (the
+	// provider refused the turn at the door); it is bounded by
+	// wallStreakBudget, not by MaxRuns.
+	Runs int
+	// WallStreakStart is when the current wall streak began: the oldest
+	// wall since the phase's last charged run, nil when there is none.
+	WallStreakStart *time.Time
 }
 
 // Seat describes one provider seat at the instant of a pure admission decision.

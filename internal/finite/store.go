@@ -280,15 +280,37 @@ func (s *Store) DerivedAccounting(ctx context.Context, taskID string, phase Phas
 
 func derivedAccounting(ctx context.Context, runner txRunner, taskID string, phase Phase) (Accounting, error) {
 	var accounting Accounting
+	var wallStreakStart sql.NullString
+	// Runs excludes walls: a provider-side wall (quota reset, empty
+	// balance) refused the turn at the door and spent nothing, so it must
+	// not consume the run budget. Its bound is wallStreakBudget, read from
+	// WallStreakStart: the oldest wall after the phase's last charged run
+	// (rowid order is dispatch order; one run of a phase is open at a
+	// time, so it is also chronological). created_at is the dispatch
+	// instant and is always present; started_at can stay NULL when a wall
+	// lands before the provider turn begins.
 	err := runner.QueryRowContext(ctx, `SELECT
 		COALESCE(SUM(CASE WHEN outcome IN ('ok','fail','timeout') THEN 1 ELSE 0 END),0),
 		COALESCE(SUM(CASE WHEN outcome IN ('fail','timeout') OR
 			(outcome='ok' AND NOT EXISTS (SELECT 1 FROM run_results rr WHERE rr.run_id=runs.id))
 			THEN 1 ELSE 0 END),0),
-		COUNT(*)
-		FROM runs WHERE task_id=? AND phase=?`, taskID, phase).Scan(&accounting.Attempts, &accounting.Failures, &accounting.Runs)
+		COALESCE(SUM(CASE WHEN outcome IS NULL OR outcome != 'wall' THEN 1 ELSE 0 END),0),
+		(SELECT created_at FROM runs w WHERE w.task_id=? AND w.phase=? AND w.outcome='wall'
+			AND w.rowid > COALESCE((SELECT MAX(rowid) FROM runs c
+				WHERE c.task_id=? AND c.phase=? AND c.outcome IN ('ok','fail','timeout')), 0)
+			ORDER BY w.rowid LIMIT 1)
+		FROM runs WHERE task_id=? AND phase=?`,
+		taskID, phase, taskID, phase, taskID, phase).Scan(
+		&accounting.Attempts, &accounting.Failures, &accounting.Runs, &wallStreakStart)
 	if err != nil {
 		return Accounting{}, err
+	}
+	if wallStreakStart.Valid && wallStreakStart.String != "" {
+		start, err := time.Parse(time.RFC3339Nano, wallStreakStart.String)
+		if err != nil {
+			return Accounting{}, fmt.Errorf("finite: wall streak start %q: %w", wallStreakStart.String, err)
+		}
+		accounting.WallStreakStart = &start
 	}
 	if err := runner.QueryRowContext(ctx, `SELECT COUNT(*) FROM run_results WHERE task_id=? AND phase='review' AND outcome='rejected'`, taskID).Scan(&accounting.ReviewCycles); err != nil {
 		return Accounting{}, err

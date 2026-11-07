@@ -10,9 +10,10 @@ import (
 	"time"
 )
 
-// MaxRuns bounds every run of a phase regardless of outcome. Lost,
-// interrupted and quota-wall runs are not charged attempts, but each one is a
-// run, so a cause that repeats forever still ends in a failed task.
+// MaxRuns bounds every charged run of a phase. Lost and interrupted runs
+// are not charged attempts, but each one is a run, so a cause that repeats
+// forever still ends in a failed task. A provider wall spends nothing and
+// is bounded by wallStreakBudget instead (wall_budget_test.go).
 
 func TestFiniteRepeatedLaunchFailureStopsAtMaxRuns(t *testing.T) {
 	engine := newEngineFixture(t, engineFixturePlan{})
@@ -61,7 +62,7 @@ func writeCappedBrief(t *testing.T, id string, maxRuns int) string {
 
 func TestFiniteUnchargedOutcomesCountTowardMaxRuns(t *testing.T) {
 	wake := time.Date(2026, 11, 1, 13, 0, 0, 0, time.UTC)
-	for _, outcome := range []RunOutcome{RunLost, RunInterrupted, RunWall} {
+	for _, outcome := range []RunOutcome{RunLost, RunInterrupted} {
 		t.Run(string(outcome), func(t *testing.T) {
 			s := newTestStore(t)
 			ctx := context.Background()

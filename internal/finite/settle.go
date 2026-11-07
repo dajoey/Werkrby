@@ -190,7 +190,7 @@ func (s *Store) SettleRun(ctx context.Context, req SettlementRequest) (Task, err
 		if err != nil {
 			return err
 		}
-		next, failureReason := settlementState(task, run, outcome, result, accounting)
+		next, failureReason := settlementState(task, run, outcome, result, accounting, now)
 		newVersion := task.Version + 1
 		if err := updateSettlementTask(ctx, tx, task, next, newVersion, now, result, settlementWallWake(req), runError); err != nil {
 			return err
@@ -355,22 +355,33 @@ func phaseQueue(phase Phase) State {
 	return StateTodo
 }
 
+// wallStreakBudget bounds how long one unbroken run of provider walls may
+// hold a task waiting. A wall spends nothing and never consumes the run
+// budget; a provider condition that outlasts this span is a stuck
+// provider, not a wall, and the task fails so it is visible and rerunnable.
+const wallStreakBudget = 48 * time.Hour
+
 // settlementState chooses the next task state and, when a run-policy cap is
 // what ends the task, names that cap.
-func settlementState(task Task, run Run, outcome RunOutcome, result *Result, accounting Accounting) (State, string) {
+func settlementState(task Task, run Run, outcome RunOutcome, result *Result, accounting Accounting, now time.Time) (State, string) {
 	if task.CancelRequested {
 		return StateCancelled, ""
 	}
-	// Every run counts toward MaxRuns whatever its outcome, so an uncharged
-	// cause that repeats forever (launch failure, loss, interruption, quota
-	// wall) still ends in a failed task.
+	// Lost and interrupted runs are uncharged but still count toward
+	// MaxRuns, so a cause that repeats forever still ends in a failed
+	// task. A wall is different: the provider refused the turn at the door
+	// (quota reset, empty balance) and nothing was spent, so it is bounded
+	// by how long the wall streak has lasted, not by the run budget.
 	runCapReached := accounting.Runs >= task.MaxRuns
-	if outcome == RunWall || outcome == RunLost || outcome == RunInterrupted {
+	if outcome == RunWall {
+		if accounting.WallStreakStart != nil && now.Sub(*accounting.WallStreakStart) > wallStreakBudget {
+			return StateFailed, "wall_span"
+		}
+		return StateWaiting, ""
+	}
+	if outcome == RunLost || outcome == RunInterrupted {
 		if runCapReached {
 			return StateFailed, "max_runs"
-		}
-		if outcome == RunWall {
-			return StateWaiting, ""
 		}
 		return phaseQueue(run.Phase), ""
 	}

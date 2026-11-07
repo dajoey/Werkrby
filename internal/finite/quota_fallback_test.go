@@ -223,7 +223,7 @@ func TestFiniteQuotaFallbackReviewWalksFromReviewStaff(t *testing.T) {
 	assertEngineInvariants(t, engine.store, task.ID)
 }
 
-func TestFiniteQuotaFallbackWallHopsCountTowardMaxRuns(t *testing.T) {
+func TestFiniteQuotaFallbackWallHopsWithoutSpendingRunBudget(t *testing.T) {
 	clock := newEngineTestClock()
 	wake := clock.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano)
 	engine := newEngineFallbackFixture(t, engineFixturePlan{Runs: map[string]engineFixtureBehavior{
@@ -241,19 +241,20 @@ func TestFiniteQuotaFallbackWallHopsCountTowardMaxRuns(t *testing.T) {
 	}
 	// The capped brief carries no staff; the walk starts from the engine default.
 	engine.opts.Harness.Model = "@seat-a"
-	failed := scanEngineUntil(t, engine, task.ID, StateFailed, 2)
-	if failed.State != StateFailed {
-		t.Fatalf("capped fallback task = %+v, want failed", failed)
+	// Both seats wall; the walls hop the fallback chain once, spend no run
+	// budget, and leave the task waiting for the wall wake, not failed.
+	waited := scanEngineUntil(t, engine, task.ID, StateWaiting, 2)
+	if waited.State != StateWaiting {
+		t.Fatalf("capped fallback task = %+v, want waiting", waited)
 	}
 	runs, _ := engine.store.ListRuns(ctx, task.ID)
 	if len(runs) != 2 || runs[0].Seat != "seat-a" || runs[1].Seat != "seat-b" {
 		t.Fatalf("capped fallback runs = %+v, want one run per seat", runs)
 	}
 	accounting, _ := engine.store.DerivedAccounting(ctx, task.ID, PhaseImplementation)
-	if accounting.Runs != 2 || accounting.Attempts != 0 {
-		t.Fatalf("capped fallback accounting = %+v, want two uncharged runs", accounting)
+	if accounting.Runs != 0 || accounting.Attempts != 0 {
+		t.Fatalf("capped fallback accounting = %+v, walls must spend nothing", accounting)
 	}
-	assertFailureReason(t, engine.store, task.ID, "max_runs")
 	assertEngineInvariants(t, engine.store, task.ID)
 }
 
