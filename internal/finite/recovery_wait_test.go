@@ -42,7 +42,7 @@ func TestFiniteAdoptedCompletionWaitIsBounded(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	answerDone := make(chan error, 1)
 	go func() {
-		_, err := engine.AnswerJoey(ctx, task.ID, task.Version, "none")
+		_, err := engine.AnswerJoey(ctx, task.ID, task.Version, "none", "")
 		answerDone <- err
 	}()
 	limit := bound + 5*time.Second

@@ -60,7 +60,7 @@ func TestFiniteConcurrentClaimWakeStopResult(t *testing.T) {
 							if random.Intn(2) == 0 {
 								_, _ = engine.WakeTime(context.Background(), task.ID, current.Version)
 							} else {
-								_, _ = engine.AnswerJoey(context.Background(), task.ID, current.Version, "yes")
+								_, _ = engine.AnswerJoey(context.Background(), task.ID, current.Version, "yes", "")
 							}
 						}
 						time.Sleep(time.Duration(random.Intn(3)) * time.Millisecond)

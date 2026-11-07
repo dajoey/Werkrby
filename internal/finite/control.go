@@ -56,7 +56,7 @@ type ControlClient struct {
 // ControlWorkflow is the owner-serialized workflow boundary used by serve.
 type ControlWorkflow interface {
 	RequestStop(context.Context, string, int64) (Task, error)
-	AnswerJoey(context.Context, string, int64, string) (Task, error)
+	AnswerJoey(context.Context, string, int64, string, string) (Task, error)
 }
 
 type controlHandler struct {
@@ -244,22 +244,28 @@ func (h *controlHandler) stop(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, controlStatus(task))
 }
 
+// answerNoteMaxBytes bounds the note Joey attached to a tap; it must fit
+// inside one bounded control request (maxControlRequestBytes) beside the
+// other fields.
+const answerNoteMaxBytes = 12 * 1024
+
 func (h *controlHandler) answer(w http.ResponseWriter, req *http.Request) {
 	var input struct {
 		TaskID          string `json:"task_id"`
 		ExpectedVersion int64  `json:"expected_version"`
 		OptionID        string `json:"option_id"`
+		Note            string `json:"note"`
 	}
-	if err := decodeRequestJSON(w, req, &input, maxControlRequestBytes); err != nil || !briefIDPattern.MatchString(input.TaskID) || input.ExpectedVersion < 0 || strings.TrimSpace(input.OptionID) == "" || len(input.OptionID) > 256 {
+	if err := decodeRequestJSON(w, req, &input, maxControlRequestBytes); err != nil || !briefIDPattern.MatchString(input.TaskID) || input.ExpectedVersion < 0 || strings.TrimSpace(input.OptionID) == "" || len(input.OptionID) > 256 || len(input.Note) > answerNoteMaxBytes {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
 	var task Task
 	var err error
 	if h.workflow != nil {
-		task, err = h.workflow.AnswerJoey(req.Context(), input.TaskID, input.ExpectedVersion, input.OptionID)
+		task, err = h.workflow.AnswerJoey(req.Context(), input.TaskID, input.ExpectedVersion, input.OptionID, input.Note)
 	} else {
-		task, err = h.store.AnswerJoey(req.Context(), input.TaskID, input.ExpectedVersion, input.OptionID)
+		task, err = h.store.AnswerJoey(req.Context(), input.TaskID, input.ExpectedVersion, input.OptionID, input.Note)
 	}
 	if err != nil {
 		writeControlStoreError(w, err)
@@ -388,11 +394,13 @@ func (c ControlClient) Stop(ctx context.Context, taskID string, expectedVersion 
 }
 
 // Answer completes a Joey wait with one offered option through the owner.
-func (c ControlClient) Answer(ctx context.Context, taskID string, expectedVersion int64, optionID string) (ControlStatus, error) {
-	if !briefIDPattern.MatchString(taskID) || expectedVersion < 0 || strings.TrimSpace(optionID) == "" || len(optionID) > 256 {
+// The note is the free text Joey attached to his tap, "" when there was
+// none; it rides the answered event so later runs read his instruction.
+func (c ControlClient) Answer(ctx context.Context, taskID string, expectedVersion int64, optionID, note string) (ControlStatus, error) {
+	if !briefIDPattern.MatchString(taskID) || expectedVersion < 0 || strings.TrimSpace(optionID) == "" || len(optionID) > 256 || len(note) > answerNoteMaxBytes {
 		return ControlStatus{}, fmt.Errorf("finite: invalid answer request")
 	}
-	return c.call(ctx, http.MethodPost, "/v1/answer", map[string]any{"task_id": taskID, "expected_version": expectedVersion, "option_id": optionID})
+	return c.call(ctx, http.MethodPost, "/v1/answer", map[string]any{"task_id": taskID, "expected_version": expectedVersion, "option_id": optionID, "note": note})
 }
 
 // Message delivers one operator message into the task's live run inbox.

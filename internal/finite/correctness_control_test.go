@@ -24,9 +24,9 @@ func (w *correctnessWorkflow) RequestStop(ctx context.Context, taskID string, ve
 	return w.store.RequestStop(ctx, taskID, version)
 }
 
-func (w *correctnessWorkflow) AnswerJoey(ctx context.Context, taskID string, version int64, optionID string) (Task, error) {
+func (w *correctnessWorkflow) AnswerJoey(ctx context.Context, taskID string, version int64, optionID, note string) (Task, error) {
 	w.answers.Add(1)
-	return w.store.AnswerJoey(ctx, taskID, version, optionID)
+	return w.store.AnswerJoey(ctx, taskID, version, optionID, note)
 }
 
 type correctnessControlServer struct {
@@ -106,7 +106,7 @@ func TestFiniteCorrectnessControlUsesWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		answered, err := server.client.Answer(context.Background(), task.ID, waiting.Version, "yes")
+		answered, err := server.client.Answer(context.Background(), task.ID, waiting.Version, "yes", "")
 		if err != nil {
 			t.Fatal(err)
 		}

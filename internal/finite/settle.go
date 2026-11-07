@@ -608,7 +608,7 @@ func (s *Store) RequestStop(ctx context.Context, taskID string, expectedVersion 
 
 // WakeTime performs a due time-only, task-only wait transition.
 func (s *Store) WakeTime(ctx context.Context, taskID string, expectedVersion int64) (Task, error) {
-	return s.completeWait(ctx, taskID, expectedVersion, "", false)
+	return s.completeWait(ctx, taskID, expectedVersion, "", "", false)
 }
 
 // WakeFallback completes an undischarged quota-wall time wait early because a
@@ -667,12 +667,16 @@ func (s *Store) WakeFallback(ctx context.Context, taskID string, expectedVersion
 	return completed, err
 }
 
-// AnswerJoey performs a matching-answer, task-only wait transition.
-func (s *Store) AnswerJoey(ctx context.Context, taskID string, expectedVersion int64, optionID string) (Task, error) {
-	return s.completeWait(ctx, taskID, expectedVersion, optionID, true)
+// AnswerJoey performs a matching-answer, task-only wait transition. The note
+// is the free text Joey attached to his tap; empty when there was none. It is
+// recorded verbatim on the answered event so every later run of the task
+// reads it: the note is his instruction and overrides the option label when
+// they conflict.
+func (s *Store) AnswerJoey(ctx context.Context, taskID string, expectedVersion int64, optionID, note string) (Task, error) {
+	return s.completeWait(ctx, taskID, expectedVersion, optionID, note, true)
 }
 
-func (s *Store) completeWait(ctx context.Context, taskID string, expectedVersion int64, optionID string, joey bool) (Task, error) {
+func (s *Store) completeWait(ctx context.Context, taskID string, expectedVersion int64, optionID string, note string, joey bool) (Task, error) {
 	var completed Task
 	err := s.withImmediateTx(ctx, func(tx txRunner) error {
 		task, err := getTaskTx(ctx, tx, taskID)
@@ -730,6 +734,9 @@ func (s *Store) completeWait(ctx context.Context, taskID string, expectedVersion
 						answer["label"] = option.Label
 					}
 				}
+			}
+			if trimmed := strings.TrimSpace(note); trimmed != "" {
+				answer["note"] = trimmed
 			}
 		}
 		payload, _ := json.Marshal(answer)

@@ -696,14 +696,15 @@ func (e *Engine) WakeTime(ctx context.Context, taskID string, expectedVersion in
 	return task, err
 }
 
-// AnswerJoey completes a matching human-answer wait.
-func (e *Engine) AnswerJoey(ctx context.Context, taskID string, expectedVersion int64, optionID string) (Task, error) {
+// AnswerJoey completes a matching human-answer wait. The note is Joey's
+// free text attached to the tap, "" when there was none.
+func (e *Engine) AnswerJoey(ctx context.Context, taskID string, expectedVersion int64, optionID, note string) (Task, error) {
 	e.scanMu.Lock()
 	defer e.scanMu.Unlock()
 	if err := e.checkOpen(ctx); err != nil {
 		return Task{}, err
 	}
-	task, err := e.store.AnswerJoey(ctx, taskID, expectedVersion, optionID)
+	task, err := e.store.AnswerJoey(ctx, taskID, expectedVersion, optionID, note)
 	if err == nil {
 		err = e.store.ProjectTask(ctx, taskID)
 		e.signalWake()

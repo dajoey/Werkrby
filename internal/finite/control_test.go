@@ -124,12 +124,51 @@ func TestFiniteControlAPI(t *testing.T) {
 		if err != nil {
 			t.Fatalf("settle Joey wait: %v", err)
 		}
-		answered, err := server.client.Answer(context.Background(), task.ID, waiting.Version, "continue")
+		answered, err := server.client.Answer(context.Background(), task.ID, waiting.Version, "continue", "")
 		if err != nil {
 			t.Fatalf("control answer: %v", err)
 		}
 		if answered.State != StateTodo || answered.WaitKind != "" || answered.Version != waiting.Version+1 {
 			t.Fatalf("answer status = %+v", answered)
+		}
+	})
+
+	t.Run("answer note rides the answered event", func(t *testing.T) {
+		server := newControlTestServer(t)
+		task := intakeTestTask(t, server.store, "control-answer-note", false)
+		run := dispatchTestRun(t, server.store, task, PhaseImplementation)
+		ask, err := json.Marshal(JoeyAsk{Question: "Post the draft?", Options: []JoeyAskOption{{ID: "post-as-drafted", Label: "Post as drafted"}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := validTestResult(run, ResultWait)
+		result.Wait = &Wait{Kind: WaitJoey, Reason: "A human choice is required", Ask: ask}
+		waiting, err := server.store.SettleRun(context.Background(), SettlementRequest{
+			RunID: run.ID, ExpectedTaskVersion: task.Version + 1, ExecutionOutcome: RunOK, Result: result,
+		})
+		if err != nil {
+			t.Fatalf("settle Joey wait: %v", err)
+		}
+		note := "Follow this note, not the drafted reply: release to testing first."
+		if _, err := server.client.Answer(context.Background(), task.ID, waiting.Version, "post-as-drafted", note); err != nil {
+			t.Fatalf("control answer with note: %v", err)
+		}
+		var payload string
+		if err := server.store.db.QueryRow(`SELECT payload_json FROM task_events WHERE task_id=? AND kind='answered'`, task.ID).Scan(&payload); err != nil {
+			t.Fatalf("read answered event: %v", err)
+		}
+		if !strings.Contains(payload, "Follow this note, not the drafted reply") {
+			t.Fatalf("answered event dropped the note: %s", payload)
+		}
+		history, err := server.store.TaskHistory(context.Background(), task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(history, "Follow this note, not the drafted reply") {
+			t.Fatalf("history dropped the note:\n%s", history)
+		}
+		if _, err := server.client.Answer(context.Background(), task.ID, waiting.Version, "post-as-drafted", strings.Repeat("n", answerNoteMaxBytes+1)); err == nil {
+			t.Fatal("oversized note must be refused")
 		}
 	})
 

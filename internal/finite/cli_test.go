@@ -109,8 +109,8 @@ func (c *fakeCLIControlClient) Status(ctx context.Context, id string) (ControlSt
 func (c *fakeCLIControlClient) Stop(ctx context.Context, id string, version int64) (ControlStatus, error) {
 	return c.record(ctx, fmt.Sprintf("stop:%s:%d", id, version))
 }
-func (c *fakeCLIControlClient) Answer(ctx context.Context, id string, version int64, option string) (ControlStatus, error) {
-	return c.record(ctx, fmt.Sprintf("answer:%s:%d:%s", id, version, option))
+func (c *fakeCLIControlClient) Answer(ctx context.Context, id string, version int64, option, note string) (ControlStatus, error) {
+	return c.record(ctx, fmt.Sprintf("answer:%s:%d:%s:%s", id, version, option, note))
 }
 
 func (c *fakeCLIControlClient) recordInbox(ctx context.Context, call string) (InboxReply, error) {
@@ -140,7 +140,8 @@ func TestFiniteCLIControlClientBehavior(t *testing.T) {
 		{name: "intake", args: []string{"intake", "--root", "state", "--brief", "brief.md"}, call: "intake:brief.md"},
 		{name: "status", args: []string{"status", "--root", "state", "--task", "task-one"}, call: "status:task-one"},
 		{name: "stop", args: []string{"stop", "--root", "state", "--task", "task-one", "--expected-version", "7"}, call: "stop:task-one:7"},
-		{name: "answer", args: []string{"answer", "--root", "state", "--task", "task-one", "--expected-version", "8", "--option", "approve"}, call: "answer:task-one:8:approve"},
+		{name: "answer", args: []string{"answer", "--root", "state", "--task", "task-one", "--expected-version", "8", "--option", "approve"}, call: "answer:task-one:8:approve:"},
+		{name: "answer with note", args: []string{"answer", "--root", "state", "--task", "task-one", "--expected-version", "8", "--option", "post-as-drafted", "--note", "Follow this note, not the drafted reply"}, call: "answer:task-one:8:post-as-drafted:Follow this note, not the drafted reply"},
 		{name: "message", args: []string{"message", "--root", "state", "--task", "task-one", "--kind", "interrupt", "--id", "ctl-1", "--text", "steer left"}, call: "message:task-one:interrupt:ctl-1:steer left"},
 		{name: "message_default_kind", args: []string{"message", "--root", "state", "--task", "task-one", "--text", "hi"}, call: "message:task-one:message::hi"},
 		{name: "withdraw", args: []string{"withdraw", "--root", "state", "--task", "task-one", "--id", "ctl-1"}, call: "withdraw:task-one:ctl-1"},

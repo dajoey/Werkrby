@@ -43,7 +43,7 @@ type cliControlClient interface {
 	Intake(context.Context, string) (ControlStatus, error)
 	Status(context.Context, string) (ControlStatus, error)
 	Stop(context.Context, string, int64) (ControlStatus, error)
-	Answer(context.Context, string, int64, string) (ControlStatus, error)
+	Answer(context.Context, string, int64, string, string) (ControlStatus, error)
 	Message(context.Context, string, string, string, string) (InboxReply, error)
 	Withdraw(context.Context, string, string) (InboxReply, error)
 	Ping(context.Context, string) (InboxReply, error)
@@ -251,7 +251,7 @@ func (v *requiredCLIVersion) Set(text string) error {
 
 func executeControlCommand(ctx context.Context, command string, args []string, deps cliDependencies) error {
 	flags := newCLIFlagSet(command)
-	var root, taskID, sourcePath, optionID, kind, messageID, text string
+	var root, taskID, sourcePath, optionID, note, kind, messageID, text string
 	var version requiredCLIVersion
 	flags.StringVar(&root, "root", "", "explicit disposable finite state root")
 	switch command {
@@ -266,6 +266,7 @@ func executeControlCommand(ctx context.Context, command string, args []string, d
 		flags.StringVar(&taskID, "task", "", "task ID")
 		flags.Var(&version, "expected-version", "expected task version")
 		flags.StringVar(&optionID, "option", "", "Joey answer option ID")
+		flags.StringVar(&note, "note", "", "Joey's note attached to the tap; overrides the option label when they conflict")
 	case "message":
 		flags.StringVar(&taskID, "task", "", "task ID")
 		flags.StringVar(&kind, "kind", "message", "message kind: message or interrupt")
@@ -295,6 +296,9 @@ func executeControlCommand(ctx context.Context, command string, args []string, d
 	if command == "answer" && strings.TrimSpace(optionID) == "" {
 		return fmt.Errorf("answer: --option is required")
 	}
+	if command == "answer" && len(note) > answerNoteMaxBytes {
+		return fmt.Errorf("answer: --note exceeds %d bytes", answerNoteMaxBytes)
+	}
 	if command == "message" && strings.TrimSpace(text) == "" {
 		return fmt.Errorf("message: --text is required")
 	}
@@ -323,7 +327,7 @@ func executeControlCommand(ctx context.Context, command string, args []string, d
 		payload = status
 	case "answer":
 		var status ControlStatus
-		status, err = client.Answer(requestCtx, taskID, version.value, optionID)
+		status, err = client.Answer(requestCtx, taskID, version.value, optionID, note)
 		payload = status
 	case "message":
 		payload, err = client.Message(requestCtx, taskID, kind, messageID, text)

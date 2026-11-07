@@ -260,10 +260,10 @@ func TestFiniteAdmissionWaitCancelAndVersionFences(t *testing.T) {
 		if _, err := s.WakeTime(context.Background(), joeyTask.ID, joeyWaiting.Version); !errors.Is(err, ErrStateConflict) {
 			t.Errorf("clock woke Joey wait: %v", err)
 		}
-		if _, err := s.AnswerJoey(context.Background(), joeyTask.ID, joeyWaiting.Version, "invalid"); err == nil {
+		if _, err := s.AnswerJoey(context.Background(), joeyTask.ID, joeyWaiting.Version, "invalid", ""); err == nil {
 			t.Errorf("unknown Joey answer was accepted")
 		}
-		answered, err := s.AnswerJoey(context.Background(), joeyTask.ID, joeyWaiting.Version, "yes")
+		answered, err := s.AnswerJoey(context.Background(), joeyTask.ID, joeyWaiting.Version, "yes", "")
 		if err != nil || answered.State != StateTodo || answered.JoeyAskJSON != "" {
 			t.Errorf("Joey answer = %+v, %v", answered, err)
 		}

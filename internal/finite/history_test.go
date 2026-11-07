@@ -26,7 +26,7 @@ func TestTaskHistoryCarriesAnswersAndReviewFindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	answered, err := s.AnswerJoey(ctx, task.ID, waiting.Version, "safe")
+	answered, err := s.AnswerJoey(ctx, task.ID, waiting.Version, "safe", "")
 	if err != nil {
 		t.Fatal(err)
 	}

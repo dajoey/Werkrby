@@ -10,6 +10,7 @@ import (
 const (
 	historyProgressRunes = 2000
 	historyFindingRunes  = 500
+	historyNoteRunes     = 4000
 	historyMaxBytes      = 24 * 1024
 )
 
@@ -58,6 +59,7 @@ func (s *Store) TaskHistoryForPhase(ctx context.Context, taskID string, phase Ph
 			Question         string   `json:"question"`
 			Label            string   `json:"label"`
 			OptionID         string   `json:"option_id"`
+			Note             string   `json:"note"`
 		}
 		if err := json.Unmarshal([]byte(payload), &event); err != nil {
 			continue
@@ -65,6 +67,12 @@ func (s *Store) TaskHistoryForPhase(ctx context.Context, taskID string, phase Ph
 		switch kind {
 		case "answered":
 			line := fmt.Sprintf("- Joey answered %q: %s (%s)", event.Question, event.Label, event.OptionID)
+			if note := strings.TrimSpace(event.Note); note != "" {
+				// The note is Joey's instruction and wins over the option
+				// label when they conflict; a later run that acts on the
+				// label alone repeats the ignored-note failure.
+				line += " AND attached a note — the NOTE overrides the option label when they conflict, follow the note:\n  Note: " + clipRunes(note, historyNoteRunes)
+			}
 			lines = append(lines, line)
 		case "settled":
 			if runID == nil {

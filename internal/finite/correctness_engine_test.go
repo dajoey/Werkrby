@@ -114,7 +114,7 @@ func TestFiniteCorrectnessAdmissionFailureIsTerminal(t *testing.T) {
 		}})
 		task := intakeCorrectnessCapTask(t, engine, "correctness-cap-joey")
 		waiting := scanEngineUntil(t, engine, task.ID, StateWaiting, 1)
-		answered, err := engine.AnswerJoey(context.Background(), task.ID, waiting.Version, "yes")
+		answered, err := engine.AnswerJoey(context.Background(), task.ID, waiting.Version, "yes", "")
 		if err != nil || answered.State != StateTodo {
 			t.Fatalf("answer at cap = %+v, %v", answered, err)
 		}

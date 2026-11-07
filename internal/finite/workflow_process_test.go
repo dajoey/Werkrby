@@ -138,14 +138,14 @@ func TestFiniteWaitWallReviewTransitions_P1_P3_P4(t *testing.T) {
 		if _, err := engine.WakeTime(context.Background(), task.ID, waiting.Version); !errors.Is(err, ErrStateConflict) {
 			t.Fatalf("clock woke Joey wait: %v", err)
 		}
-		if _, err := engine.AnswerJoey(context.Background(), task.ID, waiting.Version, "maybe"); err == nil {
+		if _, err := engine.AnswerJoey(context.Background(), task.ID, waiting.Version, "maybe", ""); err == nil {
 			t.Fatal("unoffered Joey answer was accepted")
 		}
-		answered, err := engine.AnswerJoey(context.Background(), task.ID, waiting.Version, "yes")
+		answered, err := engine.AnswerJoey(context.Background(), task.ID, waiting.Version, "yes", "")
 		if err != nil || answered.State != StateTodo || answered.WakeAt != nil || answered.WaitKind != "" {
 			t.Fatalf("Joey answer transition = %+v, %v", answered, err)
 		}
-		if _, err := engine.AnswerJoey(context.Background(), task.ID, waiting.Version, "yes"); !errors.Is(err, ErrVersionConflict) {
+		if _, err := engine.AnswerJoey(context.Background(), task.ID, waiting.Version, "yes", ""); !errors.Is(err, ErrVersionConflict) {
 			t.Fatalf("duplicate answer error = %v", err)
 		}
 		scanEngineUntil(t, engine, task.ID, StateDone, 2)
