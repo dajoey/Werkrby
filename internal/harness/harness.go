@@ -36,6 +36,30 @@ type HarnessConfig struct {
 
 	CLIChatIdleThreshold    time.Duration
 	CLIChatIdleThresholdSet bool
+
+	// WindowsRunJobHandle carries the finite supervisor's query-right handle
+	// of the run job on Windows. The bounded provider spawn lists it in
+	// SysProcAttr.AdditionalInheritedHandles, so a harness-spawned provider
+	// keeps the job object open and observable after the owner and the
+	// supervisor are both gone. Handle values are process-local, so this is
+	// never serialized.
+	WindowsRunJobHandle uintptr `json:"-"`
+}
+
+type claimedDocumentKey struct{}
+
+// WithClaimedDocument returns ctx naming the document the turn's dispatch claimed (the task or
+// goal file in its claimed folder). A harness that waits on a blocked worker before typing the
+// prompt reads it (ClaimedDocument): a document gone from that path was moved by the worker's
+// earlier turn, so the prompt is not typed.
+func WithClaimedDocument(ctx context.Context, path string) context.Context {
+	return context.WithValue(ctx, claimedDocumentKey{}, path)
+}
+
+// ClaimedDocument is the claimed document path WithClaimedDocument put in ctx, or "".
+func ClaimedDocument(ctx context.Context) string {
+	path, _ := ctx.Value(claimedDocumentKey{}).(string)
+	return path
 }
 
 // Model describes one model choice exposed by a harness. IDs are the exact

@@ -97,6 +97,9 @@ esac
 		t.Fatal(err)
 	}
 	h.SetIdleStability(3, 10*time.Millisecond)
+	// The default runner is hermes, whose new pane waits for its composer instead of
+	// returning on the session id this fake reports; keep that wait short.
+	h.SetComposerWaitTimeout(20 * time.Millisecond)
 
 	key := "orchestrator:tasks:task_implementation:test-task:1"
 	_, _, sendErr := h.Send(context.Background(), key, "run test", nil)
@@ -215,6 +218,9 @@ esac
 		t.Fatal(err)
 	}
 	h.SetIdleStability(3, 10*time.Millisecond)
+	// The default runner is hermes, whose new pane waits for its composer instead of
+	// returning on the session id this fake reports; keep that wait short.
+	h.SetComposerWaitTimeout(20 * time.Millisecond)
 
 	key := "orchestrator:tasks:task_implementation:test-task-idle:1"
 	start := time.Now()
@@ -338,20 +344,63 @@ esac
 	// resolveTarget sleeps 1.5s before the wait loop starts, so the window the
 	// loop actually runs in is ctx minus ~1.6s of setup. 4s - 1.6s = ~2.4s of
 	// looping: bounded cadence is ~24 reads, a busy loop execs hundreds.
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-	defer cancel()
-	_, _, _ = h.Send(ctx, key, "run test", nil) // context deadline ends the wait
+	ctx, cancel := context.WithCancel(context.Background())
+	sendDone := make(chan struct{})
+	go func() {
+		defer close(sendDone)
+		_, _, _ = h.Send(ctx, key, "run test", nil)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-sendDone:
+		case <-time.After(30 * time.Second):
+		}
+	}()
+	// Under host load the setup before the wait loop can take far longer than
+	// its nominal 1.6s. Start the measured window when the loop has started
+	// reading status, not at a fixed offset from Send.
+	loopStarted := time.Now().Add(30 * time.Second)
+	for {
+		if data, _ := os.ReadFile(eventsFile); strings.Contains(string(data), "agent-get") {
+			break
+		}
+		if time.Now().After(loopStarted) {
+			t.Fatal("the wait loop never started reading agent status")
+		}
+		select {
+		case <-sendDone:
+			data, _ := os.ReadFile(eventsFile)
+			t.Fatalf("h.Send returned before cancellation on unknown status; events:\n%s", string(data))
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	select {
+	case <-sendDone:
+		data, _ := os.ReadFile(eventsFile)
+		t.Fatalf("h.Send returned before cancellation on unknown status; events:\n%s", string(data))
+	case <-time.After(2400 * time.Millisecond):
+	}
 
+	// Snapshot before cancellation: once Send returns, failed-turn cleanup may
+	// legitimately close the tab. That cleanup is outside the stable-idle assertion.
 	data, err := os.ReadFile(eventsFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	getCalls := strings.Count(string(data), "agent-get")
+	events := string(data)
+	getCalls := strings.Count(events, "agent-get")
 	// ~2.4 s of looping at 100 ms cadence is ~24 reads; a busy loop execs hundreds.
 	if getCalls > 60 {
 		t.Fatalf("agent get was called %d times in the window: unknown status busy-loops", getCalls)
 	}
-	if strings.Contains(string(data), "tab-closed") {
-		t.Fatalf("tab was closed on unknown status without stable idle; events:\n%s", string(data))
+	if strings.Contains(events, "tab-closed") {
+		t.Fatalf("tab was closed on unknown status before cancellation or stable idle; events:\n%s", events)
+	}
+	cancel()
+	select {
+	case <-sendDone:
+	case <-time.After(30 * time.Second):
+		t.Fatal("h.Send did not return after cancellation")
 	}
 }

@@ -36,7 +36,16 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv(fixtureModeEnv); mode != "" {
 		os.Exit(runHarnessFixture(mode))
 	}
-	os.Exit(m.Run())
+	// A herdr test whose fake reports a hermes agent makes the harness read a Hermes profile
+	// ledger; point every such read at an empty home, never the host's ~/.hermes.
+	hermesHome, err := os.MkdirTemp("", "harness-hermes-home-")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HERMES_HOME", hermesHome)
+	code := m.Run()
+	os.RemoveAll(hermesHome)
+	os.Exit(code)
 }
 
 func TestManualInferenceReachesProvidersWithoutCatalogDiscovery(t *testing.T) {

@@ -15,3 +15,16 @@ func TestQuotaPlanForRetiredOpencodeGoPinIsNone(t *testing.T) {
 		t.Fatalf("quotaPlanForModelString(%q) = %q, want no plan", "opencode-go/glm-5.3", got)
 	}
 }
+
+// A bare hermes launch (no roster seat) runs the wk-code profile, whose models spend the
+// Z.ai coding plan: the turn is metered, never unmetered.
+func TestQuotaPlanForBareHermesIsZai(t *testing.T) {
+	if got := quotaPlanForModelString("hermes"); got != "zai" {
+		t.Fatalf("quotaPlanForModelString(%q) = %q, want zai", "hermes", got)
+	}
+	// The quota-wall park for a turn dispatched on bare hermes wakes on the Z.ai plan's reset.
+	m := &Manager{}
+	if name, plan := m.quotaWallNameAndPlan(Document{}, nil, Lease{TargetModel: "hermes"}); name != "hermes" || plan != "zai" {
+		t.Fatalf("quotaWallNameAndPlan(bare hermes) = %q %q, want hermes zai", name, plan)
+	}
+}

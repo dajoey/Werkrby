@@ -9,6 +9,7 @@ import (
 
 	"github.com/agent0ai/spynel/internal/config"
 	"github.com/agent0ai/spynel/internal/extensions"
+	"github.com/agent0ai/spynel/internal/roster"
 	"github.com/agent0ai/spynel/internal/workspace"
 )
 
@@ -54,9 +55,28 @@ func writeWorkCardFixture(t *testing.T, dir, name, createdAt string) string {
 	return path
 }
 
+// claudeSeatRoster staffs a workspace with a Claude seat for work Claude cards (the pump pins
+// `second`) beside a Hermes implementer, so a work card has a seat it may run on
+// (work_card_fence.go).
+func claudeSeatRoster(t *testing.T, cfg config.Config) {
+	t.Helper()
+	body := `
+staff:
+  implementer: {runner: hermes, args: ["-p", "wk-code"]}
+  second: {runner: claude, headless: true}
+roles:
+  task_implementation: implementer
+  task_review: implementer
+`
+	if err := os.WriteFile(roster.Path(cfg.StatePath()), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func slots(t *testing.T, limit int) (*Manager, func(), string, string) {
 	t.Helper()
 	cfg, _, manager, finish := claimOrderTestManager(t)
+	claudeSeatRoster(t, cfg)
 	manager.capacityMu.Lock()
 	manager.capacityLimit = limit
 	manager.capacityMu.Unlock()
@@ -178,6 +198,7 @@ func TestWorkWindowNeverStopsRunningPersonalWork(t *testing.T) {
 // Inside the window a work card claims ahead of an older goal-derived task.
 func TestWorkWindowWorkCardClaimsAheadOfGoalWork(t *testing.T) {
 	cfg, fake, manager, finish := claimOrderTestManager(t)
+	claudeSeatRoster(t, cfg)
 	setWorkWindow(manager, workWindowFixture(), inWindow(t))
 	todoDir := cfg.Resolve(workflowRoutes()[0].Source)
 	writeGoalDerivedFixture(t, todoDir, "tasks-goal-old.md", "2026-10-14T10:00:00Z")
@@ -189,6 +210,7 @@ func TestWorkWindowWorkCardClaimsAheadOfGoalWork(t *testing.T) {
 // Outside the window the existing order stands: goal work first.
 func TestWorkWindowOutsideHoursGoalWorkStillClaimsFirst(t *testing.T) {
 	cfg, fake, manager, finish := claimOrderTestManager(t)
+	claudeSeatRoster(t, cfg)
 	setWorkWindow(manager, workWindowFixture(), outsideWindow(t))
 	todoDir := cfg.Resolve(workflowRoutes()[0].Source)
 	writeGoalDerivedFixture(t, todoDir, "tasks-goal-old.md", "2026-10-14T10:00:00Z")
@@ -201,6 +223,7 @@ func TestWorkWindowOutsideHoursGoalWorkStillClaimsFirst(t *testing.T) {
 // take the last slot.
 func TestWorkWindowKeepsTheLastSlotFromGoalPlanning(t *testing.T) {
 	cfg, _, manager, finish := claimOrderTestManager(t)
+	claudeSeatRoster(t, cfg)
 	manager.capacityMu.Lock()
 	manager.capacityLimit = 2
 	manager.capacityMu.Unlock()
@@ -243,6 +266,7 @@ func TestWorkWindowSurvivesConfigFileRoundTripAndHoldsTheSlot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	claudeSeatRoster(t, loaded)
 	got := loaded.Orchestrator.WorkWindow
 	if !got.Enabled || got.Start != "09:00" || got.End != "18:00" || got.Timezone != "America/New_York" || got.Reserved() != 1 || len(got.Days) != 5 {
 		t.Fatalf("work_window did not survive a save and load: %+v", got)
@@ -290,6 +314,7 @@ func TestWorkWindowNeverPausesARunningWorkCardForGoalWork(t *testing.T) {
 // the only slot goes to the work card in todo/, not to a personal task in review/.
 func TestWorkWindowWorkCardBeatsAPersonalReviewForTheOnlySlot(t *testing.T) {
 	cfg, _, manager, finish := claimOrderTestManager(t)
+	claudeSeatRoster(t, cfg)
 	setWorkWindow(manager, workWindowFixture(), inWindow(t))
 	todoDir := cfg.Resolve(workflowRoutes()[0].Source)
 	base := filepath.Dir(todoDir)

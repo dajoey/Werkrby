@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -111,6 +112,26 @@ func TestHeadlessTaskIDNamesOnlyDocuments(t *testing.T) {
 	}
 	if got := headlessTaskID("orchestrator:goals:goal_planning:goals-x-01:2"); got != "goals-x-01" {
 		t.Errorf("goal key = %q", got)
+	}
+}
+
+// A dynamically spawned pane worker gets the task id through its spawn environment
+// (herdr tab create / pane split --env): the pane shell hands it to the runner launched in that
+// pane, and a Hermes client forwards it to the gateway session through the profile's
+// terminal.client_env_passthrough.
+func TestPaneTaskEnvArgsCarryTheTaskID(t *testing.T) {
+	for key, want := range map[string][]string{
+		"orchestrator:tasks:task_implementation:tasks-20261028-bridge-relay-linkage-01:1": {"--env", "WERKRBY_TASK_ID=tasks-20261028-bridge-relay-linkage-01"},
+		"orchestrator:tasks:task_review:t2:3":                                             {"--env", "WERKRBY_TASK_ID=t2"},
+		"orchestrator:goals:goal_planning:goals-x-01:2":                                   {"--env", "WERKRBY_TASK_ID=goals-x-01"},
+		"chat:telegram:TG-1":                                                              nil,
+		"heartbeat":                                                                       nil,
+		"orchestrator:semantic-heartbeat":                                                 nil,
+		"orchestrator:notification:lease123:task_review:1":                                nil,
+	} {
+		if got := paneTaskEnvArgs(key); !slices.Equal(got, want) {
+			t.Errorf("paneTaskEnvArgs(%q) = %q, want %q", key, got, want)
+		}
 	}
 }
 
